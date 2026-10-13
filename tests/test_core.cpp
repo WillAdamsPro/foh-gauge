@@ -209,3 +209,59 @@ TEST_CASE("Delay finder: plain cross-correlation (no PHAT) on white noise and a 
     std::vector<float> noisy = delayed(w, 480, 0.05f); for (auto& v : noisy) v += n(g);
     REQUIRE(findDelay(w, noisy, 48000, false).confidence < r.confidence);
 }
+// ---- RT-safety: count heap allocations made while a flag is set on this thread
+#include <new>
+#include <cstdlib>
+static thread_local bool g_trackAlloc = false; static thread_local int g_allocs = 0;
+void* operator new(std::size_t n) { if (g_trackAlloc) ++g_allocs; if (void* p = std::malloc(n ? n : 1)) return p; throw std::bad_alloc(); }
+void operator delete(void* p) noexcept { std::free(p); }
+void operator delete(void* p, std::size_t) noexcept { std::free(p); }
+struct AllocGuard { AllocGuard(){ g_allocs=0; g_trackAlloc=true; } ~AllocGuard(){ g_trackAlloc=false; } };
+TEST_CASE("RT safety: audio-thread paths do not allocate (block sizes 16..2048)") {
+    PinkNoise pn; LogSweep sw; sw.prepare(48000, 20, 20000, 1.0, 0.1); RingBuffer rb(1 << 16);
+    TripleBuffer<std::vector<float>> tb; for (int k=0;k<3;++k){ tb.writeBuffer().assign(64,0.f); tb.publish(); }
+    std::vector<float> blk(2048), out(2048);
+    int allocs;
+    { AllocGuard g; ScopedFlushDenormals fz;
+      for (int bs : {16, 32, 64, 128, 256, 512, 1024, 2048}) for (int rep=0; rep<8; ++rep) {
+          pn.process(blk.data(), bs); sw.process(blk.data(), bs); pn.setGainDb(-6); sw.setGainDb(-6); sw.reset();
+          rb.push(blk.data(), bs); rb.pop(out.data(), bs); tb.publish(); (void) tb.latest(); }
+      allocs = g_allocs; }
+    REQUIRE(allocs == 0);
+    // sanity: the counter works
+    { AllocGuard g; std::vector<int> v(10); allocs = g_allocs; } REQUIRE(allocs >= 1);
+}
+TEST_CASE("RT safety: TF/RTA frames reuse preallocated scratch") {
+    auto x = pink(16384*4); TransferFunction tf(16384,48000); RTA rta(16384,48000,3);
+    tf.process(x.data(), x.data(), 16384); rta.process(x.data(), 16384); // warm up
+    int allocs; { AllocGuard g; tf.process(x.data()+16384, x.data()+16384, 16384*2); rta.process(x.data()+16384, 16384*2); allocs = g_allocs; }
+    REQUIRE(allocs == 0); REQUIRE(tf.frames() >= 4);
+}
+TEST_CASE("RingBuffer: wraparound, whole-block drop, pow2 rounding, drop counter") {
+    RingBuffer rb(1000); REQUIRE(rb.capacity()==1024);
+    std::vector<float> a(700), b(700); for (int i=0;i<700;++i) a[(size_t)i]=(float)i;
+    REQUIRE(rb.push(a.data(),700)); REQUIRE(rb.pop(b.data(),700)==700);
+    REQUIRE(rb.push(a.data(),700)); // wraps at 1024
+    REQUIRE(!rb.push(a.data(),700)); REQUIRE(rb.dropped()==1); REQUIRE(rb.available()==700);
+    std::fill(b.begin(), b.end(), -1.f); REQUIRE(rb.pop(b.data(),700)==700);
+    for (int i=0;i<700;++i) REQUIRE(b[(size_t)i]==(float)i);
+    REQUIRE(rb.push(a.data(),0)); REQUIRE(rb.pop(b.data(),0)==0);
+    // concurrent SPSC stress: ramp survives intact
+    RingBuffer s(4096); std::atomic<bool> done{false}; int expect=0; bool ok=true;
+    std::thread prod([&]{ std::vector<float> blk(97); int v=0; while (v < 200000) { for (auto& x: blk) x=(float)(v++); while(!s.push(blk.data(),97)) std::this_thread::yield(); } done=true; });
+    std::vector<float> o(500);
+    while (!done.load() || s.available()) { int n=s.pop(o.data(),500); for (int i=0;i<n;++i){ if (o[(size_t)i]!=(float)expect) ok=false; ++expect; } }
+    prod.join(); REQUIRE(ok); REQUIRE(expect >= 200000);
+}
+TEST_CASE("Denormals are flushed inside ScopedFlushDenormals") {
+    volatile float tiny = 1e-38f; volatile float scale = 1e-3f;
+    float before = tiny * scale; REQUIRE(before != 0.0f); // subnormal without FTZ
+    float inside; { ScopedFlushDenormals fz; inside = tiny * scale; }
+    REQUIRE(inside == 0.0f);
+    float after = tiny * scale; REQUIRE(after != 0.0f); // restored
+}
+TEST_CASE("Generators: gain/reset are thread-safe requests honoured on next sample") {
+    LogSweep sw; sw.prepare(48000, 20, 20000, 1.0, 0.0); std::vector<float> a(1000), b(1000);
+    sw.process(a.data(), 1000); sw.reset(); sw.process(b.data(), 1000); REQUIRE(a == b);
+    PinkNoise p1(9), p2(9); p2.setGainDb(-20); float x1=p1.next(), x2=p2.next(); REQUIRE(x2==Approx(x1*0.1f).epsilon(1e-4));
+}

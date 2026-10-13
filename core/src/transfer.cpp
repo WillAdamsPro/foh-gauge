@@ -4,7 +4,7 @@
 namespace foh {
 double wrapDeg(double d) { d = std::fmod(d + 180.0, 360.0); if (d < 0) d += 360.0; return d - 180.0; }
 TransferFunction::TransferFunction(int n, double sr) : fft(n), N(n), fs(sr), win(hannWindow(n)),
-    xbuf((size_t) n), ybuf((size_t) n), refHistory(1 << 17), Sxx((size_t) n / 2 + 1), Syy((size_t) n / 2 + 1), Sxy((size_t) n / 2 + 1) {}
+    xbuf((size_t) n), ybuf((size_t) n), refHistory(1 << 17), Sxx((size_t) n / 2 + 1), Syy((size_t) n / 2 + 1), Sxy((size_t) n / 2 + 1), X((size_t) n), Y((size_t) n) {}
 void TransferFunction::reset() { std::fill(Sxx.begin(), Sxx.end(), 0.0); std::fill(Syy.begin(), Syy.end(), 0.0);
     std::fill(Sxy.begin(), Sxy.end(), cpx{}); frameCount = 0; fill = 0; }
 void TransferFunction::setReferenceDelaySamples(int d) { refDelay = std::clamp(d, 0, (int) refHistory.size() - 1); reset(); }
@@ -21,7 +21,6 @@ void TransferFunction::process(const float* ref, const float* meas, int n) {
     }
 }
 void TransferFunction::frame() {
-    std::vector<cpx> X((size_t) N), Y((size_t) N);
     for (int i = 0; i < N; ++i) { X[(size_t) i] = xbuf[(size_t) i] * win[(size_t) i]; Y[(size_t) i] = ybuf[(size_t) i] * win[(size_t) i]; }
     fft.forward(X); fft.forward(Y);
     ++frameCount;
