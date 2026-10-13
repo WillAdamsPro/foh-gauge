@@ -115,6 +115,51 @@ namespace foh::theme
        #endif
     }
 
+
+    // ---- Workspace / docking tokens (A2). 1x px. Overlay colours are composited over the element's surface.
+    namespace ws
+    {
+        inline constexpr int   panelHeaderHeight   = 28;
+        inline constexpr float panelTitleSize      = 12.0f;  // semibold, text.secondary; active panel = text.primary
+        inline constexpr int   headerButtonSize    = 20;     // float / close hit box
+        inline constexpr int   headerGlyphSize     = 12;
+        inline constexpr int   headerButtonGap     = 2;
+        inline constexpr int   headerPaddingX      = 8;
+        inline constexpr int   tabHeight           = 26;
+        inline constexpr int   tabPaddingX         = 12;
+        inline constexpr int   tabMinWidth         = 72, tabMaxWidth = 200;
+        inline constexpr int   tabCloseSize        = 14;
+        inline constexpr int   tabIndicatorHeight  = 2;      // accent underline on active tab
+        inline constexpr int   overflowButtonWidth = 24;
+        inline constexpr int   splitterHitArea     = 8;      // invisible grab zone
+        inline constexpr float splitterLine        = 1.0f;   // visible line (0.5 on Retina dark)
+        inline constexpr float splitterLineActive  = 2.0f;   // hover / drag
+        inline constexpr int   panelMinWidth       = 240, panelMinHeight = 140;
+        inline constexpr int   plotPanelMinWidth   = 420, plotPanelMinHeight = 220;
+        inline constexpr int   inspectorMinWidth   = 260, inspectorMaxWidth = 420;
+        inline constexpr int   switcherHeight      = 30;     // segmented control in toolbar
+        inline constexpr int   switcherSegmentPadX = 12;
+        inline constexpr float shortcutHintSize    = 11.0f;  // text.tertiary
+        inline constexpr int   floatTitleBarHeight = 28;
+        inline constexpr int   floatMinWidth       = 320, floatMinHeight = 200;
+        inline constexpr int   snapDistance        = 24;     // drag within this of a dock edge to snap
+        inline constexpr int   dropZoneInset       = 6;
+        inline constexpr float dropZoneAlpha       = 0.20f;  // accent fill for dock-target preview
+        inline constexpr int   menuItemHeight      = 22, menuPaddingX = 10;
+        inline constexpr float menuRadius          = 6.0f;
+        inline constexpr int   animMs              = 120;    // hover/snap transitions
+
+        // Interaction overlays (white on dark, black on light)
+        inline juce::Colour hoverOverlay   (const Theme& t) { return t.isLight ? juce::Colour (0x14000000) : juce::Colour (0x14FFFFFF); } // 8%
+        inline juce::Colour pressedOverlay (const Theme& t) { return t.isLight ? juce::Colour (0x29000000) : juce::Colour (0x29FFFFFF); } // 16%
+        inline juce::Colour splitterIdle   (const Theme& t) { return t.surfaces.border; }
+        inline juce::Colour splitterActive (const Theme& t) { return t.accent; }
+        inline juce::Colour closeHover     (const Theme& t) { return t.status.poor; }   // glyph only, with the × shape
+        inline juce::Colour panelHeaderBg  (const Theme& t) { return t.isLight ? juce::Colour (0xffEDEDEF) : juce::Colour (0xff252526); }
+        inline juce::Colour tabActiveBg    (const Theme& t) { return t.surfaces.background; }  // tab merges with panel body
+        inline juce::Colour tabInactiveBg  (const Theme& t) { return panelHeaderBg (t); }
+    }
+
     // Single source of truth; components call ThemeManager::get().current() in paint()
     // and register as ChangeListeners to repaint/re-layout on switch.
     class ThemeManager : public juce::ChangeBroadcaster
