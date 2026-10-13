@@ -72,7 +72,7 @@ private:
     std::unique_ptr<foh::TransferFunction> tf; std::unique_ptr<foh::RTA> rta; double analysisRate = 48000;
     std::vector<float> micHist, refHist; int histPos = 0;
     foh::TraceStore traces; foh::MicCal cal; bool calOn = false; foh::DelayResult lastDelay; foh::TFResult lastTF;
-    bool paused = false; foh::Band2 xover; juce::String w2Summary;
+    bool paused = false; foh::Band2 xover; std::vector<std::pair<juce::String, juce::String>> summaryRows; // step 09 Done card rows (label, value)
     // frame
     juce::OwnedArray<juce::TextButton> nav; int page = 0; juce::Label status; juce::TextButton pauseBtn {"Pause"};
     juce::Label help, pageTitle;

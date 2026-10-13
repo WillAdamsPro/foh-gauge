@@ -250,7 +250,14 @@ void MainComponent::paint(Graphics& g) {
         if (!gActionCard.isEmpty()) card(g, gActionCard, C::cardBorderEmphasis());
         if (!gDoneA.isEmpty()) { card(g, gDoneA); card(g, gDoneB);
             auto c = Rectangle<float>((float) gDoneA.getX() + 22, (float) gDoneA.getY() + 22, 56, 56); g.setColour(C::successBadgeBg()); g.fillEllipse(c);
-            g.setColour(C::ok()); g.setFont(FohLookAndFeel::font(T::icon, true)); g.drawText(u8("\xe2\x9c\x93"), c, Justification::centred); }
+            g.setColour(C::ok()); g.setFont(FohLookAndFeel::font(T::icon, true)); g.drawText(u8("\xe2\x9c\x93"), c, Justification::centred);
+            // summary: 20 px title, then 16 px rows (padding 14/0, 1 px divider bottom) per layout-spec step 09
+            auto in = gDoneA.reduced(22); in.removeFromTop(56 + 16);
+            g.setColour(C::textPrimary()); g.setFont(FohLookAndFeel::font(20.0f, true)); g.drawText("What was set", in.removeFromTop(28), Justification::left); in.removeFromTop(6);
+            for (auto& r : summaryRows) { auto row = in.removeFromTop(16 + 28); auto tr = row.reduced(0, 14);
+                g.setFont(FohLookAndFeel::font(16.0f)); g.setColour(C::textSecondary()); g.drawText(r.first, tr.removeFromLeft(tr.getWidth() * 2 / 5), Justification::left);
+                g.setColour(C::textPrimary()); g.setFont(FohLookAndFeel::font(16.0f, false, true)); g.drawText(r.second, tr, Justification::right);
+                g.setColour(C::divider()); g.fillRect((float) row.getX(), (float) row.getBottom() - D::hairline(), (float) row.getWidth(), D::hairline()); } }
     }
 }
 
@@ -461,8 +468,8 @@ void MainComponent::layoutGuide() {
     gProgress = c.removeFromTop(36); c.removeFromTop(16);
     if (st.chart == 5) { // Done
         gDoneA = c.removeFromLeft(c.getWidth() * 466 / 876).withHeight(437); c.removeFromLeft(14); gDoneB = c.withHeight(437);
-        doneSummary.setText(w2Summary.isEmpty() ? String("Nothing measured yet in this guide.") : w2Summary, dontSendNotification);
-        doneSummary.setBounds(gDoneA.reduced(22).withTrimmedTop(70)); doneActions.setBounds(gDoneB.reduced(22).removeFromTop(120));
+        doneSummary.setText(summaryRows.empty() ? String("Nothing measured yet in this guide.") : String(), dontSendNotification);
+        doneSummary.setBounds(gDoneA.reduced(22).withTrimmedTop(110)); doneActions.setBounds(gDoneB.reduced(22).removeFromTop(120));
         auto bc = gDoneB.reduced(22).withTrimmedTop(148); doneAgain.setBounds(bc.removeFromTop(68)); bc.removeFromTop(10); doneHome.setBounds(bc.removeFromTop(43));
         for (auto* x : std::initializer_list<Component*>{&doneSummary, &doneActions, &doneAgain, &doneHome}) x->setVisible(true);
         guideBody.setVisible(false); guidePrev.setVisible(false); guideAct.setVisible(false); guideResult.setVisible(false);
@@ -519,12 +526,13 @@ void MainComponent::guideAction(int a) {
                   + " Judge from these phase traces, not the impulse.", dontSendNotification); }
             out << "Crossover " << String(xover.lo, 0) << "-" << String(xover.hi, 0) << " Hz (centre ~" << String(po.centerHz, 0) << " Hz). Sub vs main phase " << String(po.meanDeg, 0) << u8("\xc2\xb0 = ") << String(std::abs(po.impliedMs), 2) << " ms ("
                 << (po.impliedMs > 0 ? "sub LATE" : "sub EARLY") << "). Other answers differ by whole cycles (" << String(period, 1) << u8(" ms). Target: within ~60\xc2\xb0 and parallel across the band.");
-            w2Summary = "Crossover: " + String(xover.lo, 0) + "-" + String(xover.hi, 0) + " Hz\nSuggested: " + who + " +" + String(std::abs(po.impliedMs), 1) + " ms\nAlternative: flip sub polarity, " + (invMs > 0 ? "mains " : "sub ") + String(std::abs(invMs), 1) + " ms\nReference delay: " + String(lockedDelayMs, 2) + " ms";
+            summaryRows = { {"Crossover", String(xover.lo, 0) + "-" + String(xover.hi, 0) + " Hz"}, {"Suggested", who + " +" + String(std::abs(po.impliedMs), 1) + " ms"},
+                            {"Alternative", "Flip sub polarity, " + String(invMs > 0 ? "mains " : "sub ") + String(std::abs(invMs), 1) + " ms"}, {"Reference delay", String(lockedDelayMs, 2) + " ms"} };
             next(); break; }
         case 9: { if (storeTrace("Both")) { auto* m = findTrace("Main"); auto* s = findTrace("Sub"); auto* b = findTrace("Both");
                     if (m && s && b && xover.found) { auto vs = foh::virtualSum(m->tf, s->tf); double gain = 0, ref = 0; int n = 0;
                         for (size_t k = 1; k < b->tf.freq.size(); ++k) if (b->tf.freq[k] >= xover.lo && b->tf.freq[k] <= xover.hi) { gain += b->tf.magDb[k] - std::max(m->tf.magDb[k], s->tf.magDb[k]); ref += vs.magDb[k] - std::max(m->tf.magDb[k], s->tf.magDb[k]); ++n; }
-                        if (n) { gain /= n; ref /= n; w2Summary << "\nMeasured sum in crossover: " << String(gain, 1) << " dB vs louder of the two (virtual sum predicts " << String(ref, 1) << " dB)"; } }
+                        if (n) { gain /= n; ref /= n; summaryRows.push_back({"Sum in crossover", (gain >= 0 ? "+" : "") + String(gain, 1) + " dB (predicted " + (ref >= 0 ? "+" : "") + String(ref, 1) + " dB)"}); } }
                     out = "Stored 'Both'."; next(); } break; }
         case 10: { findDelay(); if (lastDelay.arrivals.empty()) { out = "No signal found."; break; }
             // findDelay works on the raw (uncompensated) reference, so arrivals are absolute
