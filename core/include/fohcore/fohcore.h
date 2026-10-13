@@ -453,6 +453,25 @@ Band2 acousticCrossover(const TFResult& a, const TFResult& b, double withinDb = 
 // Mean phase difference (b - a, wrapped, degrees) over band, coherence-weighted, and implied delay.
 struct PhaseOffset { double meanDeg = 0; double centerHz = 0; double impliedMs = 0; };
 PhaseOffset phaseOffset(const TFResult& a, const TFResult& b, double lo, double hi);
+// W2 sub delay from the crossover-band phase offset (QA D7). Positive = sub later than mains.
+// primaryMs = wrapped phase-offset delay at xoHz, moved by whole periods to the candidate
+// nearest the phase-slope (group-delay) estimate over [lo, hi]. alternativesMs = primary
+// -/+ one period of xoHz (the guide shows all three; nothing is auto-picked). The raw
+// impulse/xcorr peak is carried only as a hint (it includes filter group delay and can sit
+// half a cycle away with flipped polarity, e.g. 20.5 ms "inverted" for a 12.5 ms sub).
+struct SubDelayEstimate {
+    bool valid = false;
+    double xoHz = 0, periodMs = 0;     // crossover frequency used for the alternatives (N4: recorded)
+    double phaseDeg = 0;               // sub - mains, wrapped, coherence weighted, at xoHz
+    double wrappedMs = 0;              // -phase/360/xo, in (-period/2, period/2]
+    double slopeMs = 0;                // group delay from the phase slope over the band
+    double primaryMs = 0;
+    double alternativesMs[2] = {0, 0}; // primary - period, primary + period
+    double coherence = 0;              // mean min(coh_a, coh_b) over the band
+    bool hasHint = false; double hintMs = 0; bool hintInverted = false; // raw peak, display only
+};
+SubDelayEstimate subDelayFromPhase(const TFResult& mains, const TFResult& sub, double lo, double hi,
+                                   double xoHz = 0, const DelayResult* rawPeakHint = nullptr);
 // Virtual (complex) sum of two traces.
 TFResult virtualSum(const TFResult& a, const TFResult& b);
 double wrapDeg(double d);
