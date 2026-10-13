@@ -5,6 +5,7 @@
 #include <complex>
 #include <cstdint>
 #include <string>
+#include <type_traits>
 #include <vector>
 
 // Mark functions callable from the audio thread. With clang >= 20 and
@@ -175,6 +176,23 @@ struct DelayResult { std::vector<Arrival> arrivals; double confidence = 0; std::
 DelayResult findDelay(const std::vector<float>& ref, const std::vector<float>& meas, double sampleRate,
                       bool phat = true, int maxArrivals = 3, double minSeparationMs = 0.5,
                       double speedOfSound = 343.0);
+// Options form. lpHz/hpHz apply a zero-phase band weighting (4th-order Butterworth
+// magnitude) to the cross-spectrum, e.g. LF-weighting for subs. maxDelayMs bounds the lag
+// search (0 = whole window). forSubs(): 20-150 Hz, GCC-PHAT, 10 ms arrival separation (> LF main lobe).
+struct DelayOptions {
+    bool phat = true; int maxArrivals = 3; double minSeparationMs = 0.5;
+    double speedOfSound = 343.0; double hpHz = 0, lpHz = 0; double maxDelayMs = 0;
+    static DelayOptions forSubs() { DelayOptions o; o.hpHz = 20; o.lpHz = 150; o.minSeparationMs = 10; o.maxDelayMs = 500; return o; }
+};
+DelayResult findDelay(const std::vector<float>& ref, const std::vector<float>& meas, double sampleRate,
+                      const DelayOptions& opt);
+// Capture length the caller should use: 1 s for mains, 3 s for subs (LF needs
+// many periods for a stable estimate; clamp to 2..4 s for sub work).
+inline int recommendedDelayWindowSamples(double sampleRate, bool sub, double seconds = 0) {
+    double s = seconds > 0 ? seconds : (sub ? 3.0 : 1.0);
+    if (sub) s = s < 2.0 ? 2.0 : (s > 4.0 ? 4.0 : s);
+    return (int) (s * sampleRate);
+}
 // Impulse response from an averaged TF (IFFT of H).
 std::vector<double> impulseFromTF(const TFResult& tf);
 
@@ -247,19 +265,77 @@ private:
 struct AnalysisSnapshot {
     uint64_t seq = 0;           // increments on every publish
     TFResult tf;                // smoothed + blanked TF
-    std::vector<double> rtaDb;  // per-band dBFS (matches RTA::bands())
+    int smoothingFraction = 0;  // smoothing applied to tf (0,3,6,12,24,48)
+    std::vector<double> rtaDb;  // per-band dBFS, same order/size as rtaBands
+    std::vector<Band> rtaBands; // RTA band centre + edges (fCenter, fLo, fHi)
+    int rtaFraction = 3;
     DelayResult delay;          // last delay-finder run (may be empty)
+    uint64_t delaySeq = 0;      // id of the FindDelay command that produced `delay` (0 = none)
+    bool delayWasSub = false;
+    double refDelaySamples = 0, refDelayMs = 0; // compensation currently applied to the reference
+    bool calApplied = false;
+    char calName[64] = {};      // NUL-terminated, truncated; empty when no cal
+    ConvergenceState convergence; // progress (0..1), settled, deltaDb, frames...
     double inputPeakDbRef = -120, inputPeakDbMeas = -120;
+    void setCalName(const char* n) { size_t i = 0; if (n) for (; n[i] && i + 1 < sizeof(calName); ++i) calName[i] = n[i]; calName[i] = 0; }
 };
+// Lifetime of latest(): the returned reference stays valid (and unchanged) until the SAME
+// reader thread calls latest() again. latest() is deliberately non-const: it claims the
+// newest slot, so it mutates reader-side state, and only ONE reader thread (the UI) may call
+// it. Copy out anything you need to keep across calls.
 class SnapshotPublisher {
 public:
     AnalysisSnapshot& beginWrite() { return tb.writeBuffer(); }   // analysis thread
     void publish() { tb.writeBuffer().seq = ++seq; tb.publish(); } // analysis thread
-    const AnalysisSnapshot& latest() { return tb.latest(); }        // UI thread
-    bool hasNew() const { return tb.hasNew(); }
+    const AnalysisSnapshot& latest() { return tb.latest(); }        // UI thread only
+    bool hasNew() const { return tb.hasNew(); }                     // any thread
 private:
     TripleBuffer<AnalysisSnapshot> tb; uint64_t seq = 0;
 };
+
+// ---------- Commands in (UI -> analysis thread), lock-free SPSC, fixed-size POD ----------
+enum class CommandType : uint8_t { SetSmoothing, SetRtaFraction, FindDelay, SetBlankThreshold, SetAverages, ResetAverages, SetReferenceDelay };
+struct Command {
+    CommandType type = CommandType::ResetAverages;
+    bool sub = false;        // FindDelay: true = subs (LF-weighted, 3 s), false = mains
+    int32_t i = 0;           // SetSmoothing/SetRtaFraction: fraction; SetAverages: N (0 = infinite)
+    double d = 0;            // SetBlankThreshold: 0..1; SetReferenceDelay: samples
+    uint64_t id = 0;         // caller tag, echoed in AnalysisSnapshot::delaySeq for FindDelay
+    static Command smoothing(int frac) { Command c; c.type = CommandType::SetSmoothing; c.i = frac; return c; }
+    static Command rtaFraction(int frac) { Command c; c.type = CommandType::SetRtaFraction; c.i = frac; return c; }
+    static Command findDelay(bool sub, uint64_t id = 0) { Command c; c.type = CommandType::FindDelay; c.sub = sub; c.id = id; return c; }
+    static Command blankThreshold(double t) { Command c; c.type = CommandType::SetBlankThreshold; c.d = t; return c; }
+    static Command averages(int n) { Command c; c.type = CommandType::SetAverages; c.i = n; return c; }
+    static Command resetAverages() { Command c; c.type = CommandType::ResetAverages; return c; }
+    static Command referenceDelay(double samples) { Command c; c.type = CommandType::SetReferenceDelay; c.d = samples; return c; }
+};
+static_assert(std::is_trivially_copyable<Command>::value, "Command must be POD");
+
+// Bounded wait-free SPSC queue of trivially-copyable T. Storage is inline (no heap).
+// push(): producer only, false when full. pop(): consumer only, false when empty.
+template <typename T, int CapacityPow2 = 64>
+class SpscQueue {
+    static_assert(std::is_trivially_copyable<T>::value, "T must be trivially copyable");
+    static_assert(CapacityPow2 >= 2 && (CapacityPow2 & (CapacityPow2 - 1)) == 0, "capacity must be pow2");
+public:
+    bool push(const T& v) noexcept {
+        uint64_t wi = w.load(std::memory_order_relaxed);
+        if (wi - r.load(std::memory_order_acquire) >= (uint64_t) CapacityPow2) return false;
+        slots[wi & (CapacityPow2 - 1)] = v; w.store(wi + 1, std::memory_order_release); return true;
+    }
+    bool pop(T& out) noexcept {
+        uint64_t ri = r.load(std::memory_order_relaxed);
+        if (ri == w.load(std::memory_order_acquire)) return false;
+        out = slots[ri & (CapacityPow2 - 1)]; r.store(ri + 1, std::memory_order_release); return true;
+    }
+    int size() const noexcept { return (int) (w.load(std::memory_order_acquire) - r.load(std::memory_order_acquire)); }
+    static constexpr int capacity() { return CapacityPow2; }
+private:
+    T slots[CapacityPow2]{};
+    alignas(64) std::atomic<uint64_t> w{0};
+    alignas(64) std::atomic<uint64_t> r{0};
+};
+using CommandQueue = SpscQueue<Command, 64>;
 
 // ---------- Trace store ----------
 struct Trace { std::string name; TFResult tf; double refDelayMs = 0; bool visible = true; };

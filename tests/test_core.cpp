@@ -292,3 +292,81 @@ TEST_CASE("Convergence: clean DUT settles fast, noisy DUT later, timeout honoure
     e.process(x.data(), step.data(), 48000*4); int before = e.convergence().stableFrames;
     e.process(x.data()+48000*4, step.data()+48000*4, 16384); REQUIRE(before > 0); REQUIRE(e.convergence().stableFrames < before);
 }
+TEST_CASE("Delay finder for subs: 3 s LF-weighted window recovers sub delay under HF noise") {
+    const double fs = 48000; int L = recommendedDelayWindowSamples(fs, true);
+    REQUIRE(L == 144000); REQUIRE(recommendedDelayWindowSamples(fs, true, 10) == 192000);
+    REQUIRE(recommendedDelayWindowSamples(fs, true, 1) == 96000); REQUIRE(recommendedDelayWindowSamples(fs, false) == 48000);
+    auto x = pink(L, 51); auto nz = pink(L, 52);
+    // sub = band-limited 25..100 Hz (two biquads), true delay 35 ms, equal-level uncorrelated broadband pink noise (mains/room)
+    std::vector<float> hp(x.size()); { // 1st-order HP at 25 Hz
+        double a = std::exp(-2*M_PI*25/fs), px=0, py=0; for (size_t i=0;i<x.size();++i){ double o=a*(py+x[i]-px); px=x[i]; py=o; hp[i]=(float)o; } }
+    auto sub = delayed(lowpass(hp, 100, fs), 1680);
+    std::vector<float> m(x.size()); for (size_t i=0;i<m.size();++i) m[i] = sub[i] + nz[i];
+    auto lfOpt = DelayOptions::forSubs();
+    auto r = findDelay(x, m, fs, lfOpt);
+    REQUIRE(!r.arrivals.empty());
+    // expect true delay + LPF group delay (2nd-order Butterworth at 100 Hz: ~2.2 ms at DC, less in-band)
+    REQUIRE(r.arrivals[0].delayMs > 35.0); REQUIRE(r.arrivals[0].delayMs < 38.5);
+    REQUIRE(!r.arrivals[0].inverted);
+    for (auto& a : r.arrivals) REQUIRE(a.delayMs <= 500.0 + 0.1);
+    // broadband search on the same capture is dominated by the noise
+    auto bb = findDelay(x, m, fs, true);
+    REQUIRE(r.confidence > 0.3); REQUIRE(r.confidence > bb.confidence);
+    REQUIRE(std::fabs(bb.arrivals[0].delayMs - 35.0) > 5.0); // broadband locks onto noise here
+    // the old 1 s window is still usable but less confident than 3 s
+    std::vector<float> x1(x.begin(), x.begin()+48000), m1(m.begin(), m.begin()+48000);
+    REQUIRE(findDelay(x1, m1, fs, lfOpt).confidence < r.confidence);
+    // polarity-flipped sub is reported inverted
+    for (auto& v : m) v = -v; auto ri = findDelay(x, m, fs, lfOpt); REQUIRE(ri.arrivals[0].inverted);
+    REQUIRE(ri.arrivals[0].delayMs == Approx(r.arrivals[0].delayMs).margin(0.2));
+}
+TEST_CASE("UI bridge: AnalysisSnapshot carries RTA bands, cal, ref delay, convergence") {
+    SnapshotPublisher p; RTA rta(16384,48000,6); TransferFunction tf(16384,48000); tf.setReferenceDelaySamples(480);
+    auto x = pink(48000*3); tf.process(x.data(), x.data(), (int)x.size()); rta.process(x.data(), (int)x.size());
+    { auto& s = p.beginWrite(); s.tf = tf.result(6); s.smoothingFraction = 6; s.rtaDb = rta.bandsDb(); s.rtaBands = rta.bands(); s.rtaFraction = 6;
+      s.refDelaySamples = tf.referenceDelaySamples(); s.refDelayMs = s.refDelaySamples / 48.0; s.calApplied = true; s.setCalName("ECM8000 #12345");
+      s.convergence = tf.convergence(); }
+    p.publish(); const AnalysisSnapshot& r = p.latest();
+    REQUIRE(r.rtaBands.size()==r.rtaDb.size()); REQUIRE(r.rtaBands.size() > 50);
+    for (auto& b : r.rtaBands) { REQUIRE(b.fLo < b.fCenter); REQUIRE(b.fCenter < b.fHi); }
+    REQUIRE(r.refDelayMs==Approx(10.0)); REQUIRE(r.calApplied); REQUIRE(std::string(r.calName)=="ECM8000 #12345");
+    REQUIRE(r.convergence.frames==tf.frames()); REQUIRE(r.convergence.progress >= 0); REQUIRE(r.convergence.progress <= 1);
+    AnalysisSnapshot t; t.setCalName(std::string(200,'a').c_str()); REQUIRE(std::string(t.calName).size()==63);
+    t.setCalName(nullptr); REQUIRE(t.calName[0]==0);
+}
+TEST_CASE("UI bridge: SPSC command queue is POD, bounded, FIFO, allocation-free") {
+    STATIC_REQUIRE(std::is_trivially_copyable<Command>::value);
+    CommandQueue q; Command c; REQUIRE(!q.pop(c)); REQUIRE(q.size()==0);
+    int allocs; { AllocGuard g;
+        REQUIRE(q.push(Command::smoothing(12))); REQUIRE(q.push(Command::findDelay(true, 7)));
+        REQUIRE(q.push(Command::blankThreshold(0.4))); allocs = g_allocs; }
+    REQUIRE(allocs==0); REQUIRE(q.size()==3);
+    REQUIRE(q.pop(c)); REQUIRE(c.type==CommandType::SetSmoothing); REQUIRE(c.i==12);
+    REQUIRE(q.pop(c)); REQUIRE(c.type==CommandType::FindDelay); REQUIRE(c.sub); REQUIRE(c.id==7);
+    REQUIRE(q.pop(c)); REQUIRE(c.type==CommandType::SetBlankThreshold); REQUIRE(c.d==0.4);
+    for (int i=0;i<CommandQueue::capacity();++i) REQUIRE(q.push(Command::averages(i)));
+    REQUIRE(!q.push(Command::resetAverages())); // full
+    for (int i=0;i<CommandQueue::capacity();++i){ REQUIRE(q.pop(c)); REQUIRE(c.i==i); } REQUIRE(!q.pop(c));
+    // two-thread stress (run under TSan in CI)
+    CommandQueue s; const int N = 100000; std::thread prod([&]{ for (int i=0;i<N;){ if (s.push(Command::averages(i))) ++i; else std::this_thread::yield(); } });
+    int expect=0; bool ok=true; while (expect<N){ Command o; if (s.pop(o)) { if (o.i!=expect) ok=false; ++expect; } }
+    prod.join(); REQUIRE(ok);
+}
+TEST_CASE("UI bridge: commands drive the analysis objects end to end") {
+    CommandQueue q; SnapshotPublisher p; TransferFunction tf(16384,48000); int smooth=0; uint64_t lastDelayId=0;
+    auto x = pink(48000*4, 61); auto y = delayed(x, 480);
+    q.push(Command::smoothing(24)); q.push(Command::blankThreshold(0.8)); q.push(Command::findDelay(false, 42));
+    Command c; while (q.pop(c)) { // analysis-thread loop body
+        switch (c.type) {
+            case CommandType::SetSmoothing: smooth = c.i; break;
+            case CommandType::SetBlankThreshold: tf.setCoherenceBlankThreshold(c.d); break;
+            case CommandType::FindDelay: { auto& s = p.beginWrite();
+                std::vector<float> r(x.begin(), x.begin()+recommendedDelayWindowSamples(48000, c.sub)), m(y.begin(), y.begin()+(long)r.size());
+                s.delay = c.sub ? findDelay(r, m, 48000, DelayOptions::forSubs()) : findDelay(r, m, 48000, true);
+                s.delaySeq = c.id; s.delayWasSub = c.sub; lastDelayId = c.id; break; }
+            default: break; } }
+    tf.process(x.data(), y.data(), (int)x.size());
+    auto& s = p.beginWrite(); s.tf = tf.result(smooth); s.smoothingFraction = smooth; s.delaySeq = lastDelayId; p.publish();
+    auto& r = p.latest(); REQUIRE(r.smoothingFraction==24); REQUIRE(r.tf.blankThreshold==0.8); REQUIRE(r.delaySeq==42);
+    REQUIRE(!r.delayWasSub); REQUIRE(r.delay.arrivals[0].delaySamples==Approx(480).margin(0.5));
+}
