@@ -191,7 +191,9 @@ MainComponent::MainComponent() {
     for (int i = 0; i < 4; ++i) { auto* b = nav.add(new TextButton(pages[i])); b->onClick = [this, i] { showPage(i); }; addAndMakeVisible(b); }
     addAndMakeVisible(status);
     addAndMakeVisible(pauseBtn); pauseBtn.setClickingTogglesState(true); pauseBtn.onClick = [this] { paused = pauseBtn.getToggleState(); pauseBtn.setButtonText(paused ? "Resume" : "Pause"); };
-    addAndMakeVisible(help); help.setJustificationType(Justification::topLeft); help.setColour(Label::textColourId, C::textBody()); help.setFont(FohLookAndFeel::font(T::body));
+    addAndMakeVisible(helpPanel); addChildComponent(helpBtn); helpBtn.setClickingTogglesState(true);
+    helpBtn.onClick = [this] { helpOpen = helpBtn.getToggleState(); layoutHelp(); };
+    help.setColour(Label::textColourId, C::textBody()); help.setFont(FohLookAndFeel::font(T::body));
     addAndMakeVisible(pageTitle); pageTitle.setFont(FohLookAndFeel::font(T::title, true));
 
     auto chanItems = [](ComboBox& b, const char* pre) { for (int i = 1; i <= 4; ++i) b.addItem(String(pre) + String(i), i); };
@@ -213,6 +215,12 @@ MainComponent::MainComponent() {
     { auto& tm = foh::theme::ThemeManager::get(); int i = 1; for (auto& t : tm.all()) { themeBox.addItem("Theme: " + t.displayName, i); if (t.id == tm.current().id) themeBox.setSelectedId(i, dontSendNotification); ++i; }
       themeBox.onChange = [this] { auto& all = foh::theme::ThemeManager::get().all(); int k = themeBox.getSelectedId() - 1; if (k >= 0 && k < (int) all.size()) foh::theme::ThemeManager::get().setTheme(all[(size_t) k].id); };
       addChildComponent(themeBox); tm.addChangeListener(this); }
+    // Global UI scale (100/125/150/200 %): scales text + hero values crisply via JUCE's global scale factor, not per-window reflow
+    for (int pc : {100, 125, 150, 200}) scaleBox.addItem("UI scale " + String(pc) + "%", pc);
+    scaleBox.setSelectedId(jlimit(100, 200, roundToInt(Desktop::getInstance().getGlobalScaleFactor() * 100)), dontSendNotification);
+    if (scaleBox.getSelectedId() == 0) scaleBox.setSelectedId(100, dontSendNotification);
+    scaleBox.onChange = [this] { Desktop::getInstance().setGlobalScaleFactor((float) scaleBox.getSelectedId() / 100.0f); };
+    addChildComponent(scaleBox);
 
     magPlot.yLabel = "MAGNITUDE DB"; magPlot.showLegend = true; magPlot.yMin = -12; magPlot.yMax = 12; magPlot.yStep = 6;
     phasePlot.yLabel = u8("PHASE \xc2\xb0"); phasePlot.yMin = -180; phasePlot.yMax = 180; phasePlot.yStep = 90; phasePlot.wrapPhase = true;
@@ -255,8 +263,9 @@ MainComponent::MainComponent() {
     guidePrev.onClick = [this] { if (step > 0) { --step; layoutGuide(); } };
     guideAct.onClick = [this] { guideAction(kGuides[(size_t) guide][(size_t) step].act); };
 
-    setSize(th::frame::baseWidth, th::frame::baseHeight);
+    setSize(std::getenv("FOH_WINDOW_W") ? std::atoi(std::getenv("FOH_WINDOW_W")) : th::frame::baseWidth, th::frame::baseHeight); /* FOH_WINDOW_W: dev aid for narrow-layout checks */
     showPage(0); startTimerHz(15);
+    if (auto* t = std::getenv("FOH_THEME")) foh::theme::ThemeManager::get().setTheme(t); // dev aid: a, b, c, c-sunlight
     // Dev/screenshot aid: FOH_START_PAGE=0..3, FOH_GUIDE=0..2, FOH_STEP=n
     if (auto* e = std::getenv("FOH_START_PAGE")) { guide = std::getenv("FOH_GUIDE") ? std::atoi(std::getenv("FOH_GUIDE")) : 1; step = std::getenv("FOH_STEP") ? std::atoi(std::getenv("FOH_STEP")) : 0;
         guideBox.setSelectedId(guide + 1, dontSendNotification); showPage(jlimit(0, 3, std::atoi(e))); }
@@ -264,7 +273,7 @@ MainComponent::MainComponent() {
 MainComponent::~MainComponent() { foh::theme::ThemeManager::get().removeChangeListener(this); stopTimer(); dm.removeAudioCallback(&engine); traceList.setModel(nullptr); setLookAndFeel(nullptr); }
 
 Rectangle<int> MainComponent::mainArea() const {
-    return getLocalBounds().withTrimmedTop(D::statusBarHeight()).withTrimmedLeft(D::navWidth()).withTrimmedRight(D::helperWidth()).reduced(D::mainPadding());
+    return getLocalBounds().withTrimmedTop(D::statusBarHeight()).withTrimmedLeft(D::navWidth()).withTrimmedRight(helperW()).reduced(D::mainPadding());
 }
 
 static void card(Graphics& g, Rectangle<int> r, Colour border = C::border()) {
@@ -273,7 +282,7 @@ static void card(Graphics& g, Rectangle<int> r, Colour border = C::border()) {
 }
 
 void MainComponent::paint(Graphics& g) {
-    const int statusBarHeight = D::statusBarHeight(), navWidth = D::navWidth(), helperWidth = D::helperWidth();
+    const int statusBarHeight = D::statusBarHeight(), navWidth = D::navWidth(), helperWidth = helperW();
     g.fillAll(C::background());
     g.setColour(C::statusBarBackground()); g.fillRect(0, 0, getWidth(), statusBarHeight);
     g.setColour(C::navBackground()); g.fillRect(0, statusBarHeight, navWidth, getHeight());
@@ -282,7 +291,6 @@ void MainComponent::paint(Graphics& g) {
     g.drawVerticalLine(navWidth - 1, (float) statusBarHeight, (float) getHeight()); g.drawVerticalLine(getWidth() - helperWidth, (float) statusBarHeight, (float) getHeight());
     g.setFont(FohLookAndFeel::font(T::logo, true)); g.setColour(C::textPrimary()); g.drawText("FOH", 16, 0, 40, statusBarHeight, Justification::centredLeft);
     g.setColour(C::accent()); g.drawText("Gauge", 52, 0, 80, statusBarHeight, Justification::centredLeft);
-    g.setFont(FohLookAndFeel::font(T::small, false, true)); g.drawText("WHAT AM I LOOKING AT?", getWidth() - helperWidth + 20, statusBarHeight + 20, 280, 16, Justification::left);
     if (page >= 0 && page < nav.size()) { auto b = nav[page]->getBounds(); g.setColour(C::accent()); g.fillRect(b.getX(), b.getY() + 6, (int) D::navActiveBar(), b.getHeight() - 12); }
     if (page == 1) { card(g, tfCard); card(g, delayCard, C::cardBorderEmphasis());
         g.setFont(FohLookAndFeel::font(T::label)); g.setColour(C::textSecondary());
@@ -312,12 +320,12 @@ void MainComponent::paint(Graphics& g) {
 }
 
 void MainComponent::resized() {
-    const int statusBarHeight = D::statusBarHeight(), navWidth = D::navWidth(), helperWidth = D::helperWidth();
+    const int statusBarHeight = D::statusBarHeight(), navWidth = D::navWidth();
     auto nr = Rectangle<int>(10, statusBarHeight + 16, navWidth - 20, 44);
     for (auto* b : nav) { b->setBounds(nr); nr.translate(0, 48); }
     status.setBounds(navWidth + 12, 0, getWidth() - navWidth - 12 - 140, statusBarHeight);
     pauseBtn.setBounds(getWidth() - 120, 10, 100, 35);
-    help.setBounds(getWidth() - helperWidth + 14, statusBarHeight + 44, helperWidth - 34, getHeight() - statusBarHeight - 60);
+    layoutHelp();
     auto c = mainArea();
     auto header = c.removeFromTop(29); pageTitle.setBounds(header.removeFromLeft(400)); c.removeFromTop(12);
     // header pills (TF)
@@ -329,7 +337,7 @@ void MainComponent::resized() {
       s.removeFromTop(12); row = s.removeFromTop(30); genBox.setBounds(row.removeFromLeft(300).reduced(4, 0)); genGain.setBounds(row.removeFromLeft(360).reduced(8, 0));
       s.removeFromTop(12); row = s.removeFromTop(30); calBtn.setBounds(row.removeFromLeft(150).reduced(4, 0)); calToggle.setBounds(row.removeFromLeft(90).reduced(4, 0)); calLabel.setBounds(row);
       s.removeFromTop(12); levelLabel.setBounds(s.removeFromTop(30));
-      s.removeFromTop(12); row = s.removeFromTop(30); themeBox.setBounds(row.removeFromLeft(300).reduced(4, 0)); }
+      s.removeFromTop(12); row = s.removeFromTop(30); themeBox.setBounds(row.removeFromLeft(300).reduced(4, 0)); scaleBox.setBounds(row.removeFromLeft(200).reduced(4, 0)); }
     // TF: card, then delay bar 63 h, then trace list
     { auto s = c; auto traceArea = s.removeFromBottom(96); s.removeFromBottom(10);
       delayCard = s.removeFromBottom(63); s.removeFromBottom(10); tfCard = s;
@@ -345,6 +353,21 @@ void MainComponent::resized() {
     layoutGuide();
 }
 
+void MainComponent::layoutHelp() {
+    const int top = D::statusBarHeight(), hw = D::helperWidth();
+    helpBtn.setVisible(railMode()); helpBtn.setBounds(getWidth() - railWidth + 6, top + 12, railWidth - 12, railWidth - 12);
+    if (!railMode()) { helpOpen = false; helpBtn.setToggleState(false, dontSendNotification); }
+    helpPanel.overlay = railMode();
+    helpPanel.setVisible(!railMode() || helpOpen);
+    helpPanel.setBounds(railMode() ? Rectangle<int>(getWidth() - railWidth - hw, top, hw, getHeight() - top) : Rectangle<int>(getWidth() - hw, top, hw, getHeight() - top));
+    if (helpPanel.isVisible()) helpPanel.toFront(false);
+}
+void HelpPanel::paint(Graphics& g) {
+    g.fillAll(C::helperBackground());
+    g.setColour(overlay ? C::cardBorderEmphasis() : C::border()); g.fillRect(0.f, 0.f, D::hairline(), (float) getHeight());
+    g.setColour(C::accent()); g.setFont(FohLookAndFeel::font(T::small, false, true)); g.drawText("WHAT AM I LOOKING AT?", 20, 20, getWidth() - 40, 16, Justification::left);
+}
+
 void MainComponent::changeListenerCallback(ChangeBroadcaster*) { // theme switched: refresh stock-widget colours, then re-layout (widths) + repaint
     lnf.applyTheme(); makePrimary(insertBtn); makePrimary(guideAct); makePrimary(doneAgain);
     status.repaint(); help.setColour(Label::textColourId, C::textBody()); setupHelp.setColour(Label::textColourId, C::textSecondary());
@@ -357,12 +380,12 @@ void MainComponent::changeListenerCallback(ChangeBroadcaster*) { // theme switch
 void MainComponent::showPage(int p) {
     page = p;
     for (int i = 0; i < nav.size(); ++i) { nav[i]->setToggleState(i == p, dontSendNotification); }
-    std::vector<Component*> all {selector.get(), &micBox, &refBox, &outABox, &outBBox, &genBox, &genGain, &calBtn, &calToggle, &setupHelp, &calLabel, &levelLabel, &themeBox,
+    std::vector<Component*> all {selector.get(), &micBox, &refBox, &outABox, &outBBox, &genBox, &genGain, &calBtn, &calToggle, &setupHelp, &calLabel, &levelLabel, &themeBox, &scaleBox,
         &magPlot, &phasePlot, &cohPlot, &smoothBox, &avgBox, &storeBtn, &findBtn, &clearAvgBtn, &delayCaption, &delayValue, &delayDetail, &insertBtn, &traceList, &delTraceBtn, &tfImpulse, &gImpulse,
         &rtaPlot, &rtaFracBox, &guideBox, &guideStepLabel, &guideBody, &guideResult, &guideReadout, &guidePolarity, &guidePrev, &guideAct, &gPlotA, &gPlotB, &doneSummary, &doneActions, &doneAgain, &doneHome};
     for (auto* x : all) x->setVisible(false);
     std::vector<Component*> on;
-    if (p == 0) on = {selector.get(), &micBox, &refBox, &outABox, &outBBox, &genBox, &genGain, &calBtn, &calToggle, &setupHelp, &calLabel, &levelLabel, &themeBox};
+    if (p == 0) on = {selector.get(), &micBox, &refBox, &outABox, &outBBox, &genBox, &genGain, &calBtn, &calToggle, &setupHelp, &calLabel, &levelLabel, &themeBox, &scaleBox};
     if (p == 1) on = {&magPlot, &phasePlot, &cohPlot, &smoothBox, &avgBox, &storeBtn, &findBtn, &clearAvgBtn, &delayCaption, &delayValue, &delayDetail, &insertBtn, &traceList, &delTraceBtn, &tfImpulse};
     if (p == 2) on = {&rtaPlot, &rtaFracBox};
     for (auto* x : on) x->setVisible(true);
