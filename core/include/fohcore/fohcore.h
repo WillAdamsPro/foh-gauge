@@ -116,6 +116,23 @@ struct TFResult {
     bool isBlanked(size_t k) const { return k < blanked.size() && blanked[k] != 0; }
 };
 
+// "Wait until the average settles": after every Welch frame the TF is summarised on a
+// 1/3-oct grid (fLo..fHi); delta = coherence-weighted mean |change in dB| vs the previous
+// frame. Settled when delta < toleranceDb for holdFrames consecutive frames (and at least
+// minFrames frames). maxFrames > 0 is a timeout (settled=false, timedOut=true).
+// At 16k/48k with 50% overlap one frame = 170.7 ms.
+struct ConvergenceSettings {
+    double toleranceDb = 0.1; int minFrames = 8; int holdFrames = 6; int maxFrames = 0;
+    double fLo = 40.0, fHi = 16000.0;
+};
+struct ConvergenceState {
+    bool settled = false, timedOut = false;
+    double deltaDb = 1e9;      // last frame-to-frame change
+    double meanCoherence = 0;  // over the grid
+    int frames = 0, stableFrames = 0;
+    double progress = 0;       // 0..1 for a UI bar: stableFrames/holdFrames gated by minFrames
+};
+
 class TransferFunction {
 public:
     TransferFunction(int fftSize = 16384, double sampleRate = 48000.0);
@@ -132,8 +149,17 @@ public:
     void reset();
     TFResult result(int smoothingFraction = 0) const;
     int frames() const { return frameCount; }
+    void setConvergence(const ConvergenceSettings& c) { conv = c; resetConvergence(); }
+    const ConvergenceSettings& convergenceSettings() const { return conv; }
+    ConvergenceState convergence() const { return cstate; }
+    bool settled() const { return cstate.settled; }
+    double frameSeconds() const { return (N / 2) / fs; }
 private:
     void frame();
+    void updateConvergence();
+    void resetConvergence();
+    ConvergenceSettings conv; ConvergenceState cstate;
+    std::vector<std::pair<int,int>> gridBins; std::vector<double> gridPrevDb; bool gridHavePrev = false;
     FFT fft; int N; double fs; int avgN = 16; int refDelay = 0; double blankThr = 0.0;
     std::vector<double> win; std::vector<float> xbuf, ybuf; int fill = 0;
     std::vector<float> refHistory; int histPos = 0;

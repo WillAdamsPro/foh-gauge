@@ -4,8 +4,36 @@
 namespace foh {
 double wrapDeg(double d) { d = std::fmod(d + 180.0, 360.0); if (d < 0) d += 360.0; return d - 180.0; }
 TransferFunction::TransferFunction(int n, double sr) : fft(n), N(n), fs(sr), win(hannWindow(n)),
-    xbuf((size_t) n), ybuf((size_t) n), refHistory(1 << 17), Sxx((size_t) n / 2 + 1), Syy((size_t) n / 2 + 1), Sxy((size_t) n / 2 + 1), X((size_t) n), Y((size_t) n) {}
-void TransferFunction::reset() { std::fill(Sxx.begin(), Sxx.end(), 0.0); std::fill(Syy.begin(), Syy.end(), 0.0);
+    xbuf((size_t) n), ybuf((size_t) n), refHistory(1 << 17), Sxx((size_t) n / 2 + 1), Syy((size_t) n / 2 + 1), Sxy((size_t) n / 2 + 1), X((size_t) n), Y((size_t) n) { resetConvergence(); }
+void TransferFunction::resetConvergence() {
+    gridBins.clear(); double bin = fs / N; int M = N / 2;
+    for (auto& b : octaveBands(3, conv.fLo, conv.fHi)) {
+        int lo = std::max(1, (int) std::ceil(b.fLo / bin)), hi = std::min(M, (int) std::floor(b.fHi / bin));
+        if (hi >= lo) gridBins.push_back({lo, hi}); }
+    gridPrevDb.assign(gridBins.size(), 0.0); gridHavePrev = false; cstate = ConvergenceState{};
+}
+void TransferFunction::updateConvergence() {
+    double wsum = 0, dsum = 0, csum = 0;
+    for (size_t g = 0; g < gridBins.size(); ++g) {
+        double sxx = 0, syy = 0; cpx sxy{};
+        for (int k = gridBins[g].first; k <= gridBins[g].second; ++k) { sxx += Sxx[(size_t) k]; syy += Syy[(size_t) k]; sxy += Sxy[(size_t) k]; }
+        double coh = (sxx * syy > 1e-40) ? std::min(1.0, std::norm(sxy) / (sxx * syy)) : 0.0;
+        double db = 20.0 * std::log10(std::abs(sxx > 1e-30 ? sxy / sxx : cpx{}) + 1e-12);
+        if (gridHavePrev) { dsum += coh * std::fabs(db - gridPrevDb[g]); wsum += coh; }
+        csum += coh; gridPrevDb[g] = db;
+    }
+    ConvergenceState& c = cstate; c.frames = frameCount;
+    c.meanCoherence = gridBins.empty() ? 0 : csum / (double) gridBins.size();
+    if (gridHavePrev) c.deltaDb = wsum > 1e-9 ? dsum / wsum : 1e9;
+    gridHavePrev = true;
+    c.stableFrames = (c.deltaDb < conv.toleranceDb) ? c.stableFrames + 1 : 0;
+    c.settled = c.frames >= conv.minFrames && c.stableFrames >= conv.holdFrames;
+    c.timedOut = !c.settled && conv.maxFrames > 0 && c.frames >= conv.maxFrames;
+    double pm = std::min(1.0, (double) c.frames / std::max(1, conv.minFrames));
+    double ph = std::min(1.0, (double) c.stableFrames / std::max(1, conv.holdFrames));
+    c.progress = c.settled ? 1.0 : std::min(pm, ph);
+}
+void TransferFunction::reset() { resetConvergence(); std::fill(Sxx.begin(), Sxx.end(), 0.0); std::fill(Syy.begin(), Syy.end(), 0.0);
     std::fill(Sxy.begin(), Sxy.end(), cpx{}); frameCount = 0; fill = 0; }
 void TransferFunction::setReferenceDelaySamples(int d) { refDelay = std::clamp(d, 0, (int) refHistory.size() - 1); reset(); }
 void TransferFunction::process(const float* ref, const float* meas, int n) {
@@ -30,6 +58,7 @@ void TransferFunction::frame() {
         Syy[k] += a * (std::norm(Y[k]) - Syy[k]);
         Sxy[k] += a * (std::conj(X[k]) * Y[k] - Sxy[k]);
     }
+    updateConvergence();
 }
 TFResult TransferFunction::result(int frac) const {
     TFResult r; r.sampleRate = fs; r.fftSize = N; r.averages = frameCount;
