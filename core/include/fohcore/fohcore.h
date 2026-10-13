@@ -7,8 +7,31 @@
 #include <string>
 #include <vector>
 
+// Mark functions callable from the audio thread. With clang >= 20 and
+// -fsanitize=realtime, RealtimeSanitizer verifies them; elsewhere it is a no-op.
+#if defined(__has_cpp_attribute)
+#  if __has_cpp_attribute(clang::nonblocking)
+#    define FOH_RT [[clang::nonblocking]]
+#  endif
+#endif
+#ifndef FOH_RT
+#  define FOH_RT
+#endif
+
 namespace foh {
 using cpx = std::complex<double>;
+
+// RAII: flush denormals to zero (FTZ/DAZ) for the current thread; restores on exit.
+// Put one at the top of the audio callback and of analysis loops.
+class ScopedFlushDenormals {
+public:
+    ScopedFlushDenormals() noexcept;
+    ~ScopedFlushDenormals() noexcept;
+    ScopedFlushDenormals(const ScopedFlushDenormals&) = delete;
+    ScopedFlushDenormals& operator=(const ScopedFlushDenormals&) = delete;
+private:
+    uint64_t saved = 0;
+};
 
 // ---------- FFT (radix-2, precomputed twiddles) ----------
 class FFT {
@@ -28,39 +51,51 @@ std::vector<double> hannWindow(int n);
 bool isPowerOfTwo(int n);
 
 // ---------- Generators (real-time safe) ----------
+// Threading: next()/process() on the audio thread only; setGainDb() from any thread (atomic).
 class PinkNoise {   // Paul Kellet refined filter on white noise, ~-3 dB/oct
 public:
     explicit PinkNoise(uint32_t seed = 12345) : state(seed ? seed : 1) {}
-    float next();
-    void setGainDb(float db);
+    FOH_RT float next() noexcept;
+    FOH_RT void process(float* out, int n) noexcept { for (int i = 0; i < n; ++i) out[i] = next(); }
+    void setGainDb(float db) noexcept;
 private:
-    float white();
+    float white() noexcept;
     uint32_t state;
     float b0=0,b1=0,b2=0,b3=0,b4=0,b5=0,b6=0;
-    float gain = 0.1f;
+    std::atomic<float> gain{0.1f};
 };
 
+// Threading: prepare() only while the sweep is not running (it is not RT-safe w.r.t. next()).
+// next()/process() on the audio thread; reset()/setGainDb() from any thread (atomic request).
 class LogSweep {    // exponential sine sweep (Farina), loops with silence gap
 public:
     void prepare(double sampleRate, double f1, double f2, double seconds, double gapSeconds = 0.5);
-    float next();
-    void reset() { pos = 0; }
-    void setGainDb(float db);
+    FOH_RT float next() noexcept;
+    FOH_RT void process(float* out, int n) noexcept { for (int i = 0; i < n; ++i) out[i] = next(); }
+    void reset() noexcept { resetReq.store(true, std::memory_order_release); }
+    void setGainDb(float db) noexcept;
     long lengthSamples() const { return sweepLen; }
 private:
-    double fs=48000, f1=20, f2=20000, T=5; long sweepLen=0, gapLen=0, pos=0; float gain=0.25f;
+    double fs=48000, f1=20, f2=20000, T=5, K=1, phK=0, fadeN=480; long sweepLen=0, gapLen=0, pos=0;
+    std::atomic<float> gain{0.25f}; std::atomic<bool> resetReq{false};
 };
 
 // ---------- Lock-free SPSC ring buffer (audio thread -> analysis thread) ----------
+// Capacity is rounded up to a power of two. push() is wait-free, allocation-free and
+// all-or-nothing: a block that does not fit is dropped whole and counted in dropped().
 class RingBuffer {
 public:
     explicit RingBuffer(int capacityPow2 = 1 << 18);
-    void push(const float* data, int n);     // audio thread; drops on overflow
-    int available() const;
-    int pop(float* dest, int n);             // analysis thread
+    FOH_RT bool push(const float* data, int n) noexcept;   // audio thread; false = dropped
+    int available() const noexcept;
+    int capacity() const noexcept { return (int) buf.size(); }
+    int pop(float* dest, int n) noexcept;             // analysis thread
+    uint64_t dropped() const noexcept { return drops.load(std::memory_order_relaxed); }
 private:
-    std::vector<float> buf; int mask;
-    std::atomic<uint64_t> w{0}, r{0};
+    std::vector<float> buf; uint64_t mask;
+    alignas(64) std::atomic<uint64_t> w{0};
+    alignas(64) std::atomic<uint64_t> r{0};
+    std::atomic<uint64_t> drops{0};
 };
 
 // ---------- Fractional-octave smoothing (log-frequency, power domain) ----------
@@ -103,6 +138,7 @@ private:
     std::vector<double> win; std::vector<float> xbuf, ybuf; int fill = 0;
     std::vector<float> refHistory; int histPos = 0;
     std::vector<double> Sxx, Syy; std::vector<cpx> Sxy; int frameCount = 0;
+    std::vector<cpx> X, Y; // preallocated FFT scratch
 };
 
 // ---------- Delay finder ----------
@@ -135,6 +171,7 @@ private:
     FFT fft; int N; double fs; int fraction;
     std::vector<double> win, power, calDb; std::vector<float> buf; int fill = 0; bool any = false;
     std::vector<Band> bandList; double winPowerSum = 0;
+    std::vector<cpx> X; // preallocated FFT scratch
 };
 
 // ---------- Mic calibration ----------
