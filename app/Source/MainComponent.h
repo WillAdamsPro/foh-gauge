@@ -55,6 +55,17 @@ public:
     int plotX() const { return 46; } int plotY() const { return 8; } int plotW() const { return getWidth() - 46 - 14; } int plotH() const { return getHeight() - 8 - 24 - (showLegend ? 22 : 0); }
 };
 
+// Status bar pills (layout-spec: auto width, h ~30, padding 6/12, radius 18, 1 px pillBorder, 13 px, 8x8 status mark).
+// Status is never colour-only: good = circle, caution = triangle, poor = square, always with a text label.
+class StatusPills : public juce::Component {
+public:
+    enum State { None = -1, Good = 0, Caution = 1, Poor = 2 };
+    struct Pill { juce::String text; int state = None; };
+    void setPills(std::vector<Pill> p) { if (p.size() != pills.size() || !std::equal(p.begin(), p.end(), pills.begin(), [](auto& a, auto& b) { return a.text == b.text && a.state == b.state; })) { pills = std::move(p); repaint(); } }
+    void paint(juce::Graphics&) override;
+    std::vector<Pill> pills;
+};
+
 class MainComponent : public juce::Component, private juce::Timer, private juce::ChangeListener {
 public:
     MainComponent(); ~MainComponent() override;
@@ -74,7 +85,7 @@ private:
     foh::TraceStore traces; foh::MicCal cal; bool calOn = false; foh::DelayResult lastDelay; foh::TFResult lastTF;
     bool paused = false; foh::Band2 xover; std::vector<std::pair<juce::String, juce::String>> summaryRows; // step 09 Done card rows (label, value)
     // frame
-    juce::OwnedArray<juce::TextButton> nav; int page = 0; juce::Label status; juce::TextButton pauseBtn {"Pause"};
+    juce::OwnedArray<juce::TextButton> nav; int page = 0; StatusPills status; juce::TextButton pauseBtn {"Pause"};
     juce::Label help, pageTitle;
     // setup
     juce::ComboBox micBox, refBox, outABox, outBBox, genBox; juce::Slider genGain; juce::TextButton calBtn {"Load mic cal..."}, calToggle {"Cal ON"};
