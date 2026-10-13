@@ -141,11 +141,11 @@ MainComponent::MainComponent() {
     calLabel.setText("No mic cal loaded", dontSendNotification);
 
     magPlot.yLabel = "MAGNITUDE DB"; magPlot.yMin = -12; magPlot.yMax = 12; magPlot.yStep = 6;
-    phasePlot.yLabel = "PHASE \xc2\xb0"; phasePlot.yMin = -180; phasePlot.yMax = 180; phasePlot.yStep = 90; phasePlot.wrapPhase = true;
+    phasePlot.yLabel = u8("PHASE \xc2\xb0"); phasePlot.yMin = -180; phasePlot.yMax = 180; phasePlot.yStep = 90; phasePlot.wrapPhase = true;
     cohPlot.yLabel = "COHERENCE"; cohPlot.yMin = 0; cohPlot.yMax = 1; cohPlot.yStep = 0.5;
     for (auto* p : {&magPlot, &phasePlot, &cohPlot, &rtaPlot, &gPlotA, &gPlotB}) addChildComponent(*p);
     smoothBox.addItem("Smoothing off", 1); smoothBox.addItem("Smoothing 1/3", 4); smoothBox.addItem("Smoothing 1/6", 7); smoothBox.addItem("Smoothing 1/12", 13); smoothBox.addItem("Smoothing 1/24", 25); smoothBox.addItem("Smoothing 1/48", 49); smoothBox.setSelectedId(13);
-    avgBox.addItem("Avg 4", 4); avgBox.addItem("Avg 8", 8); avgBox.addItem("Avg 16", 16); avgBox.addItem("Avg 32", 32); avgBox.addItem("Avg \xe2\x88\x9e", 1000); avgBox.setSelectedId(16);
+    avgBox.addItem("Avg 4", 4); avgBox.addItem("Avg 8", 8); avgBox.addItem("Avg 16", 16); avgBox.addItem("Avg 32", 32); avgBox.addItem(u8("Avg \xe2\x88\x9e"), 1000); avgBox.setSelectedId(16);
     avgBox.onChange = [this] { int a = avgBox.getSelectedId(); tf->setAverages(a == 1000 ? 0 : a); };
     tf->setAverages(16);
     for (auto* c : std::initializer_list<Component*>{&smoothBox, &avgBox, &storeBtn, &findBtn, &clearAvgBtn, &delayCaption, &delayValue, &delayDetail, &insertBtn, &traceList, &delTraceBtn}) addChildComponent(c);
@@ -219,12 +219,12 @@ void MainComponent::paint(Graphics& g) {
         for (int i = 0; i < n; ++i) { float x = gProgress.getX() + i * (w + gap);
             Colour bar = i < step ? C::ok : i == step ? C::accent : C::ghostBorder, lab = i < step ? C::ok : i == step ? C::textStrong : C::textAxis;
             g.setColour(bar); g.fillRoundedRectangle(x, (float) gProgress.getY(), w, 6.f, th::radius::progress);
-            g.setColour(lab); g.setFont(FohLookAndFeel::font(T::small)); g.drawText(String(i < step ? "\xe2\x9c\x93 " : "") + String(i + 1) + ". " + steps[(size_t) i].progress, (int) x, gProgress.getY() + 14, (int) w, 16, Justification::left); }
+            g.setColour(lab); g.setFont(FohLookAndFeel::font(T::small)); g.drawText(String(i < step ? u8("\xe2\x9c\x93 ") : "") + String(i + 1) + ". " + u8(steps[(size_t) i].progress), (int) x, gProgress.getY() + 14, (int) w, 16, Justification::left); }
         if (!gChartCard.isEmpty()) card(g, gChartCard);
         if (!gActionCard.isEmpty()) card(g, gActionCard, C::cardBorderEmphasis);
         if (!gDoneA.isEmpty()) { card(g, gDoneA); card(g, gDoneB);
             auto c = Rectangle<float>((float) gDoneA.getX() + 22, (float) gDoneA.getY() + 22, 56, 56); g.setColour(C::successBadgeBg); g.fillEllipse(c);
-            g.setColour(C::ok); g.setFont(FohLookAndFeel::font(T::icon, true)); g.drawText("\xe2\x9c\x93", c, Justification::centred); }
+            g.setColour(C::ok); g.setFont(FohLookAndFeel::font(T::icon, true)); g.drawText(u8("\xe2\x9c\x93"), c, Justification::centred); }
     }
 }
 
@@ -303,10 +303,10 @@ void MainComponent::timerCallback() {
     float mp = engine.micPeak.exchange(0), rp = engine.refPeak.exchange(0);
     auto dbs = [](float p) { return p > 1e-6f ? String(20 * std::log10(p), 1) + " dBFS" : String("-inf"); };
     auto* dev = dm.getCurrentAudioDevice();
-    status.setText(String(paused ? "\xe2\x96\xa0 Paused" : "\xe2\x97\x8f Measuring") + "     " + (dev ? dev->getName() + " \xc2\xb7 " + String((int) fs / 1000) + " kHz" : String("No device"))
-                   + "     Mic " + dbs(mp) + "     Ref " + dbs(rp) + "     Cal " + String(calOn ? "\xe2\x9c\x93" : "off")
-                   + "     Ref delay " + String(tf->referenceDelaySamples() / fs * 1000, 2) + " ms" + (mp > 0.99f || rp > 0.99f ? "     \xe2\x96\xb2 CLIPPING" : ""), dontSendNotification);
-    if (page == 0) levelLabel.setText(String(mp > 0.01f ? "\xe2\x9c\x93 Mic signal     " : "\xe2\x96\xa0 No mic signal     ") + String(rp > 0.01f ? "\xe2\x9c\x93 Reference signal" : "\xe2\x96\xa0 No reference signal (check Out 2 -> In 2 loopback)"), dontSendNotification);
+    status.setText(String(paused ? u8("\xe2\x96\xa0 Paused") : u8("\xe2\x97\x8f Measuring")) + "     " + (dev ? dev->getName() + u8(" \xc2\xb7 ") + String((int) fs / 1000) + " kHz" : String("No device"))
+                   + "     Mic " + dbs(mp) + "     Ref " + dbs(rp) + "     Cal " + String(calOn ? u8("\xe2\x9c\x93") : "off")
+                   + "     Ref delay " + String(tf->referenceDelaySamples() / fs * 1000, 2) + " ms" + (mp > 0.99f || rp > 0.99f ? u8("     \xe2\x96\xb2 CLIPPING") : ""), dontSendNotification);
+    if (page == 0) levelLabel.setText(String(mp > 0.01f ? u8("\xe2\x9c\x93 Mic signal     ") : u8("\xe2\x96\xa0 No mic signal     ")) + String(rp > 0.01f ? u8("\xe2\x9c\x93 Reference signal") : u8("\xe2\x96\xa0 No reference signal (check Out 2 -> In 2 loopback)")), dontSendNotification);
     if (page == 1 || page == 3) updateTF();
     if (page == 2) updateRTA();
     if (page == 3) updateGuidePlots();
@@ -326,7 +326,7 @@ void MainComponent::updateTF() {
     logDecimate(lastTF, lastTF.magDb, s.f, s.v); magPlot.series.push_back(s);
     logDecimate(lastTF, lastTF.phaseDeg, s.f, s.v); phasePlot.series.push_back(s);
     s.c = C::traceCoherence; s.width = th::stroke::traceSecondary; logDecimate(lastTF, lastTF.coherence, s.f, s.v); cohPlot.series.push_back(s);
-    magPlot.note = "averages " + String(lastTF.averages) + (calOn ? " \xc2\xb7 cal applied" : "");
+    magPlot.note = "averages " + String(lastTF.averages) + (calOn ? u8(" \xc2\xb7 cal applied") : "");
     for (auto* p : {&magPlot, &phasePlot, &cohPlot}) p->repaint();
 }
 
@@ -374,9 +374,9 @@ void MainComponent::findDelay() {
     if (lastDelay.arrivals.empty()) { delayValue.setText("--", dontSendNotification); delayDetail.setText("no signal: is pink noise playing?", dontSendNotification); return; }
     auto& a0 = lastDelay.arrivals[0];
     delayValue.setText(String(a0.delayMs, 2) + " ms", dontSendNotification);
-    String t = "\xe2\x89\x88 " + String(a0.distanceM, 2) + " m \xc2\xb7 confidence " + String(lastDelay.confidence > 0.7 ? "high" : lastDelay.confidence > 0.35 ? "medium" : "LOW");
-    for (size_t i = 1; i < lastDelay.arrivals.size(); ++i) t << "  \xc2\xb7  #" << (int) i + 1 << " " << String(lastDelay.arrivals[i].delayMs, 2) << " ms (" << String(lastDelay.arrivals[i].relLevelDb, 1) << " dB)";
-    if (lastDelay.arrivals.size() > 1 && lastDelay.arrivals[1].relLevelDb > -3) t << "\n\xe2\x96\xb2 Two similar spikes: is only one speaker on?";
+    String t = u8("\xe2\x89\x88 ") + String(a0.distanceM, 2) + u8(" m \xc2\xb7 confidence ") + String(lastDelay.confidence > 0.7 ? "high" : lastDelay.confidence > 0.35 ? "medium" : "LOW");
+    for (size_t i = 1; i < lastDelay.arrivals.size(); ++i) t << u8("  \xc2\xb7  #") << (int) i + 1 << " " << String(lastDelay.arrivals[i].delayMs, 2) << " ms (" << String(lastDelay.arrivals[i].relLevelDb, 1) << " dB)";
+    if (lastDelay.arrivals.size() > 1 && lastDelay.arrivals[1].relLevelDb > -3) t << u8("\n\xe2\x96\xb2 Two similar spikes: is only one speaker on?");
     delayDetail.setText(t, dontSendNotification);
 }
 
@@ -404,8 +404,8 @@ void MainComponent::loadCal() {
         auto f = fc.getResult(); if (!f.existsAsFile()) return;
         cal = foh::loadMicCal(f.getFullPathName().toStdString());
         if (cal.ok()) { calOn = true; calToggle.setToggleState(true, dontSendNotification);
-            calLabel.setText("\xe2\x9c\x93 " + f.getFileName() + ": " + String((int) cal.hz.size()) + " points, " + String(cal.hz.front(), 0) + "-" + String(cal.hz.back(), 0) + " Hz" + (cal.hasPhase ? ", with phase" : ""), dontSendNotification); }
-        else { calOn = false; calLabel.setText("\xe2\x96\xb2 Could not read cal: " + String(cal.error), dontSendNotification); }
+            calLabel.setText(u8("\xe2\x9c\x93 ") + f.getFileName() + ": " + String((int) cal.hz.size()) + " points, " + String(cal.hz.front(), 0) + "-" + String(cal.hz.back(), 0) + " Hz" + (cal.hasPhase ? ", with phase" : ""), dontSendNotification); }
+        else { calOn = false; calLabel.setText(u8("\xe2\x96\xb2 Could not read cal: ") + String(cal.error), dontSendNotification); }
     });
 }
 
@@ -416,9 +416,9 @@ void MainComponent::layoutGuide() {
     for (auto* x : std::initializer_list<Component*>{&guideBox, &guideStepLabel, &guideBody, &guideResult, &guidePrev, &guideAct}) x->setVisible(true);
     for (auto* x : std::initializer_list<Component*>{&gPlotA, &gPlotB, &guideReadout, &doneSummary, &doneActions, &doneAgain, &doneHome}) x->setVisible(false);
     auto c = mainArea();
-    guideStepLabel.setText(("GUIDED \xc2\xb7 " + String(kGuideNames[guide]) + " \xc2\xb7 STEP " + String(step + 1) + " OF " + String((int) steps.size())).toUpperCase(), dontSendNotification);
+    guideStepLabel.setText((u8("GUIDED \xc2\xb7 ") + String(kGuideNames[guide]) + u8(" \xc2\xb7 STEP ") + String(step + 1) + " OF " + String((int) steps.size())).toUpperCase(), dontSendNotification);
     guideStepLabel.setBounds(c.removeFromTop(16)); c.removeFromTop(6);
-    pageTitle.setVisible(true); pageTitle.setText(st.title, dontSendNotification); pageTitle.setBounds(c.removeFromTop(29)); c.removeFromTop(14);
+    pageTitle.setVisible(true); pageTitle.setText(u8(st.title), dontSendNotification); pageTitle.setBounds(c.removeFromTop(29)); c.removeFromTop(14);
     gProgress = c.removeFromTop(36); c.removeFromTop(16);
     if (st.chart == 5) { // Done
         gDoneA = c.removeFromLeft(c.getWidth() * 466 / 876).withHeight(437); c.removeFromLeft(14); gDoneB = c.withHeight(437);
@@ -440,10 +440,10 @@ void MainComponent::layoutGuide() {
     }
     gActionCard = c.removeFromTop(96);
     auto a = gActionCard.reduced(16);
-    guideAct.setButtonText(st.action); int bw = std::max(175, guideAct.getBestWidthForHeight(48) + 52);
+    guideAct.setButtonText(u8(st.action)); int bw = std::max(175, guideAct.getBestWidthForHeight(48) + 52);
     guideAct.setBounds(a.removeFromRight(bw).withSizeKeepingCentre(bw, 48)); a.removeFromRight(18);
     guidePrev.setVisible(step > 0); if (step > 0) { guidePrev.setBounds(a.removeFromRight(87).withSizeKeepingCentre(87, 43)); a.removeFromRight(18); }
-    guideBody.setText(st.body, dontSendNotification); guideBody.setBounds(a);
+    guideBody.setText(u8(st.body), dontSendNotification); guideBody.setBounds(a);
     c.removeFromTop(10); guideResult.setBounds(c);
     repaint();
 }
@@ -470,9 +470,9 @@ void MainComponent::guideAction(int a) {
             auto po = foh::phaseOffset(m->tf, s->tf, xover.lo, xover.hi);
             double period = 1000.0 / po.centerHz, inv = foh::wrapDeg(po.meanDeg + 180.0), invMs = -inv / 360.0 / po.centerHz * 1000.0;
             String who = po.impliedMs > 0 ? "Mains" : "Sub";
-            guideReadout.setText("Suggested: " + who + " +" + String(std::abs(po.impliedMs), 1) + " ms   \xc2\xb7  or flip sub polarity + " + (invMs > 0 ? "mains " : "sub ") + String(std::abs(invMs), 1) + " ms", dontSendNotification);
-            out << "Crossover " << String(xover.lo, 0) << "-" << String(xover.hi, 0) << " Hz (centre ~" << String(po.centerHz, 0) << " Hz). Sub vs main phase " << String(po.meanDeg, 0) << "\xc2\xb0 = " << String(std::abs(po.impliedMs), 2) << " ms ("
-                << (po.impliedMs > 0 ? "sub LATE" : "sub EARLY") << "). Other answers differ by whole cycles (" << String(period, 1) << " ms). Target: within ~60\xc2\xb0 and parallel across the band.";
+            guideReadout.setText("Suggested: " + who + " +" + String(std::abs(po.impliedMs), 1) + u8(" ms   \xc2\xb7  or flip sub polarity + ") + (invMs > 0 ? "mains " : "sub ") + String(std::abs(invMs), 1) + " ms", dontSendNotification);
+            out << "Crossover " << String(xover.lo, 0) << "-" << String(xover.hi, 0) << " Hz (centre ~" << String(po.centerHz, 0) << " Hz). Sub vs main phase " << String(po.meanDeg, 0) << u8("\xc2\xb0 = ") << String(std::abs(po.impliedMs), 2) << " ms ("
+                << (po.impliedMs > 0 ? "sub LATE" : "sub EARLY") << "). Other answers differ by whole cycles (" << String(period, 1) << u8(" ms). Target: within ~60\xc2\xb0 and parallel across the band.");
             w2Summary = "Crossover: " + String(xover.lo, 0) + "-" + String(xover.hi, 0) + " Hz\nSuggested: " + who + " +" + String(std::abs(po.impliedMs), 1) + " ms\nAlternative: flip sub polarity, " + (invMs > 0 ? "mains " : "sub ") + String(std::abs(invMs), 1) + " ms\nReference delay: " + String(lockedDelayMs, 2) + " ms";
             next(); break; }
         case 9: { if (storeTrace("Both")) { auto* m = findTrace("Main"); auto* s = findTrace("Sub"); auto* b = findTrace("Both");
