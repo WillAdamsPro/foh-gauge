@@ -55,6 +55,15 @@ public:
     int plotX() const { return 46; } int plotY() const { return 8; } int plotW() const { return getWidth() - 46 - 14; } int plotH() const { return getHeight() - 8 - 24 - (showLegend ? 22 : 0); }
 };
 
+// Simple impulse / delay view: delay-finder correlation (DelayResult::impulse, lag in samples) around the first
+// arrival, with a marker + label per arrival. Display only; the peak picking is fohcore's.
+class ImpulseComponent : public juce::Component {
+public:
+    void setResult(const foh::DelayResult& r, double fs) { res = r; sampleRate = fs; repaint(); }
+    void paint(juce::Graphics&) override;
+    foh::DelayResult res; double sampleRate = 48000; double preMs = 5, postMs = 45;
+};
+
 // Status bar pills (layout-spec: auto width, h ~30, padding 6/12, radius 18, 1 px pillBorder, 13 px, 8x8 status mark).
 // Status is never colour-only: good = circle, caution = triangle, poor = square, always with a text label.
 class StatusPills : public juce::Component {
@@ -100,6 +109,7 @@ private:
     PlotComponent rtaPlot; juce::ComboBox rtaFracBox;
     // Guides
     juce::ComboBox guideBox; juce::Label guideStepLabel, guideBody, guideResult, guideReadout, guidePolarity; juce::TextButton guidePrev {"Back"}, guideAct {"Do it"};
+    ImpulseComponent tfImpulse, gImpulse;
     PlotComponent gPlotA, gPlotB; juce::Label doneSummary, doneActions; juce::TextButton doneAgain {"Measure again"}, doneHome {"Back to Home"};
     juce::Rectangle<int> gProgress, gChartCard, gActionCard, gDoneA, gDoneB;
     int guide = 1, step = 0; double lockedDelayMs = 0;

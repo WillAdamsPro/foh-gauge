@@ -107,12 +107,12 @@ static void logDecimate(const foh::TFResult& r, const std::vector<double>& v, st
 } // ~300 log-spaced points (spec)
 
 // ===================== Guide content =====================
-// chart: 0 none, 1 live mag (W2 mains), 2 stored mains + live sub, 3 phase to 400 Hz, 4 phase+sum, 5 done, 6 live TF mag full range
+// chart: 0 none, 1 live mag (W2 mains), 2 stored mains + live sub, 3 phase to 400 Hz, 4 phase+sum, 5 done, 6 live TF mag full range, 7 = 6 + impulse/delay view
 struct Step { const char* progress; const char* title; const char* body; const char* action; int act; int chart; };
 static const std::vector<std::vector<Step>> kGuides = {
  { {"Connect", "Connect your gear", "UMC404HD: Out 1 to the console. Out 2 to In 2 with a 1/4\" TRS cable (reference loopback; TRS keeps it off phantom). ECM8000 to In 1 (XLR, +48 V on). Pick the device and channels on Setup at 48 kHz.", "Open Setup", 1, 0},
    {"Signal", "Signal check", "Start pink noise and bring the console up to a comfortable level. Both inputs should sit near -20 dBFS (top bar), never clipping. Mic 1-3 m on-axis from ONE main, ear height, away from walls.", "Start pink noise", 2, 6},
-   {"Delay", "Find the reference delay", "The tallest spike is the direct sound; smaller later spikes are reflections. If two spikes are similar, check only one speaker is on.", "Find + lock delay", 3, 6},
+   {"Delay", "Find the reference delay", "The tallest spike is the direct sound; smaller later spikes are reflections. If two spikes are similar, check only one speaker is on.", "Find + lock delay", 3, 7},
    {"Check", "Check the trace", "Phase should be fairly flat and coherence high (above ~0.8) above 200 Hz. Low coherence = don't trust that region.", "Open transfer function", 4, 6},
    {"Save", "Save Position 1", "Store this trace so you can compare later. If you move the mic, find the delay again.", "Store 'Position 1'", 5, 6} },
  { {"Measure mains", "Measure the mains alone", "Mute the subs. Mic where sub and mains are about equally loud (often FOH). Pink noise on. This finds and locks the delay to the mains, then stores 'Main'.", "Capture mains \xe2\x97\x8f", 12, 1},
@@ -121,11 +121,39 @@ static const std::vector<std::vector<Step>> kGuides = {
    {"Apply & verify", "Apply and verify", "Enter the change in your DSP and unmute both. The sum (white) should RISE in the crossover band, up to ~+6 dB where the two are equal, not dip. Walk a few seats.", "Capture both \xe2\x97\x8f", 9, 4},
    {"Done", "Sub and mains aligned", "", "Measure again", 13, 5} },
  { {"Mains", "Measure the mains", "Mains already tuned. Mic in the seam: where main and fill are about equally loud, inside the fill's area. Fill muted. This finds and locks the delay to the mains.", "Find + lock delay", 3, 6},
-   {"Fill", "Measure the fill", "Mute the mains, unmute the fill. The app finds the fill's arrival and compares it with the locked mains time.", "Find fill arrival", 10, 6},
+   {"Fill", "Measure the fill", "Mute the mains, unmute the fill. The app finds the fill's arrival and compares it with the locked mains time.", "Find fill arrival", 10, 7},
    {"Set delay", "Set the fill delay", "Delay the fill by the amount shown. Many engineers add a few ms more so the mains arrive first and the image stays on stage (rule of thumb; trust your ears). Fill only as loud as needed.", "Open transfer function", 4, 6},
    {"Verify", "Verify both on", "Unmute both. Mute/unmute the fill and watch which spike moves. Phase should overlap in the mid/HF where they overlap. Walk from mains-only to fill-only zones and listen.", "Store 'Main+Fill'", 11, 6} },
 };
 static const char* kGuideNames[] = {"Setup + reference delay", "Align sub to mains", "Align fills to mains"};
+
+// ===================== Impulse =====================
+void ImpulseComponent::paint(Graphics& g) {
+    auto r = getLocalBounds().toFloat().reduced(8, 6); auto axis = r.removeFromBottom(14);
+    g.setFont(FohLookAndFeel::font(T::axisTick));
+    if (res.arrivals.empty() || res.impulse.empty()) { g.setColour(C::textAxis()); g.drawText("Impulse: press Find to measure the delay", r, Justification::centred); return; }
+    double t0 = std::max(0.0, res.arrivals[0].delayMs - preMs), t1 = res.arrivals[0].delayMs + postMs;
+    for (auto& a : res.arrivals) t1 = std::max(t1, a.delayMs + 2);
+    auto xOf = [&](double ms) { return r.getX() + (float) ((ms - t0) / (t1 - t0)) * r.getWidth(); };
+    double peak = 1e-30; for (double v : res.impulse) peak = std::max(peak, std::abs(v));
+    g.setColour(C::grid()); g.drawHorizontalLine((int) r.getCentreY(), r.getX(), r.getRight());
+    double step = (t1 - t0) > 30 ? 10 : 5;
+    for (double t = std::ceil(t0 / step) * step; t <= t1; t += step) { float x = xOf(t); g.setColour(C::grid()); g.drawVerticalLine((int) x, r.getY(), r.getBottom());
+        g.setColour(C::textAxis()); g.drawText(String((int) t) + " ms", (int) x - 24, (int) axis.getY(), 48, 14, Justification::centred); }
+    // min/max per pixel column (display decimation only)
+    Path p; int W = (int) r.getWidth(); size_t N = res.impulse.size();
+    for (int px = 0; px < W; ++px) {
+        double a = (t0 + (t1 - t0) * px / W) * 1e-3 * sampleRate, b = (t0 + (t1 - t0) * (px + 1) / W) * 1e-3 * sampleRate;
+        size_t i0 = (size_t) std::max(0.0, std::floor(a)), i1 = std::min(N, (size_t) std::max(0.0, std::ceil(b)) + 1); if (i0 >= N) break;
+        double lo = 0, hi = 0; for (size_t i = i0; i < i1; ++i) { lo = std::min(lo, res.impulse[i]); hi = std::max(hi, res.impulse[i]); }
+        float x = r.getX() + px, yh = r.getCentreY() - (float) (hi / peak) * r.getHeight() * 0.48f, yl = r.getCentreY() - (float) (lo / peak) * r.getHeight() * 0.48f;
+        if (px == 0) p.startNewSubPath(x, yh); else p.lineTo(x, yh); p.lineTo(x, yl); }
+    g.setColour(C::traceLive()); g.strokePath(p, PathStrokeType(1.0f));
+    for (size_t k = 0; k < res.arrivals.size(); ++k) { auto& a = res.arrivals[k]; float x = xOf(a.delayMs);
+        g.setColour(k == 0 ? C::accent() : C::warning()); g.fillRect(x - 0.5f, r.getY(), 1.0f, r.getHeight());
+        String lab = "#" + String((int) k + 1) + " " + String(a.delayMs, 2) + " ms" + (k ? " (" + String(a.relLevelDb, 1) + " dB)" : String());
+        g.setFont(FohLookAndFeel::font(T::label)); g.drawText(lab, (int) x + 4, (int) r.getY() + (int) k * 14, 200, 14, Justification::left); }
+}
 
 // ===================== Status pills =====================
 void StatusPills::paint(Graphics& g) {
@@ -190,6 +218,7 @@ MainComponent::MainComponent() {
     phasePlot.yLabel = u8("PHASE \xc2\xb0"); phasePlot.yMin = -180; phasePlot.yMax = 180; phasePlot.yStep = 90; phasePlot.wrapPhase = true;
     cohPlot.yLabel = "COHERENCE"; cohPlot.yMin = 0; cohPlot.yMax = 1; cohPlot.yStep = 0.5;
     for (auto* p : {&magPlot, &phasePlot, &cohPlot, &rtaPlot, &gPlotA, &gPlotB}) addChildComponent(*p);
+    addChildComponent(tfImpulse); addChildComponent(gImpulse);
     smoothBox.addItem("Smoothing off", 1); smoothBox.addItem("Smoothing 1/3", 4); smoothBox.addItem("Smoothing 1/6", 7); smoothBox.addItem("Smoothing 1/12", 13); smoothBox.addItem("Smoothing 1/24", 25); smoothBox.addItem("Smoothing 1/48", 49); smoothBox.setSelectedId(13);
     avgBox.addItem("Avg 4", 4); avgBox.addItem("Avg 8", 8); avgBox.addItem("Avg 16", 16); avgBox.addItem("Avg 32", 32); avgBox.addItem(u8("Avg \xe2\x88\x9e"), 1000); avgBox.setSelectedId(16);
     avgBox.onChange = [this] { int a = avgBox.getSelectedId(); tf->setAverages(a == 1000 ? 0 : a); };
@@ -311,7 +340,7 @@ void MainComponent::resized() {
       auto d = delayCard.reduced(16, 12); insertBtn.setBounds(d.removeFromRight(118).withSizeKeepingCentre(118, 37)); d.removeFromRight(12);
       findBtn.setBounds(d.removeFromRight(103).withSizeKeepingCentre(103, 37));
       delayCaption.setBounds(d.removeFromLeft(110)); delayValue.setBounds(d.removeFromLeft(150)); delayDetail.setBounds(d);
-      delTraceBtn.setBounds(traceArea.removeFromRight(120).removeFromTop(30)); traceList.setBounds(traceArea.withTrimmedRight(10)); }
+      delTraceBtn.setBounds(traceArea.removeFromRight(120).removeFromTop(30)); tfImpulse.setBounds(traceArea.removeFromLeft(traceArea.getWidth() / 2)); traceArea.removeFromLeft(10); traceList.setBounds(traceArea.withTrimmedRight(10)); }
     { auto s = c.reduced(8); rtaPlot.setBounds(s); }
     layoutGuide();
 }
@@ -329,12 +358,12 @@ void MainComponent::showPage(int p) {
     page = p;
     for (int i = 0; i < nav.size(); ++i) { nav[i]->setToggleState(i == p, dontSendNotification); }
     std::vector<Component*> all {selector.get(), &micBox, &refBox, &outABox, &outBBox, &genBox, &genGain, &calBtn, &calToggle, &setupHelp, &calLabel, &levelLabel, &themeBox,
-        &magPlot, &phasePlot, &cohPlot, &smoothBox, &avgBox, &storeBtn, &findBtn, &clearAvgBtn, &delayCaption, &delayValue, &delayDetail, &insertBtn, &traceList, &delTraceBtn,
+        &magPlot, &phasePlot, &cohPlot, &smoothBox, &avgBox, &storeBtn, &findBtn, &clearAvgBtn, &delayCaption, &delayValue, &delayDetail, &insertBtn, &traceList, &delTraceBtn, &tfImpulse, &gImpulse,
         &rtaPlot, &rtaFracBox, &guideBox, &guideStepLabel, &guideBody, &guideResult, &guideReadout, &guidePolarity, &guidePrev, &guideAct, &gPlotA, &gPlotB, &doneSummary, &doneActions, &doneAgain, &doneHome};
     for (auto* x : all) x->setVisible(false);
     std::vector<Component*> on;
     if (p == 0) on = {selector.get(), &micBox, &refBox, &outABox, &outBBox, &genBox, &genGain, &calBtn, &calToggle, &setupHelp, &calLabel, &levelLabel, &themeBox};
-    if (p == 1) on = {&magPlot, &phasePlot, &cohPlot, &smoothBox, &avgBox, &storeBtn, &findBtn, &clearAvgBtn, &delayCaption, &delayValue, &delayDetail, &insertBtn, &traceList, &delTraceBtn};
+    if (p == 1) on = {&magPlot, &phasePlot, &cohPlot, &smoothBox, &avgBox, &storeBtn, &findBtn, &clearAvgBtn, &delayCaption, &delayValue, &delayDetail, &insertBtn, &traceList, &delTraceBtn, &tfImpulse};
     if (p == 2) on = {&rtaPlot, &rtaFracBox};
     for (auto* x : on) x->setVisible(true);
     const char* titles[] = {"Home / Setup", "Transfer function", "RTA / Spectrum", ""};
@@ -424,7 +453,7 @@ void MainComponent::updateGuidePlots() {
                 if (main) add(gPlotB, main->tf, main->tf.magDb, C::traceMainsMuted(), th::stroke::dashComponent, 1e9, D::traceSecondary(), "Mains");
                 if (sub) add(gPlotB, sub->tf, sub->tf.magDb, C::traceSubMuted(), th::stroke::dashComponent, 1e9, D::traceSecondary(), "Sub");
                 add(gPlotB, lastTF, lastTF.magDb, C::traceSum(), nullptr, 1e9, D::trace(), "Sum (live)"); break;
-        case 6: magSetup(gPlotA, -24, 12); add(gPlotA, lastTF, lastTF.magDb, C::accent(), nullptr); break;
+        case 6: case 7: magSetup(gPlotA, -24, 12); add(gPlotA, lastTF, lastTF.magDb, C::accent(), nullptr); break;
         default: break;
     }
     gPlotA.repaint(); gPlotB.repaint();
@@ -442,6 +471,7 @@ void MainComponent::findDelay() {
     const int L = 48000; std::vector<float> r((size_t) L), m((size_t) L); int H = (int) micHist.size();
     for (int i = 0; i < L; ++i) { int idx = (histPos - L + i + H) % H; r[(size_t) i] = refHist[(size_t) idx]; m[(size_t) i] = micHist[(size_t) idx]; }
     lastDelay = foh::findDelay(r, m, analysisRate, true);
+    tfImpulse.setResult(lastDelay, analysisRate); gImpulse.setResult(lastDelay, analysisRate);
     if (lastDelay.arrivals.empty()) { delayValue.setText("--", dontSendNotification); delayDetail.setText("no signal: is pink noise playing?", dontSendNotification); return; }
     auto& a0 = lastDelay.arrivals[0];
     delayValue.setText(String(a0.delayMs, 2) + " ms", dontSendNotification);
@@ -485,7 +515,7 @@ void MainComponent::layoutGuide() {
     if (page != 3) { repaint(); return; }
     auto& steps = kGuides[(size_t) guide]; auto& st = steps[(size_t) step];
     for (auto* x : std::initializer_list<Component*>{&guideBox, &guideStepLabel, &guideBody, &guideResult, &guidePrev, &guideAct}) x->setVisible(true);
-    for (auto* x : std::initializer_list<Component*>{&gPlotA, &gPlotB, &guideReadout, &guidePolarity, &doneSummary, &doneActions, &doneAgain, &doneHome}) x->setVisible(false);
+    for (auto* x : std::initializer_list<Component*>{&gPlotA, &gPlotB, &gImpulse, &guideReadout, &guidePolarity, &doneSummary, &doneActions, &doneAgain, &doneHome}) x->setVisible(false);
     auto c = mainArea();
     guideStepLabel.setText((u8("GUIDED \xc2\xb7 ") + String(kGuideNames[guide]) + u8(" \xc2\xb7 STEP ") + String(step + 1) + " OF " + String((int) steps.size())).toUpperCase(), dontSendNotification);
     guideStepLabel.setBounds(c.removeFromTop(16)); c.removeFromTop(6);
@@ -509,6 +539,7 @@ void MainComponent::layoutGuide() {
             guideReadout.setVisible(true); guidePolarity.setVisible(true);
             if (guideReadout.getText().isEmpty()) guideReadout.setText("Suggested: --", dontSendNotification);
             if (guidePolarity.getText().isEmpty()) guidePolarity.setText(u8("Polarity: judge it from the phase traces in the shaded band, not from the impulse. A flip moves the sub phase by 180\xc2\xb0."), dontSendNotification); }
+        else if (st.chart == 7) { gPlotA.setBounds(in.removeFromTop(354 - 130)); in.removeFromTop(6); gImpulse.setBounds(in); gImpulse.setVisible(true); }
         else gPlotA.setBounds(in.removeFromTop(354));
         gPlotA.setVisible(true);
     }
