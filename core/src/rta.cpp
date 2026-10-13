@@ -12,7 +12,7 @@ std::vector<Band> octaveBands(int fraction, double fmin, double fmax) {
     return b;
 }
 RTA::RTA(int n, double sr, int frac) : fft(n), N(n), fs(sr), fraction(frac), win(hannWindow(n)),
-    power((size_t) n / 2 + 1, 0.0), buf((size_t) n) { bandList = octaveBands(frac); for (double w : win) winPowerSum += w; }
+    power((size_t) n / 2 + 1, 0.0), buf((size_t) n), X((size_t) n) { bandList = octaveBands(frac); for (double w : win) winPowerSum += w; }
 void RTA::setFraction(int f) { fraction = f; bandList = octaveBands(f); }
 void RTA::reset() { std::fill(power.begin(), power.end(), 0.0); fill = 0; any = false; }
 void RTA::process(const float* x, int n) {
@@ -20,7 +20,7 @@ void RTA::process(const float* x, int n) {
         if (++fill == N) { frame(); std::copy(buf.begin() + N / 2, buf.end(), buf.begin()); fill = N / 2; } }
 }
 void RTA::frame() {
-    std::vector<cpx> X((size_t) N); for (int i = 0; i < N; ++i) X[(size_t) i] = buf[(size_t) i] * win[(size_t) i];
+    for (int i = 0; i < N; ++i) X[(size_t) i] = buf[(size_t) i] * win[(size_t) i];
     fft.forward(X);
     double norm = 2.0 / (winPowerSum * winPowerSum); // full-scale sine peak bin -> ~ amplitude^2
     for (size_t k = 0; k < power.size(); ++k) { double p = std::norm(X[k]) * norm; 
