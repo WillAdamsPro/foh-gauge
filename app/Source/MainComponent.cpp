@@ -191,12 +191,13 @@ MainComponent::MainComponent() {
 
     for (int i = 0; i < 3; ++i) guideBox.addItem(String("W") + String(i + 1) + ": " + kGuideNames[i], i + 1);
     guideBox.setSelectedId(2, dontSendNotification); guideBox.onChange = [this] { guide = guideBox.getSelectedId() - 1; step = 0; guideResult.setText({}, dontSendNotification); layoutGuide(); };
-    for (auto* c : std::initializer_list<Component*>{&guideBox, &guideStepLabel, &guideBody, &guideResult, &guideReadout, &guidePrev, &guideAct, &doneSummary, &doneActions, &doneAgain, &doneHome}) addChildComponent(c);
+    for (auto* c : std::initializer_list<Component*>{&guideBox, &guideStepLabel, &guideBody, &guideResult, &guideReadout, &guidePolarity, &guidePrev, &guideAct, &doneSummary, &doneActions, &doneAgain, &doneHome}) addChildComponent(c);
     makePrimary(guideAct);
     guideStepLabel.setFont(FohLookAndFeel::font(T::label)); guideStepLabel.setColour(Label::textColourId, C::accent());
     guideBody.setFont(FohLookAndFeel::font(T::logo)); guideBody.setJustificationType(Justification::centredLeft);
     guideResult.setFont(FohLookAndFeel::font(T::body)); guideResult.setJustificationType(Justification::topLeft); guideResult.setColour(Label::textColourId, C::textBody());
     guideReadout.setFont(FohLookAndFeel::font(T::valueMedium, true));
+    guidePolarity.setFont(FohLookAndFeel::font(T::small)); guidePolarity.setColour(Label::textColourId, C::textSecondary());
     doneSummary.setFont(FohLookAndFeel::font(T::logo)); doneSummary.setJustificationType(Justification::topLeft);
     doneActions.setFont(FohLookAndFeel::font(T::logo)); doneActions.setJustificationType(Justification::topLeft);
     doneActions.setText("1. Walk a few seats and listen.\n2. Save the DSP settings.\n3. Note the delay values in your log.", dontSendNotification);
@@ -291,7 +292,7 @@ void MainComponent::changeListenerCallback(ChangeBroadcaster*) { // theme switch
     lnf.applyTheme(); makePrimary(insertBtn); makePrimary(guideAct); makePrimary(doneAgain);
     status.setColour(Label::textColourId, C::textBody()); help.setColour(Label::textColourId, C::textBody()); setupHelp.setColour(Label::textColourId, C::textSecondary());
     delayCaption.setColour(Label::textColourId, C::textSecondary()); delayDetail.setColour(Label::textColourId, C::textSecondary());
-    guideStepLabel.setColour(Label::textColourId, C::accent()); guideResult.setColour(Label::textColourId, C::textBody());
+    guideStepLabel.setColour(Label::textColourId, C::accent()); guideResult.setColour(Label::textColourId, C::textBody()); guidePolarity.setColour(Label::textColourId, C::textSecondary());
     sendLookAndFeelChange(); updateTF(); updateGuidePlots(); resized(); repaint();
     if (auto* w = getTopLevelComponent()) if (auto* dw = dynamic_cast<DocumentWindow*>(w)) dw->setBackgroundColour(C::background());
 }
@@ -301,7 +302,7 @@ void MainComponent::showPage(int p) {
     for (int i = 0; i < nav.size(); ++i) { nav[i]->setToggleState(i == p, dontSendNotification); }
     std::vector<Component*> all {selector.get(), &micBox, &refBox, &outABox, &outBBox, &genBox, &genGain, &calBtn, &calToggle, &setupHelp, &calLabel, &levelLabel, &themeBox,
         &magPlot, &phasePlot, &cohPlot, &smoothBox, &avgBox, &storeBtn, &findBtn, &clearAvgBtn, &delayCaption, &delayValue, &delayDetail, &insertBtn, &traceList, &delTraceBtn,
-        &rtaPlot, &rtaFracBox, &guideBox, &guideStepLabel, &guideBody, &guideResult, &guideReadout, &guidePrev, &guideAct, &gPlotA, &gPlotB, &doneSummary, &doneActions, &doneAgain, &doneHome};
+        &rtaPlot, &rtaFracBox, &guideBox, &guideStepLabel, &guideBody, &guideResult, &guideReadout, &guidePolarity, &guidePrev, &guideAct, &gPlotA, &gPlotB, &doneSummary, &doneActions, &doneAgain, &doneHome};
     for (auto* x : all) x->setVisible(false);
     std::vector<Component*> on;
     if (p == 0) on = {selector.get(), &micBox, &refBox, &outABox, &outBBox, &genBox, &genGain, &calBtn, &calToggle, &setupHelp, &calLabel, &levelLabel, &themeBox};
@@ -452,7 +453,7 @@ void MainComponent::layoutGuide() {
     if (page != 3) { repaint(); return; }
     auto& steps = kGuides[(size_t) guide]; auto& st = steps[(size_t) step];
     for (auto* x : std::initializer_list<Component*>{&guideBox, &guideStepLabel, &guideBody, &guideResult, &guidePrev, &guideAct}) x->setVisible(true);
-    for (auto* x : std::initializer_list<Component*>{&gPlotA, &gPlotB, &guideReadout, &doneSummary, &doneActions, &doneAgain, &doneHome}) x->setVisible(false);
+    for (auto* x : std::initializer_list<Component*>{&gPlotA, &gPlotB, &guideReadout, &guidePolarity, &doneSummary, &doneActions, &doneAgain, &doneHome}) x->setVisible(false);
     auto c = mainArea();
     guideStepLabel.setText((u8("GUIDED \xc2\xb7 ") + String(kGuideNames[guide]) + u8(" \xc2\xb7 STEP ") + String(step + 1) + " OF " + String((int) steps.size())).toUpperCase(), dontSendNotification);
     guideStepLabel.setBounds(c.removeFromTop(16)); c.removeFromTop(6);
@@ -467,12 +468,15 @@ void MainComponent::layoutGuide() {
         guideBody.setVisible(false); guidePrev.setVisible(false); guideAct.setVisible(false); guideResult.setVisible(false);
         repaint(); return;
     }
-    int chartH = st.chart == 4 ? 352 + 30 : st.chart == 3 ? 300 + 24 + 50 : st.chart == 0 ? 0 : 330 + 24;
+    int chartH = st.chart == 4 ? 352 + 30 : st.chart == 3 ? 300 + 24 + 68 : st.chart == 0 ? 0 : 330 + 24;
     if (st.chart != 0) {
         gChartCard = c.removeFromTop(chartH + 16); c.removeFromTop(14);
         auto in = gChartCard.reduced(8);
         if (st.chart == 4) { gPlotA.setBounds(in.removeFromTop(176)); gPlotB.setBounds(in.removeFromTop(176)); gPlotB.setVisible(true); }
-        else if (st.chart == 3) { gPlotA.setBounds(in.removeFromTop(324)); guideReadout.setBounds(in.reduced(14, 4)); guideReadout.setVisible(true); }
+        else if (st.chart == 3) { gPlotA.setBounds(in.removeFromTop(324)); auto ro = in.reduced(14, 2); guideReadout.setBounds(ro.removeFromTop(34)); guidePolarity.setBounds(ro);
+            guideReadout.setVisible(true); guidePolarity.setVisible(true);
+            if (guideReadout.getText().isEmpty()) guideReadout.setText("Suggested: --", dontSendNotification);
+            if (guidePolarity.getText().isEmpty()) guidePolarity.setText(u8("Polarity: judge it from the phase traces in the shaded band, not from the impulse. A flip moves the sub phase by 180\xc2\xb0."), dontSendNotification); }
         else gPlotA.setBounds(in.removeFromTop(354));
         gPlotA.setVisible(true);
     }
@@ -509,6 +513,10 @@ void MainComponent::guideAction(int a) {
             double period = 1000.0 / po.centerHz, inv = foh::wrapDeg(po.meanDeg + 180.0), invMs = -inv / 360.0 / po.centerHz * 1000.0;
             String who = po.impliedMs > 0 ? "Mains" : "Sub";
             guideReadout.setText("Suggested: " + who + " +" + String(std::abs(po.impliedMs), 1) + u8(" ms   \xc2\xb7  or flip sub polarity + ") + (invMs > 0 ? "mains " : "sub ") + String(std::abs(invMs), 1) + " ms", dontSendNotification);
+            { double halfMs = 500.0 / po.centerHz; bool flipLess = std::abs(invMs) < std::abs(po.impliedMs);
+              guidePolarity.setText(u8("Polarity: a flip = 180\xc2\xb0 \xe2\x89\x88 ") + String(halfMs, 1) + " ms at " + String(po.centerHz, 0) + " Hz. "
+                  + (flipLess ? "Flipping the sub needs less delay; check the slopes still match across the band." : "Normal polarity needs less delay; prefer it if the slopes match.")
+                  + " Judge from these phase traces, not the impulse.", dontSendNotification); }
             out << "Crossover " << String(xover.lo, 0) << "-" << String(xover.hi, 0) << " Hz (centre ~" << String(po.centerHz, 0) << " Hz). Sub vs main phase " << String(po.meanDeg, 0) << u8("\xc2\xb0 = ") << String(std::abs(po.impliedMs), 2) << " ms ("
                 << (po.impliedMs > 0 ? "sub LATE" : "sub EARLY") << "). Other answers differ by whole cycles (" << String(period, 1) << u8(" ms). Target: within ~60\xc2\xb0 and parallel across the band.");
             w2Summary = "Crossover: " + String(xover.lo, 0) + "-" + String(xover.hi, 0) + " Hz\nSuggested: " + who + " +" + String(std::abs(po.impliedMs), 1) + " ms\nAlternative: flip sub polarity, " + (invMs > 0 ? "mains " : "sub ") + String(std::abs(invMs), 1) + " ms\nReference delay: " + String(lockedDelayMs, 2) + " ms";
