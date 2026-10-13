@@ -106,7 +106,7 @@ private:
 };
 
 // ---------- Delay finder ----------
-struct Arrival { double delaySamples; double delayMs; double distanceM; double relLevelDb; };
+struct Arrival { double delaySamples; double delayMs; double distanceM; double relLevelDb; bool inverted = false; }; // inverted: correlation peak negative (polarity flip)
 struct DelayResult { std::vector<Arrival> arrivals; double confidence = 0; std::vector<double> impulse; };
 // Cross-correlation of meas vs ref (meas = ref delayed). Returns top 3 peaks with
 // sub-sample (parabolic) interpolation. phat = GCC-PHAT weighting.
