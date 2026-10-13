@@ -61,7 +61,7 @@ public:
         else { addStoredTraces(model, plot, true);
                PlotComponent::Series s; s.c = C::traceLive(); s.label = "Live"; logDecimate(model.tf, model.tf.magDb, s.f, s.v, &s.gap); plot.series.push_back(s); }
         plot.lowCoh = blankedRegions(model.tf);
-        plot.note = "averages " + String(model.tf.averages) + (model.calApplied ? u8(" \xc2\xb7 cal applied") : "");
+        plot.note = "averages " + String(model.tf.averages) + (model.calApplied ? u8(" \xc2\xb7 cal applied") : "") + (qa::unsettled(model.conv) ? u8(" \xc2\xb7 \xe2\x96\xb2 unsettled") : "");
         plot.repaint();
     }
 private:
@@ -101,8 +101,7 @@ public:
     fohws::Size minSize() const override { return { foh::theme::ws::panelMinWidth, 90 }; } // Alignment gives it a 0.15 strip: the traffic light alone is useful there
     void resized() override { auto r = getLocalBounds().reduced(pad, 6); light = r.removeFromTop(22); plot.setVisible(r.getHeight() > 60); plot.setBounds(r); }
     void paint(Graphics& g) override { // traffic light: shape + word, never colour only
-        double mean = 0; int n = 0; for (size_t k = 0; k < model.tf.freq.size() && k < model.tf.coherence.size(); ++k) if (model.tf.freq[k] >= 200 && model.tf.freq[k] <= 10000) { mean += model.tf.coherence[k]; ++n; }
-        mean = n ? mean / n : 0; int state = mean > 0.9 ? 0 : mean >= 0.6 ? 1 : 2;
+        auto cl = qa::coherenceLight(model.tf); double mean = cl.mean; int state = cl.state;
         const char* words[] = {"Good", "Fair", "Poor"}; Colour cols[] = {C::ok(), C::warning(), C::danger()};
         float x = (float) light.getX(); g.setFont(FohLookAndFeel::font(T::small, true));
         for (int i = 0; i < 3; ++i) { bool on = i == state; auto d = Rectangle<float>(x, light.getCentreY() - 6.f, 12, 12); g.setColour(on ? cols[i] : C::textAxis());
@@ -172,11 +171,11 @@ public:
         if (model.delayPending) { detail.setText(model.delayWasSub ? "Finding sub delay (3 s window)..." : "Finding delay...", dontSendNotification); return; }
         if (!model.delayLocked()) { value.setText("--", dontSendNotification); detail.setText(d.arrivals.empty() ? "No signal: is pink noise playing?" : "No lock (confidence 0): check signal and that only one speaker is on", dontSendNotification); return; }
         auto& a0 = d.arrivals[0];
-        value.setText(String(a0.delayMs, 2) + " ms", dontSendNotification);
+        value.setText(String(qa::consoleMs(a0.delayMs), 2) + " ms", dontSendNotification);
         String t = String(d.confidence > 0.7 ? "High" : d.confidence > 0.35 ? "Medium" : "LOW") + u8(" confidence \xc2\xb7 polarity ") + (a0.inverted ? "INVERTED" : "normal")
                  + u8("\n\xe2\x89\x88 ") + String(a0.distanceM, 2) + " m" + (model.delayWasSub ? " (sub, LF-weighted)" : "");
-        for (size_t i = 1; i < d.arrivals.size(); ++i) t << u8("  \xc2\xb7  #") << (int) i + 1 << " " << String(d.arrivals[i].delayMs, 2) << " ms (" << String(d.arrivals[i].relLevelDb, 1) << " dB)";
-        if (d.arrivals.size() > 1 && d.arrivals[1].relLevelDb > -3) t << u8("\n\xe2\x96\xb2 Two similar spikes: is only one speaker on?");
+        for (size_t i = 1; i < d.arrivals.size(); ++i) t << u8("  \xc2\xb7  #") << (int) i + 1 << " " << String(qa::consoleMs(d.arrivals[i].delayMs), 2) << " ms (" << String(d.arrivals[i].relLevelDb, 1) << " dB)";
+        if (qa::twoSimilarArrivals(d)) t << u8("\n\xe2\x96\xb2 Two similar spikes: is only one speaker on?");
         detail.setText(t, dontSendNotification);
     }
 private:
@@ -293,7 +292,7 @@ public:
     void sync() {
         toggle.setToggleState(model.calOn, dontSendNotification);
         auto& c = model.cal;
-        info.setText(model.calFile.isEmpty() ? String("No mic cal loaded") : c.ok() ? u8("\xe2\x9c\x93 ") + model.calFile + ": " + String((int) c.hz.size()) + " points, " + String(c.hz.front(), 0) + "-" + String(c.hz.back(), 0) + " Hz" + (c.hasPhase ? ", with phase" : "")
+        info.setText(model.calFile.isEmpty() ? String("No mic cal loaded") : c.ok() ? u8("\xe2\x9c\x93 ") + model.calFile + ": " + String((int) c.hz.size()) + " points, " + String(c.hz.front(), 0) + "-" + String(c.hz.back(), 0) + " Hz" + (c.hasPhase ? ", with phase" : "") + u8(" \xc2\xb7 Sens Factor ") + String(c.sensitivityOffsetDb, 2) + " dB"
                                                                        : u8("\xe2\x96\xb2 Could not read cal: ") + String(c.error), dontSendNotification); }
     void resized() override { auto r = getLocalBounds().reduced(pad, 8); auto row = controlRow(r, 28); load.setBounds(row.removeFromLeft(140)); row.removeFromLeft(10); toggle.setBounds(row.removeFromLeft(90)); info.setBounds(r); }
     void modelChanged(int w) override { if (w & (AppModel::Cal | AppModel::Theme)) { info.setColour(Label::textColourId, C::textSecondary()); sync(); } }
