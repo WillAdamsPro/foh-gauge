@@ -249,3 +249,11 @@ void card(Graphics& g, Rectangle<int> r, Colour border) {
     g.setColour(C::cardBackground()); g.fillRoundedRectangle(r.toFloat(), D::radiusCard());
     g.setColour(border); g.drawRoundedRectangle(r.toFloat().reduced(0.5f), D::radiusCard(), D::hairline());
 }
+
+void FohLookAndFeel::drawDocumentWindowTitleBar(DocumentWindow& win, Graphics& g, int w, int h, int, int, const Image*, bool) {
+    auto& t = foh::theme::ThemeManager::get().current();
+    g.setColour(foh::theme::ws::panelHeaderBg(t)); g.fillRect(0, 0, w, h);
+    g.setColour(t.surfaces.border); g.fillRect(0.f, h - t.borderWidth, (float) w, t.borderWidth);
+    g.setColour(win.isActiveWindow() ? t.text.primary : t.text.secondary); g.setFont(font(foh::theme::ws::panelTitleSize, false, true));
+    g.drawText(win.getName(), foh::theme::ws::headerPaddingX + 4, 0, w - 120, h, Justification::centredLeft, true);
+}
