@@ -36,6 +36,7 @@ public:
     juce::Typeface::Ptr getTypefaceForFont(const juce::Font&) override;
     void drawButtonBackground(juce::Graphics&, juce::Button&, const juce::Colour&, bool, bool) override;
     static juce::Font font(float size, bool bold = false, bool semibold = false);
+    static juce::Font numeric(float size, bool bold = true); // readouts: monospaced digits (no OpenType tnum in JUCE)
     static juce::Typeface::Ptr regular, semibold, bold;
 };
 
@@ -48,6 +49,7 @@ public:
     std::vector<Series> series; std::vector<std::pair<double,double>> shade; juce::String shadeLabel; juce::String note, centreNote;
     bool bars = false; std::vector<double> barLo, barHi;
     std::vector<std::pair<double,double>> lowCoh; // hatched low-coherence regions (Hz)
+    bool showLowCohCallout = false; // A2 low-coherence callout over the widest hatched band
     bool exampleData = false; // spec: EXAMPLE DATA tag must stay on every example/mock trace until real data exists
     void paint(juce::Graphics&) override;
     float xOf(double f) const; juce::Image hatchTile; juce::Colour hatchFor; // cached hatch pattern, rebuilt only on theme colour change
@@ -68,10 +70,14 @@ public:
 // collapsed to a 48 px "?" rail that opens it as an overlay (layout-spec section 5).
 class HelpPanel : public juce::Component {
 public:
-    HelpPanel() { addAndMakeVisible(body); body.setJustificationType(juce::Justification::topLeft); }
+    // A2 inspector: "INSPECTOR" caption, then sections (heading + body) separated by hairlines.
+    // setText() splits copy on blank lines; a paragraph starting "Heading: ..." (short heading) becomes its own section,
+    // the first paragraph goes under "What am I looking at?".
+    HelpPanel() { addChildComponent(body); }
     void paint(juce::Graphics&) override;
-    void resized() override { body.setBounds(getLocalBounds().reduced(14, 0).withTrimmedTop(44).withTrimmedBottom(16)); }
-    juce::Label body; bool overlay = false;
+    void setText(const juce::String& copy);
+    juce::Label body; bool overlay = false; juce::String caption {"INSPECTOR"};
+    std::vector<std::pair<juce::String, juce::String>> sections;
 };
 
 // Small macOS-style segmented control (rounded track, raised selected segment, hairline separators).
@@ -79,7 +85,8 @@ class SegmentedControl : public juce::Component {
 public:
     explicit SegmentedControl(juce::StringArray items) : labels(std::move(items)) {}
     std::function<void(int)> onChange;
-    void setSelected(int i, bool notify = false) { if (i == sel) return; sel = i; repaint(); if (notify && onChange) onChange(sel); }
+    juce::BigInteger disabled; // segments that cannot be picked (e.g. SPL not built yet)
+    void setSelected(int i, bool notify = false) { if (i >= 0 && disabled[i]) return; if (i == sel) return; sel = i; repaint(); if (notify && onChange) onChange(sel); }
     int getSelected() const { return sel; }
     void paint(juce::Graphics&) override;
     void mouseDown(const juce::MouseEvent& e) override { if (labels.isEmpty()) return; setSelected(juce::jlimit(0, labels.size() - 1, e.x * labels.size() / juce::jmax(1, getWidth())), true); }
@@ -129,7 +136,7 @@ private:
     bool paused = false; foh::Band2 xover; std::vector<std::pair<juce::String, juce::String>> summaryRows; // step 09 Done card rows (label, value)
     // frame
     juce::OwnedArray<NavButton> nav; int page = 0; StatusPills status; juce::TextButton pauseBtn {"Pause"};
-    HelpPanel helpPanel; juce::Label& help = helpPanel.body; juce::Label pageTitle; juce::TextButton helpBtn {"?"}; bool helpOpen = false;
+    HelpPanel helpPanel; juce::Label& help = helpPanel.body; juce::Label pageTitle, toolbarTitle; SegmentedControl viewSeg {{"RTA", "Transfer", "SPL"}}; juce::TextButton helpBtn {"?"}; bool helpOpen = false;
     static constexpr int narrowWidth = 1360, railWidth = 48;
     bool railMode() const { return getWidth() < narrowWidth; }
     int helperW() const { return railMode() ? railWidth : foh::ui::dim::helperWidth(); }
