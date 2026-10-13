@@ -1,7 +1,12 @@
 name: build-macos
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 on:
   push:
+    branches: [master]
   pull_request:
+    branches: [master]
   workflow_dispatch:
 jobs:
   build:
