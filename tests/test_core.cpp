@@ -125,3 +125,18 @@ TEST_CASE("Guide: sub-to-mains phase offset and virtual sum") {
     auto s = virtualSum(a,a); REQUIRE(s.magDb[100]==Approx(6.02).margin(0.01));
     auto t = impulseFromTF(b); size_t pk=0; for(size_t i=0;i<t.size();++i) if(std::fabs(t[i])>std::fabs(t[pk])) pk=i; REQUIRE(pk==96);
 }
+TEST_CASE("Coherence blanking flags noisy bins only") {
+    // DUT passes 0..~1.2 kHz cleanly (lowpass), heavy uncorrelated noise everywhere => HF coherence collapses
+    auto x = pink(48000*8, 11); auto y = lowpass(x, 300, 48000); auto nz = pink(48000*8, 77);
+    for (size_t i=0;i<y.size();++i) y[i] += 0.05f*nz[i];
+    TransferFunction tf(16384, 48000); tf.setAverages(0);
+    tf.process(x.data(), y.data(), (int)x.size());
+    auto off = tf.result(6); REQUIRE(off.blanked.size()==off.freq.size());
+    for (auto b : off.blanked) REQUIRE(b==0);
+    tf.setCoherenceBlankThreshold(0.5); REQUIRE(tf.coherenceBlankThreshold()==0.5);
+    auto r = tf.result(6); REQUIRE(r.blankThreshold==0.5);
+    REQUIRE(!r.isBlanked(binOf(r,100))); REQUIRE(r.coherence[binOf(r,100)]>0.9);
+    REQUIRE(r.isBlanked(binOf(r,8000))); REQUIRE(r.coherence[binOf(r,8000)]<0.5);
+    for (size_t k=1;k<r.freq.size();++k) REQUIRE(r.isBlanked(k)==(r.coherence[k]<0.5));
+    tf.setCoherenceBlankThreshold(2.0); REQUIRE(tf.coherenceBlankThreshold()==1.0);
+}

@@ -73,7 +73,12 @@ struct TFResult {
     double sampleRate = 48000; int fftSize = 0;
     std::vector<double> freq, magDb, phaseDeg, coherence;
     std::vector<cpx> H;
+    // Coherence blanking: 1 where coherence (after smoothing) < blankThreshold.
+    // Data is left intact; the UI should hide/gap blanked bins. Empty-safe: all 0 when off.
+    std::vector<uint8_t> blanked;
+    double blankThreshold = 0.0;
     int averages = 0;
+    bool isBlanked(size_t k) const { return k < blanked.size() && blanked[k] != 0; }
 };
 
 class TransferFunction {
@@ -86,12 +91,15 @@ public:
     int referenceDelaySamples() const { return refDelay; }
     // averages: 0 = infinite (cumulative); otherwise exponential with ~N frame memory
     void setAverages(int n) { avgN = n; }
+    // Bins with coherence below t (0..1) are flagged in TFResult::blanked. 0 disables.
+    void setCoherenceBlankThreshold(double t) { blankThr = t < 0 ? 0 : (t > 1 ? 1 : t); }
+    double coherenceBlankThreshold() const { return blankThr; }
     void reset();
     TFResult result(int smoothingFraction = 0) const;
     int frames() const { return frameCount; }
 private:
     void frame();
-    FFT fft; int N; double fs; int avgN = 16; int refDelay = 0;
+    FFT fft; int N; double fs; int avgN = 16; int refDelay = 0; double blankThr = 0.0;
     std::vector<double> win; std::vector<float> xbuf, ybuf; int fill = 0;
     std::vector<float> refHistory; int histPos = 0;
     std::vector<double> Sxx, Syy; std::vector<cpx> Sxy; int frameCount = 0;

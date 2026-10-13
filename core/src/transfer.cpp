@@ -36,13 +36,14 @@ TFResult TransferFunction::result(int frac) const {
     TFResult r; r.sampleRate = fs; r.fftSize = N; r.averages = frameCount;
     size_t M = (size_t) N / 2 + 1; double bin = fs / N;
     auto sxx = smoothPower(Sxx, bin, frac), syy = smoothPower(Syy, bin, frac); auto sxy = smoothComplex(Sxy, bin, frac);
-    r.freq.resize(M); r.H.resize(M); r.magDb.resize(M); r.phaseDeg.resize(M); r.coherence.resize(M);
+    r.freq.resize(M); r.H.resize(M); r.magDb.resize(M); r.phaseDeg.resize(M); r.coherence.resize(M); r.blanked.assign(M, 0); r.blankThreshold = blankThr;
     for (size_t k = 0; k < M; ++k) {
         r.freq[k] = k * bin;
         cpx h = sxx[k] > 1e-30 ? sxy[k] / sxx[k] : cpx{};
         r.H[k] = h; r.magDb[k] = 20.0 * std::log10(std::abs(h) + 1e-12);
         r.phaseDeg[k] = std::arg(h) * 180.0 / M_PI;
         double den = sxx[k] * syy[k]; r.coherence[k] = den > 1e-40 ? std::min(1.0, std::norm(sxy[k]) / den) : 0.0;
+        if (blankThr > 0 && r.coherence[k] < blankThr) r.blanked[k] = 1;
     }
     return r;
 }
@@ -71,7 +72,8 @@ TFResult virtualSum(const TFResult& a, const TFResult& b) {
     TFResult r = a; size_t n = std::min(a.H.size(), b.H.size());
     for (size_t k = 0; k < n; ++k) { r.H[k] = a.H[k] + b.H[k];
         r.magDb[k] = 20.0 * std::log10(std::abs(r.H[k]) + 1e-12); r.phaseDeg[k] = std::arg(r.H[k]) * 180.0 / M_PI;
-        r.coherence[k] = std::min(a.coherence[k], b.coherence[k]); }
+        r.coherence[k] = std::min(a.coherence[k], b.coherence[k]);
+        if (k < r.blanked.size()) r.blanked[k] = a.isBlanked(k) || b.isBlanked(k); }
     return r;
 }
 }
