@@ -292,3 +292,31 @@ TEST_CASE("Convergence: clean DUT settles fast, noisy DUT later, timeout honoure
     e.process(x.data(), step.data(), 48000*4); int before = e.convergence().stableFrames;
     e.process(x.data()+48000*4, step.data()+48000*4, 16384); REQUIRE(before > 0); REQUIRE(e.convergence().stableFrames < before);
 }
+TEST_CASE("Delay finder for subs: 3 s LF-weighted window recovers sub delay under HF noise") {
+    const double fs = 48000; int L = recommendedDelayWindowSamples(fs, true);
+    REQUIRE(L == 144000); REQUIRE(recommendedDelayWindowSamples(fs, true, 10) == 192000);
+    REQUIRE(recommendedDelayWindowSamples(fs, true, 1) == 96000); REQUIRE(recommendedDelayWindowSamples(fs, false) == 48000);
+    auto x = pink(L, 51); auto nz = pink(L, 52);
+    // sub = band-limited 25..100 Hz (two biquads), true delay 35 ms, equal-level uncorrelated broadband pink noise (mains/room)
+    std::vector<float> hp(x.size()); { // 1st-order HP at 25 Hz
+        double a = std::exp(-2*M_PI*25/fs), px=0, py=0; for (size_t i=0;i<x.size();++i){ double o=a*(py+x[i]-px); px=x[i]; py=o; hp[i]=(float)o; } }
+    auto sub = delayed(lowpass(hp, 100, fs), 1680);
+    std::vector<float> m(x.size()); for (size_t i=0;i<m.size();++i) m[i] = sub[i] + nz[i];
+    auto lfOpt = DelayOptions::forSubs();
+    auto r = findDelay(x, m, fs, lfOpt);
+    REQUIRE(!r.arrivals.empty());
+    // expect true delay + LPF group delay (2nd-order Butterworth at 100 Hz: ~2.2 ms at DC, less in-band)
+    REQUIRE(r.arrivals[0].delayMs > 35.0); REQUIRE(r.arrivals[0].delayMs < 38.5);
+    REQUIRE(!r.arrivals[0].inverted);
+    for (auto& a : r.arrivals) REQUIRE(a.delayMs <= 500.0 + 0.1);
+    // broadband search on the same capture is dominated by the noise
+    auto bb = findDelay(x, m, fs, true);
+    REQUIRE(r.confidence > 0.3); REQUIRE(r.confidence > bb.confidence);
+    REQUIRE(std::fabs(bb.arrivals[0].delayMs - 35.0) > 5.0); // broadband locks onto noise here
+    // the old 1 s window is still usable but less confident than 3 s
+    std::vector<float> x1(x.begin(), x.begin()+48000), m1(m.begin(), m.begin()+48000);
+    REQUIRE(findDelay(x1, m1, fs, lfOpt).confidence < r.confidence);
+    // polarity-flipped sub is reported inverted
+    for (auto& v : m) v = -v; auto ri = findDelay(x, m, fs, lfOpt); REQUIRE(ri.arrivals[0].inverted);
+    REQUIRE(ri.arrivals[0].delayMs == Approx(r.arrivals[0].delayMs).margin(0.2));
+}
