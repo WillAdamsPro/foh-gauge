@@ -40,14 +40,16 @@ public:
 
 class PlotComponent : public juce::Component {
 public:
-    struct Series { std::vector<double> f, v; juce::Colour c; const float* dash = nullptr; float width = th::stroke::trace; double maxF = 1e9; };
+    struct Series { std::vector<double> f, v; juce::Colour c; const float* dash = nullptr; float width = th::stroke::trace; double maxF = 1e9; juce::String label; };
+    struct Annotation { double lo, hi; juce::String label; };
+    std::vector<Annotation> annotations; bool showLegend = false; // legend row: series with a label, 13 px, gap 18, padding 4/14
     juce::String yLabel; double yMin = -12, yMax = 12, yStep = 6; double fMin = 20, fMax = 20000; bool wrapPhase = false;
     std::vector<Series> series; std::vector<std::pair<double,double>> shade; juce::String shadeLabel; juce::String note, centreNote;
     bool bars = false; std::vector<double> barLo, barHi;
     bool exampleData = false; // spec: EXAMPLE DATA tag must stay on every example/mock trace until real data exists
     void paint(juce::Graphics&) override;
     float xOf(double f) const; float yOf(double v) const;
-    int plotX() const { return 46; } int plotY() const { return 8; } int plotW() const { return getWidth() - 46 - 14; } int plotH() const { return getHeight() - 8 - 24; }
+    int plotX() const { return 46; } int plotY() const { return 8; } int plotW() const { return getWidth() - 46 - 14; } int plotH() const { return getHeight() - 8 - 24 - (showLegend ? 22 : 0); }
 };
 
 class MainComponent : public juce::Component, private juce::Timer {

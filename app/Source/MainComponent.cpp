@@ -55,6 +55,14 @@ void PlotComponent::paint(Graphics& g) {
     g.setFont(FohLookAndFeel::font(T::axisTick));
     for (auto& s : shade) { float a = xOf(s.first), b = xOf(s.second); g.setColour(C::accent.withAlpha(C::crossoverBandAlpha)); g.fillRect(a, pr.getY(), b - a, pr.getHeight());
         if (shadeLabel.isNotEmpty()) { g.setColour(C::accent); g.setFont(FohLookAndFeel::font(T::label)); g.drawText(shadeLabel, (int) a - 40, (int) pr.getY() + 10, (int) (b - a) + 80, 14, Justification::centred); g.setFont(FohLookAndFeel::font(T::axisTick)); } }
+    for (auto& a : annotations) { float x0 = xOf(a.lo), x1 = xOf(a.hi); // layout-spec: warning @ annotationBandAlpha, label at band right + 6, y 30
+        g.setColour(C::warning.withAlpha(C::annotationBandAlpha)); g.fillRect(x0, pr.getY(), x1 - x0, pr.getHeight());
+        if (a.label.isNotEmpty()) { g.setColour(C::warning); g.setFont(FohLookAndFeel::font(T::label)); g.drawText(a.label, (int) x1 + 6, (int) pr.getY() + 30 - 7, 160, 14, Justification::left); g.setFont(FohLookAndFeel::font(T::axisTick)); } }
+    if (showLegend) { int x = plotX() + 14; int y = (int) pr.getBottom() + 24 + 4; g.setFont(FohLookAndFeel::font(T::small));
+        for (auto& s : series) { if (s.label.isEmpty()) continue; g.setColour(s.c);
+            if (s.dash) { for (int k = 0; k < 18; k += 6) g.fillRect((float) x + k, (float) y + 7, 4.f, s.width); } else g.fillRect((float) x, (float) y + 7, 18.f, s.width);
+            int tw = GlyphArrangement::getStringWidthInt(g.getCurrentFont(), s.label); g.setColour(C::textBody); g.drawText(s.label, x + 24, y, tw + 4, 16, Justification::left); x += 24 + tw + 18; }
+        g.setFont(FohLookAndFeel::font(T::axisTick)); }
     g.setColour(C::border);
     for (double f : {20., 50., 100., 200., 500., 1000., 2000., 5000., 10000., 20000.}) { if (f < fMin || f > fMax) continue;
         float x = xOf(f); g.drawVerticalLine((int) x, pr.getY(), pr.getBottom());
@@ -144,7 +152,7 @@ MainComponent::MainComponent() {
     setupHelp.setText("ROUTING (UMC404HD defaults)", dontSendNotification); setupHelp.setColour(Label::textColourId, C::textSecondary);
     calLabel.setText("No mic cal loaded", dontSendNotification);
 
-    magPlot.yLabel = "MAGNITUDE DB"; magPlot.yMin = -12; magPlot.yMax = 12; magPlot.yStep = 6;
+    magPlot.yLabel = "MAGNITUDE DB"; magPlot.showLegend = true; magPlot.yMin = -12; magPlot.yMax = 12; magPlot.yStep = 6;
     phasePlot.yLabel = u8("PHASE \xc2\xb0"); phasePlot.yMin = -180; phasePlot.yMax = 180; phasePlot.yStep = 90; phasePlot.wrapPhase = true;
     cohPlot.yLabel = "COHERENCE"; cohPlot.yMin = 0; cohPlot.yMax = 1; cohPlot.yStep = 0.5;
     for (auto* p : {&magPlot, &phasePlot, &cohPlot, &rtaPlot, &gPlotA, &gPlotB}) addChildComponent(*p);
@@ -323,13 +331,13 @@ void MainComponent::updateTF() {
     for (auto* p : {&magPlot, &phasePlot, &cohPlot}) p->series.clear();
     const Colour tc[] = {C::traceStored, C::warning, Colour(0xffa080ff), C::ok, Colour(0xffff7090), Colour(0xff70a0ff), Colour(0xffd0d060), Colour(0xffff9050)};
     for (int i = 0; i < traces.count(); ++i) { auto& t = traces.at(i); if (!t.visible) continue;
-        PlotComponent::Series s; s.c = tc[i % 8]; s.dash = th::stroke::dashStored; s.width = th::stroke::traceStored;
+        PlotComponent::Series s; s.c = tc[i % 8]; s.dash = th::stroke::dashStored; s.width = th::stroke::traceStored; s.label = String(t.name);
         logDecimate(t.tf, t.tf.magDb, s.f, s.v); magPlot.series.push_back(s);
         logDecimate(t.tf, t.tf.phaseDeg, s.f, s.v); phasePlot.series.push_back(s); }
-    PlotComponent::Series s; s.c = C::accent;
+    PlotComponent::Series s; s.c = C::accent; s.label = "Live";
     logDecimate(lastTF, lastTF.magDb, s.f, s.v); magPlot.series.push_back(s);
     logDecimate(lastTF, lastTF.phaseDeg, s.f, s.v); phasePlot.series.push_back(s);
-    s.c = C::traceCoherence; s.width = th::stroke::traceSecondary; logDecimate(lastTF, lastTF.coherence, s.f, s.v); cohPlot.series.push_back(s);
+    s.label = {}; s.c = C::traceCoherence; s.width = th::stroke::traceSecondary; logDecimate(lastTF, lastTF.coherence, s.f, s.v); cohPlot.series.push_back(s);
     magPlot.note = "averages " + String(lastTF.averages) + (calOn ? u8(" \xc2\xb7 cal applied") : "");
     for (auto* p : {&magPlot, &phasePlot, &cohPlot}) p->repaint();
 }
@@ -337,26 +345,26 @@ void MainComponent::updateTF() {
 void MainComponent::updateGuidePlots() {
     auto& st = kGuides[(size_t) guide][(size_t) step];
     auto* main = findTrace("Main"); auto* sub = findTrace("Sub");
-    auto add = [](PlotComponent& p, const foh::TFResult& r, const std::vector<double>& v, Colour c, const float* dash, double maxF = 1e9, float w = th::stroke::trace) {
-        PlotComponent::Series s; s.c = c; s.dash = dash; s.maxF = maxF; s.width = w; logDecimate(r, v, s.f, s.v); p.series.push_back(s); };
+    auto add = [](PlotComponent& p, const foh::TFResult& r, const std::vector<double>& v, Colour c, const float* dash, double maxF = 1e9, float w = th::stroke::trace, const String& label = {}) {
+        PlotComponent::Series s; s.label = label; s.c = c; s.dash = dash; s.maxF = maxF; s.width = w; logDecimate(r, v, s.f, s.v); p.series.push_back(s); };
     gPlotA.series.clear(); gPlotB.series.clear();
     std::vector<std::pair<double,double>> band; if (xover.found) band = {{xover.lo, xover.hi}};
     String bl = xover.found ? "crossover ~" + String((int) std::sqrt(xover.lo * xover.hi)) + " Hz" : String();
-    for (auto* p : {&gPlotA, &gPlotB}) { p->shade = guide == 1 ? band : decltype(band){}; p->shadeLabel = bl; p->centreNote = {}; p->wrapPhase = false; }
+    for (auto* p : {&gPlotA, &gPlotB}) { p->showLegend = true; p->shade = guide == 1 ? band : decltype(band){}; p->shadeLabel = bl; p->centreNote = {}; p->wrapPhase = false; }
     auto magSetup = [](PlotComponent& p, double lo, double hi) { p.yMin = lo; p.yMax = hi; p.yStep = 6; p.wrapPhase = false; };
     auto phSetup = [](PlotComponent& p) { p.yMin = -180; p.yMax = 180; p.yStep = 90; p.wrapPhase = true; };
     switch (st.chart) {
         case 1: magSetup(gPlotA, -24, 6); add(gPlotA, lastTF, lastTF.magDb, C::accent, nullptr); break;
-        case 2: magSetup(gPlotA, -24, 6); if (main) add(gPlotA, main->tf, main->tf.magDb, C::traceStored, th::stroke::dashStored, 1e9, th::stroke::traceStored);
-                add(gPlotA, lastTF, lastTF.magDb, C::warning, nullptr); break;
+        case 2: magSetup(gPlotA, -24, 6); if (main) add(gPlotA, main->tf, main->tf.magDb, C::traceStored, th::stroke::dashStored, 1e9, th::stroke::traceStored, "Mains (stored)");
+                add(gPlotA, lastTF, lastTF.magDb, C::warning, nullptr, 1e9, th::stroke::trace, "Sub (live)"); break;
         case 3: phSetup(gPlotA); gPlotA.centreNote = "phase hidden above 400 Hz";
-                if (main) add(gPlotA, main->tf, main->tf.phaseDeg, C::accent, nullptr, 400); if (sub) add(gPlotA, sub->tf, sub->tf.phaseDeg, C::warning, nullptr, 400); break;
+                if (main) add(gPlotA, main->tf, main->tf.phaseDeg, C::accent, nullptr, 400, th::stroke::trace, "Mains phase"); if (sub) add(gPlotA, sub->tf, sub->tf.phaseDeg, C::warning, nullptr, 400, th::stroke::trace, "Sub phase"); break;
         case 4: phSetup(gPlotA); gPlotA.centreNote = "phase hidden above 400 Hz"; magSetup(gPlotB, -24, 12);
-                if (main) add(gPlotA, main->tf, main->tf.phaseDeg, C::accent, nullptr, 400);
-                if (sub) add(gPlotA, sub->tf, sub->tf.phaseDeg, C::warning, th::stroke::dashLimit, 400);
-                if (main) add(gPlotB, main->tf, main->tf.magDb, C::traceMainsMuted, th::stroke::dashComponent, 1e9, th::stroke::traceSecondary);
-                if (sub) add(gPlotB, sub->tf, sub->tf.magDb, C::traceSubMuted, th::stroke::dashComponent, 1e9, th::stroke::traceSecondary);
-                add(gPlotB, lastTF, lastTF.magDb, C::traceSum, nullptr); break;
+                if (main) add(gPlotA, main->tf, main->tf.phaseDeg, C::accent, nullptr, 400, th::stroke::trace, "Mains phase");
+                if (sub) add(gPlotA, sub->tf, sub->tf.phaseDeg, C::warning, th::stroke::dashLimit, 400, th::stroke::trace, "Sub phase");
+                if (main) add(gPlotB, main->tf, main->tf.magDb, C::traceMainsMuted, th::stroke::dashComponent, 1e9, th::stroke::traceSecondary, "Mains");
+                if (sub) add(gPlotB, sub->tf, sub->tf.magDb, C::traceSubMuted, th::stroke::dashComponent, 1e9, th::stroke::traceSecondary, "Sub");
+                add(gPlotB, lastTF, lastTF.magDb, C::traceSum, nullptr, 1e9, th::stroke::trace, "Sum (live)"); break;
         case 6: magSetup(gPlotA, -24, 12); add(gPlotA, lastTF, lastTF.magDb, C::accent, nullptr); break;
         default: break;
     }
