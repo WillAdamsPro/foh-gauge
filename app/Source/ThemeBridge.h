@@ -9,16 +9,21 @@ namespace foh::ui
 {
     inline const foh::theme::Theme& theme() { return foh::theme::ThemeManager::get().current(); }
 
+    // Apple-pro surfaces/labels are white alphas; pre-composite over the window colour so stock JUCE
+    // widgets and popup menus (which need opaque colours) get flat values. Sidebar = flat vibrancy fallback (~#282829).
+    inline juce::Colour flat(juce::Colour c) { return theme().surfaces.background.overlaidWith(c); }
+    inline juce::String uiFontName() { return theme().type.ui.isEmpty() ? foh::theme::systemFontName() : theme().type.ui; }
+
     namespace col
     {
         using juce::Colour;
         inline Colour background()        { return theme().surfaces.background; }
-        inline Colour statusBarBackground(){ return theme().surfaces.nav; }
-        inline Colour navBackground()     { return theme().surfaces.nav; }
-        inline Colour helperBackground()  { return theme().surfaces.nav; }
-        inline Colour cardBackground()    { return theme().surfaces.surface; }
-        inline Colour pillBackground()    { return theme().surfaces.surfaceRaised; }
-        inline Colour navItemActiveBg()   { return theme().surfaces.surfaceRaised; }
+        inline Colour statusBarBackground(){ return flat(theme().surfaces.surface); }
+        inline Colour navBackground()     { return flat(theme().surfaces.nav); }
+        inline Colour helperBackground()  { return flat(theme().surfaces.surface); }
+        inline Colour cardBackground()    { return flat(theme().surfaces.surface); }
+        inline Colour pillBackground()    { return flat(theme().surfaces.surfaceRaised); }
+        inline Colour navItemActiveBg()   { return theme().accent.withMultipliedAlpha(theme().isLight ? 0.18f : 0.55f); }
         inline Colour border()            { return theme().surfaces.border; }
         inline Colour grid()              { return theme().surfaces.grid; }
         inline Colour divider()           { return theme().surfaces.grid; }
@@ -37,13 +42,15 @@ namespace foh::ui
         inline Colour danger()            { return theme().status.poor; }
         inline Colour traceLive()         { return theme().trace.magnitude; }
         inline Colour tracePhase()        { return theme().trace.phase; }
+        inline Colour traceSecondary()    { return theme().trace.secondary.isTransparent() ? theme().status.caution : theme().trace.secondary; } // sub trace
         inline Colour traceStored()       { return theme().text.axis; }
         inline Colour traceCoherence()    { return theme().text.secondary; }
         inline Colour traceSum()          { return theme().text.primary; }
         inline Colour traceMainsMuted()   { return theme().text.axis.withMultipliedAlpha(0.8f); }
-        inline Colour traceSubMuted()     { return theme().trace.phase.withMultipliedAlpha(0.6f); }
-        inline Colour rtaBar()            { return theme().surfaces.surface.interpolatedWith(theme().accent, 0.25f); }
-        inline Colour successBadgeBg()    { return theme().surfaces.surface.interpolatedWith(theme().status.good, 0.18f); }
+        inline Colour traceSubMuted()     { return traceSecondary().withMultipliedAlpha(0.6f); }
+        inline Colour plotWell()          { return theme().isLight ? flat(theme().surfaces.surfaceRaised) : flat(Colour(0x40000000)); } // #161616-ish well on dark
+        inline Colour rtaBar()            { return flat(theme().surfaces.surface).interpolatedWith(theme().accent, 0.25f); }
+        inline Colour successBadgeBg()    { return flat(theme().surfaces.surface).interpolatedWith(theme().status.good, 0.18f); }
         // Stored-trace palette (8 slots): hue steps from the theme accent, so it follows the theme
         inline Colour storedTrace(int i)  { return i == 0 ? traceStored() : theme().accent.withRotatedHue((float) i / 8.0f); }
         inline float crossoverBandAlpha()  { return foh::theme::colour::crossoverBandAlpha; }
