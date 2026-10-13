@@ -4,6 +4,7 @@
 #include <atomic>
 #include <complex>
 #include <cstdint>
+#include <limits>
 #include <string>
 #include <type_traits>
 #include <vector>
@@ -137,21 +138,60 @@ CoherenceSummary coherenceSummary(const TFResult& tf, double lo = 100.0, double 
 // Band traffic light (replaces qa::coherenceLight). Default band 200 Hz-10 kHz as in the UI.
 inline CoherenceSummary classifyCoherence(const TFResult& tf, double lo = 200.0, double hi = 10000.0) { return coherenceSummary(tf, lo, hi); }
 
-// "Wait until the average settles": after every Welch frame the TF is summarised on a
-// 1/3-oct grid (fLo..fHi); delta = coherence-weighted mean |change in dB| vs the previous
-// frame. Settled when delta < toleranceDb for holdFrames consecutive frames (and at least
-// minFrames frames). maxFrames > 0 is a timeout (settled=false, timedOut=true).
-// At 16k/48k with 50% overlap one frame = 170.7 ms.
+// ---------- Settle rule (QA D5) ----------
+// An "update" is one Welch frame (16k @ 48k, 50% overlap = 170.7 ms of audio).
+// deltaDb = RMS over bins with coherence >= minCoherence and fLo <= f <= fHi of the
+// change in |H| dB since the previous update. Settled when deltaDb < toleranceDb (strict)
+// for `consecutive` updates in a row. If not settled after maxSeconds of audio, the
+// capture proceeds with unsettled = true. No coherent bins => delta is NaN (never
+// counts as stable, never divides by zero). Same if fewer than minCoherentFraction of the
+// in-band bins are coherent.
 struct ConvergenceSettings {
-    double toleranceDb = 0.1; int minFrames = 8; int holdFrames = 6; int maxFrames = 0;
-    double fLo = 40.0, fHi = 16000.0;
+    double toleranceDb = 0.5; int consecutive = 3; double maxSeconds = 10.0;
+    double minCoherence = 0.6; double fLo = 100.0, fHi = 10000.0;
+    // Guard (Orion, pending QA sign-off): at least this fraction of the in-band bins must be
+    // coherent, else delta is NaN. Stops a handful of chance-coherent bins (low SNR) or a
+    // narrow surviving LF region (drifting DUT) from declaring "settled". 0 disables.
+    double minCoherentFraction = 0.25;
+    int maxFrames = 0;   // optional override of maxSeconds (frames); 0 = use maxSeconds
+};
+// RMS dB change over coherent in-band bins. Returns NaN when no bin qualifies.
+double settleDeltaDb(const std::vector<double>& prevDb, const std::vector<double>& curDb,
+                     const std::vector<double>& coherence, const std::vector<double>& freqHz,
+                     const ConvergenceSettings& s = {}, int* binsUsed = nullptr);
+// Pure streak counter: feed one delta per update (NaN allowed). Mirrors QA CAP0 exactly.
+class SettleDetector {
+public:
+    explicit SettleDetector(const ConvergenceSettings& s = {}) : cfg(s) {}
+    // Returns settled. elapsedSeconds is the audio time measured so far.
+    bool update(double deltaDb, double elapsedSeconds = 0.0) {
+        ++n; streak = (deltaDb == deltaDb && deltaDb < cfg.toleranceDb) ? streak + 1 : 0;
+        if (!done && streak >= cfg.consecutive) { done = true; isSettled = true; }
+        bool timeout = cfg.maxFrames > 0 ? n >= cfg.maxFrames : (cfg.maxSeconds > 0 && elapsedSeconds >= cfg.maxSeconds);
+        if (!done && timeout) { done = true; isUnsettled = true; }
+        return isSettled;
+    }
+    void reset() { n = streak = 0; done = isSettled = isUnsettled = false; }
+    bool settled() const { return isSettled; }
+    bool unsettled() const { return isUnsettled; } // timed out without settling
+    bool finished() const { return done; }         // capture may proceed
+    int streakCount() const { return streak; }
+    int updates() const { return n; }
+    const ConvergenceSettings& settings() const { return cfg; }
+private:
+    ConvergenceSettings cfg; int n = 0, streak = 0; bool done = false, isSettled = false, isUnsettled = false;
 };
 struct ConvergenceState {
-    bool settled = false, timedOut = false;
-    double deltaDb = 1e9;      // last frame-to-frame change
-    double meanCoherence = 0;  // over the grid
+    bool settled = false;
+    bool unsettled = false;    // hit maxSeconds without settling: proceed, show warning
+    bool timedOut = false;     // == unsettled (kept for older callers)
+    bool finished = false;     // settled || unsettled
+    double deltaDb = std::numeric_limits<double>::quiet_NaN(); // last RMS change (NaN: no coherent bins)
+    int coherentBins = 0;
+    double meanCoherence = 0;  // over fLo..fHi
     int frames = 0, stableFrames = 0;
-    double progress = 0;       // 0..1 for a UI bar: stableFrames/holdFrames gated by minFrames
+    double elapsedSeconds = 0;
+    double progress = 0;       // 0..1 for a UI bar (streak/consecutive; 1 when finished)
 };
 
 class TransferFunction {
@@ -172,6 +212,10 @@ public:
     int frames() const { return frameCount; }
     void setConvergence(const ConvergenceSettings& c) { conv = c; resetConvergence(); }
     const ConvergenceSettings& convergenceSettings() const { return conv; }
+    // Max audio time to wait for the settle rule before proceeding "unsettled" (default 10 s).
+    // Restarts the rule. <= 0 disables the timeout.
+    void setConvergenceTimeout(double seconds) { conv.maxSeconds = seconds; conv.maxFrames = 0; resetConvergence(); }
+    double convergenceTimeout() const { return conv.maxSeconds; }
     ConvergenceState convergence() const { return cstate; }
     bool settled() const { return cstate.settled; }
     double frameSeconds() const { return (N / 2) / fs; }
@@ -180,7 +224,7 @@ private:
     void updateConvergence();
     void resetConvergence();
     ConvergenceSettings conv; ConvergenceState cstate;
-    std::vector<std::pair<int,int>> gridBins; std::vector<double> gridPrevDb; bool gridHavePrev = false;
+    SettleDetector settle; int convLo = 1, convHi = 0; std::vector<double> convPrevDb; bool convHavePrev = false;
     FFT fft; int N; double fs; int avgN = 16; int refDelay = 0; double blankThr = 0.0;
     std::vector<double> win; std::vector<float> xbuf, ybuf; int fill = 0;
     std::vector<float> refHistory; int histPos = 0;

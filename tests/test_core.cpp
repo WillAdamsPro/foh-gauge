@@ -265,33 +265,6 @@ TEST_CASE("Generators: gain/reset are thread-safe requests honoured on next samp
     sw.process(a.data(), 1000); sw.reset(); sw.process(b.data(), 1000); REQUIRE(a == b);
     PinkNoise p1(9), p2(9); p2.setGainDb(-20); float x1=p1.next(), x2=p2.next(); REQUIRE(x2==Approx(x1*0.1f).epsilon(1e-4));
 }
-TEST_CASE("Convergence: clean DUT settles fast, noisy DUT later, timeout honoured") {
-    auto x = pink(48000*30, 31); auto nz = pink(48000*30, 32);
-    auto runUntil = [&](TransferFunction& tf, const std::vector<float>& y) {
-        const int blk = 512; for (size_t i=0; i+blk<=x.size(); i+=blk) { tf.process(x.data()+i, y.data()+i, blk);
-            auto c = tf.convergence(); if (c.settled || c.timedOut) return c; } return tf.convergence(); };
-    ConvergenceSettings cs; cs.toleranceDb = 0.1; cs.minFrames = 8; cs.holdFrames = 6;
-    auto clean = lowpass(x, 2000, 48000);
-    TransferFunction a(16384,48000); a.setAverages(0); a.setConvergence(cs); auto ca = runUntil(a, clean);
-    REQUIRE(ca.settled); REQUIRE(ca.frames < 20); REQUIRE(ca.progress==1.0); REQUIRE(ca.meanCoherence > 0.95);
-    REQUIRE(a.frameSeconds()==Approx(0.17067).margin(1e-4));
-    std::vector<float> noisy(x.size()); for (size_t i=0;i<x.size();++i) noisy[i]=clean[i]+nz[i];
-    TransferFunction b(16384,48000); b.setAverages(0); b.setConvergence(cs); auto cb = runUntil(b, noisy);
-    REQUIRE(cb.settled); REQUIRE(cb.frames > ca.frames); REQUIRE(cb.meanCoherence < ca.meanCoherence);
-    // settled estimate is actually close to truth
-    auto r = b.result(6); REQUIRE(r.magDb[binOf(r,500)]==Approx(0).margin(0.6));
-    // timeout: impossible tolerance
-    ConvergenceSettings tight = cs; tight.toleranceDb = 1e-9; tight.maxFrames = 12;
-    TransferFunction c(16384,48000); c.setAverages(0); c.setConvergence(tight); auto cc = runUntil(c, noisy);
-    REQUIRE(!cc.settled); REQUIRE(cc.timedOut); REQUIRE(cc.frames==12);
-    // reset clears state; setting a reference delay resets too
-    c.reset(); REQUIRE(c.convergence().frames==0); REQUIRE(!c.settled());
-    // a DUT change mid-run breaks the stable streak
-    std::vector<float> step(x.size()); for (size_t i=0;i<x.size();++i) step[i] = i < 48000*4 ? clean[i] : 0.3f*clean[i];
-    TransferFunction e(16384,48000); e.setAverages(4); ConvergenceSettings ce=cs; ce.minFrames=1000; e.setConvergence(ce);
-    e.process(x.data(), step.data(), 48000*4); int before = e.convergence().stableFrames;
-    e.process(x.data()+48000*4, step.data()+48000*4, 16384); REQUIRE(before > 0); REQUIRE(e.convergence().stableFrames < before);
-}
 TEST_CASE("Delay finder for subs: 3 s LF-weighted window recovers sub delay under HF noise") {
     const double fs = 48000; int L = recommendedDelayWindowSamples(fs, true);
     REQUIRE(L == 144000); REQUIRE(recommendedDelayWindowSamples(fs, true, 10) == 192000);
@@ -392,4 +365,72 @@ TEST_CASE("classifyCoherence(TFResult) band overload matches QaAdapters shape") 
     t.coherence.assign(100, 0.75); REQUIRE(classifyCoherence(t).state()==1); t.coherence.assign(100, 0.6); REQUIRE(classifyCoherence(t).state()==1);
     t.coherence.assign(100, std::nan("")); REQUIRE(classifyCoherence(t).state()==2);
     REQUIRE(classifyCoherence(t, 0, 250).bins==1); // DC bin is never counted
+}
+// ---- Settle rule (QA CAP0-CAP4)
+TEST_CASE("CAP0 settle rule: pure streak counter, strict <, coherent in-band bins only") {
+    auto run = [](std::vector<double> d) { SettleDetector s; int at = 0; for (size_t i=0;i<d.size();++i) if (s.update(d[i]) && !at) at = (int)i+1; return at; };
+    REQUIRE(run({0.4,0.4,0.4})==3);
+    REQUIRE(run({0.4,0.4,0.6,0.4,0.4,0.4})==6);
+    REQUIRE(run({0.5,0.5,0.5})==0);
+    REQUIRE(run({0.4,std::nan(""),0.4,0.4,0.4})==5); // NaN (no coherent bins) breaks the streak
+    // bins with coh 0.5999 or outside 100 Hz-10 kHz with huge delta are ignored
+    std::vector<double> f{50, 100, 1000, 10000, 12000, 2000}, coh{1, 0.6, 1, 0.9, 1, 0.5999};
+    std::vector<double> prev(6, 0.0), cur{40, 0.3, 0.3, 0.3, 40, 40};
+    int used=0; REQUIRE(settleDeltaDb(prev, cur, coh, f, {}, &used)==Approx(0.3)); REQUIRE(used==3);
+    ConvergenceSettings nofrac; nofrac.minCoherentFraction = 0; REQUIRE(settleDeltaDb(prev, cur, coh, f, nofrac)==Approx(0.3));
+    std::vector<double> sparse{1, 0.1, 0.1, 0.1, 1, 0.9}; // only 1 of 4 in-band bins coherent: 25% -> still OK
+    REQUIRE(settleDeltaDb(prev, std::vector<double>{0,0,0,0,0,0.2}, sparse, f)==Approx(0.2));
+    sparse[5] = 0.1; sparse[3] = 0.1; REQUIRE(std::isnan(settleDeltaDb(prev, cur, sparse, f))); // none
+    std::vector<double> lowc(6, 0.2); REQUIRE(std::isnan(settleDeltaDb(prev, cur, lowc, f, {}, &used))); REQUIRE(used==0);
+    // timeout: unsettled after maxSeconds, settles take precedence before that
+    SettleDetector t; for (int i=1;i<=100 && !t.finished();++i) t.update(1.0, i*0.1707);
+    REQUIRE(t.unsettled()); REQUIRE(!t.settled()); REQUIRE(t.updates()==59);
+    ConvergenceSettings d; REQUIRE(d.toleranceDb==0.5); REQUIRE(d.consecutive==3); REQUIRE(d.maxSeconds==10.0);
+    REQUIRE(d.minCoherence==0.6); REQUIRE(d.fLo==100.0); REQUIRE(d.fHi==10000.0);
+}
+static std::vector<float> peq(const std::vector<float>& x, double f0, double g, double Q, double fs) {
+    double A=std::pow(10,g/40), w0=2*M_PI*f0/fs, al=std::sin(w0)/(2*Q), c=std::cos(w0);
+    double b0=1+al*A, b1=-2*c, b2=1-al*A, a0=1+al/A, a1=-2*c, a2=1-al/A; double x1=0,x2=0,y1=0,y2=0;
+    std::vector<float> y(x.size()); for (size_t i=0;i<x.size();++i){ double o=(b0*x[i]+b1*x1+b2*x2-a1*y1-a2*y2)/a0; x2=x1;x1=x[i];y2=y1;y1=o;y[i]=(float)o;} return y; }
+static ConvergenceState captureUntilFinished(TransferFunction& tf, const std::vector<float>& x, const std::vector<float>& y) {
+    const int blk = 512; for (size_t i=0; i+blk<=x.size(); i+=blk) { tf.process(x.data()+i, y.data()+i, blk); if (tf.convergence().finished) break; }
+    return tf.convergence(); }
+TEST_CASE("CAP1 stable DUT (+6 dB PEQ @1k Q1) settles well before 10 s; result matches S2") {
+    auto x = pink(48000*12, 71); auto y = peq(x, 1000, 6, 1, 48000);
+    for (int avg : {16, 0}) { TransferFunction tf(16384,48000); tf.setAverages(avg); auto c = captureUntilFinished(tf, x, y);
+        REQUIRE(c.settled); REQUIRE(!c.unsettled); REQUIRE(c.elapsedSeconds < 3.0); REQUIRE(c.coherentBins > 1000);
+        auto r = tf.result(); REQUIRE(r.magDb[binOf(r,1000)]==Approx(6.0).margin(0.2)); REQUIRE(std::fabs(r.phaseDeg[binOf(r,1000)]) < 3); }
+}
+TEST_CASE("CAP2 drifting DUT (delay 2->4 ms, gain +-3 dB @0.3 Hz) times out at 10 s, unsettled, result returned") {
+    const double fs = 48000; int n = (int)(fs*12); auto x = pink(n, 72); std::vector<float> y((size_t)n);
+    for (int i=0;i<n;++i){ double t=i/fs, d=0.002*fs+0.002*fs*std::fmod(t,5.0)/5.0, p=i-d; int i0=(int)std::floor(p); double fr=p-i0;
+        float v = (i0>=0 && i0+1<n) ? (float)((1-fr)*x[(size_t)i0]+fr*x[(size_t)i0+1]) : 0.f; y[(size_t)i]=v*(float)std::pow(10.0,3*std::sin(2*M_PI*0.3*t)/20); }
+    for (int avg : {16, 0}) { TransferFunction tf(16384,48000); tf.setAverages(avg); auto c = captureUntilFinished(tf, x, y);
+        INFO("avg " << avg << " t " << c.elapsedSeconds << " d " << c.deltaDb << " bins " << c.coherentBins);
+        REQUIRE(c.unsettled); REQUIRE(c.timedOut); REQUIRE(!c.settled); REQUIRE(c.elapsedSeconds==Approx(10.0).margin(0.5));
+        REQUIRE(tf.result().magDb.size()==8193); }
+}
+TEST_CASE("CAP3 low coherence (SNR -10 dB) and silent meas: unsettled by 10 s, no NaN/hang") {
+    auto x = pink(48000*12, 73); auto nz = pink(48000*12, 74); std::vector<float> y(x.size()), z(x.size(), 0.f);
+    for (size_t i=0;i<y.size();++i) y[i] = x[i] + 3.1623f*nz[i];
+    for (auto* m : {&y, &z}) for (int avg : {16, 0}) { TransferFunction tf(16384,48000); tf.setAverages(avg); auto c = captureUntilFinished(tf, x, *m);
+        INFO("avg " << avg << " t " << c.elapsedSeconds << " d " << c.deltaDb << " bins " << c.coherentBins << " silent " << (m==&z));
+        REQUIRE(c.finished); REQUIRE(c.unsettled); REQUIRE(c.elapsedSeconds <= 10.5); REQUIRE(c.progress==1.0); REQUIRE(std::isfinite(c.meanCoherence)); }
+    // silent ref too
+    TransferFunction tf(16384,48000); auto c = captureUntilFinished(tf, z, z); REQUIRE(c.unsettled); REQUIRE(std::isnan(c.deltaDb)); REQUIRE(c.coherentBins==0);
+}
+TEST_CASE("CAP4 infinite and exponential modes both terminate; reset/reference delay restart the rule") {
+    auto x = pink(48000*12, 75); auto y = lowpass(x, 2000, 48000);
+    for (int avg : {0, 4, 16, 64}) { TransferFunction tf(16384,48000); tf.setAverages(avg); auto c = captureUntilFinished(tf, x, y);
+        REQUIRE(c.finished); REQUIRE(c.elapsedSeconds <= 10.5); REQUIRE(c.settled);
+        tf.reset(); REQUIRE(!tf.convergence().finished); REQUIRE(tf.convergence().frames==0); }
+    ConvergenceSettings fast; fast.maxFrames = 5; fast.toleranceDb = 1e-12; TransferFunction tf(16384,48000); tf.setConvergence(fast);
+    auto c = captureUntilFinished(tf, x, y); REQUIRE(c.unsettled); REQUIRE(c.frames==5);
+}
+TEST_CASE("setConvergenceTimeout(seconds): default 10 s, configurable") {
+    TransferFunction tf(16384,48000); REQUIRE(tf.convergenceTimeout()==10.0);
+    tf.setConvergenceTimeout(2.0); REQUIRE(tf.convergenceTimeout()==2.0);
+    std::vector<float> x = pink(48000*6, 81), z(x.size(), 0.f);
+    auto c = captureUntilFinished(tf, x, z); REQUIRE(c.unsettled); REQUIRE(c.elapsedSeconds==Approx(2.0).margin(0.2));
+    TransferFunction t2(16384,48000); t2.setConvergenceTimeout(0); auto c2 = captureUntilFinished(t2, x, z); REQUIRE(!c2.finished); // no timeout
 }
