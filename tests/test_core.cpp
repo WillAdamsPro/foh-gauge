@@ -159,3 +159,53 @@ TEST_CASE("SnapshotPublisher carries TF/RTA and sequence") {
     auto& r=p.latest(); REQUIRE(r.seq==1); REQUIRE(r.rtaDb.size()==2); REQUIRE(r.tf.fftSize==16384);
     p.beginWrite().rtaDb={-1}; p.publish(); REQUIRE(p.latest().seq==2); REQUIRE(p.latest().rtaDb.size()==1);
 }
+TEST_CASE("Polarity flip: TF phase 180, coherence 1; delay finder flags inverted") {
+    auto x = pink(48000*6, 21); auto y = delayed(x, 240, -1.f);
+    TransferFunction tf(16384,48000); tf.setAverages(0); tf.setReferenceDelaySamples(240); tf.process(x.data(), y.data(), (int)x.size());
+    auto r = tf.result();
+    for (double f : {80.0, 1000.0, 8000.0}) { auto k=binOf(r,f);
+        REQUIRE(std::fabs(r.phaseDeg[k]) == Approx(180).margin(1.0)); REQUIRE(r.magDb[k]==Approx(0).margin(0.1)); REQUIRE(r.coherence[k]>0.99); }
+    for (bool phat : {true, false}) { auto d = findDelay(x, y, 48000, phat);
+        REQUIRE(d.arrivals[0].delaySamples==Approx(240).margin(0.5)); REQUIRE(d.arrivals[0].inverted); }
+    auto d2 = findDelay(x, delayed(x,240), 48000); REQUIRE(!d2.arrivals[0].inverted);
+    // biquad DUT with flipped polarity: phase = LPF phase + 180
+    auto lp = lowpass(x, 1000, 48000); for (auto& v : lp) v = -v;
+    TransferFunction t2(16384,48000); t2.setAverages(0); t2.process(x.data(), lp.data(), (int)x.size());
+    REQUIRE(wrapDeg(t2.result().phaseDeg[binOf(r,1000)])==Approx(90).margin(3));
+}
+TEST_CASE("Averaging: infinite = cumulative mean, exponential tracks changes") {
+    // DUT gain steps 1.0 -> 0.5 halfway. Infinite: Sxy/Sxx -> mean gain 0.75. Exponential(4): -> 0.5.
+    auto x = pink(48000*12, 4); std::vector<float> y(x.size()); for (size_t i=0;i<y.size();++i) y[i] = x[i] * (i < y.size()/2 ? 1.f : 0.5f);
+    TransferFunction inf(16384,48000); inf.setAverages(0); inf.process(x.data(), y.data(), (int)x.size());
+    TransferFunction ex(16384,48000); ex.setAverages(4); ex.process(x.data(), y.data(), (int)x.size());
+    auto ri = inf.result(3), re = ex.result(3); auto k = binOf(ri, 1000);
+    REQUIRE(ri.magDb[k]==Approx(20*std::log10(0.75)).margin(0.4));
+    REQUIRE(re.magDb[k]==Approx(-6.02).margin(0.3));
+    REQUIRE(ri.coherence[k] < re.coherence[k]); // non-stationary DUT costs coherence in the long average
+    // both modes count every frame; only the weighting differs
+    REQUIRE(ri.averages == ex.result().averages); REQUIRE(ri.averages > 60);
+}
+TEST_CASE("Smoothing 1/12 and 1/24: flat preserved, ripple reduced, resolution ordered") {
+    double bin = 48000.0/16384; std::vector<double> p(8193);
+    for (size_t i=0;i<p.size();++i) p[i] = 1.0 + 0.5*((i%2)?1:-1);
+    for (int f : {12, 24}) { auto s = smoothPower(p, bin, f);
+        REQUIRE(s[4000]==Approx(1.0).margin(0.01)); REQUIRE(s[1000]==Approx(1.0).margin(0.02)); }
+    // narrow resonance at 1 kHz (Q~20): finer smoothing keeps more of the peak
+    std::vector<double> q(8193); for (size_t i=1;i<q.size();++i){ double f=i*bin, d=(f/1000-1000/f)*20; q[i]=1+15/(1+d*d); }
+    auto pk=[&](int fr){ auto s=smoothPower(q,bin,fr); return s[(size_t)std::lround(1000/bin)]; };
+    REQUIRE(pk(24) > pk(12)); REQUIRE(pk(12) > pk(6)); REQUIRE(pk(6) > pk(3));
+    REQUIRE(pk(24) < q[(size_t)std::lround(1000/bin)]);
+    // complex smoothing at 1/24 keeps a flat TF exact
+    std::vector<cpx> h(8193, cpx(0.5, 0.0)); auto hs = smoothComplex(h, bin, 24); REQUIRE(std::abs(hs[3000])==Approx(0.5).margin(1e-12));
+}
+TEST_CASE("Delay finder: plain cross-correlation (no PHAT) on white noise and a biquad DUT") {
+    std::mt19937 g(42); std::normal_distribution<float> n(0, 0.3f); std::vector<float> w(48000); for (auto& v : w) v = n(g);
+    for (int d : {0, 11, 480, 4800}) { auto r = findDelay(w, delayed(w, d, 0.7f), 48000, false);
+        REQUIRE(r.arrivals[0].delaySamples==Approx(d).margin(0.3)); REQUIRE(r.confidence > 0.8); REQUIRE(!r.arrivals[0].inverted); }
+    // biquad DUT adds group delay at LF, peak stays near the pure delay
+    auto y = delayed(lowpass(w, 4000, 48000), 960); auto r = findDelay(w, y, 48000, false);
+    REQUIRE(r.arrivals[0].delayMs==Approx(20.0).margin(0.15));
+    // in heavy noise, confidence falls
+    std::vector<float> noisy = delayed(w, 480, 0.05f); for (auto& v : noisy) v += n(g);
+    REQUIRE(findDelay(w, noisy, 48000, false).confidence < r.confidence);
+}

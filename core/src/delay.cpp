@@ -28,7 +28,7 @@ DelayResult findDelay(const std::vector<float>& ref, const std::vector<float>& m
         if (best > 0 && best + 1 < (int) a.size()) { double y0 = a[(size_t) best-1], y1 = a[(size_t) best], y2 = a[(size_t) best+1];
             double d = y0 - 2*y1 + y2; if (std::fabs(d) > 1e-30) off = 0.5 * (y0 - y2) / d; }
         double ds = best + off;
-        res.arrivals.push_back({ds, ds / fs * 1000.0, ds / fs * c, 20.0 * std::log10(bv / peak0)});
+        res.arrivals.push_back({ds, ds / fs * 1000.0, ds / fs * c, 20.0 * std::log10(bv / peak0), r[(size_t) best] < 0});
         for (int i = std::max(0, best - sep); i <= std::min((int) a.size() - 1, best + sep); ++i) used[(size_t) i] = 1;
     }
     // confidence: peak vs RMS of correlation (peak-to-noise), mapped 0..1
