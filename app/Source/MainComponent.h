@@ -88,7 +88,7 @@ private:
     // RTA
     PlotComponent rtaPlot; juce::ComboBox rtaFracBox;
     // Guides
-    juce::ComboBox guideBox; juce::Label guideStepLabel, guideBody, guideResult, guideReadout; juce::TextButton guidePrev {"Back"}, guideAct {"Do it"};
+    juce::ComboBox guideBox; juce::Label guideStepLabel, guideBody, guideResult, guideReadout, guidePolarity; juce::TextButton guidePrev {"Back"}, guideAct {"Do it"};
     PlotComponent gPlotA, gPlotB; juce::Label doneSummary, doneActions; juce::TextButton doneAgain {"Measure again"}, doneHome {"Back to Home"};
     juce::Rectangle<int> gProgress, gChartCard, gActionCard, gDoneA, gDoneB;
     int guide = 1, step = 0; double lockedDelayMs = 0;
