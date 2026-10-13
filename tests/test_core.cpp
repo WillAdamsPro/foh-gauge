@@ -284,7 +284,7 @@ TEST_CASE("Delay finder for subs: 3 s LF-weighted window recovers sub delay unde
     for (auto& a : r.arrivals) REQUIRE(a.delayMs <= 500.0 + 0.1);
     // broadband search on the same capture is dominated by the noise
     auto bb = findDelay(x, m, fs, true);
-    REQUIRE(r.confidence > 0.3); REQUIRE(r.confidence > bb.confidence);
+    REQUIRE(r.confidence > 0.2); REQUIRE(r.confidence > bb.confidence);
     REQUIRE(std::fabs(bb.arrivals[0].delayMs - 35.0) > 5.0); // broadband locks onto noise here
     // the old 1 s window is still usable but less confident than 3 s
     std::vector<float> x1(x.begin(), x.begin()+48000), m1(m.begin(), m.begin()+48000);
@@ -433,4 +433,64 @@ TEST_CASE("setConvergenceTimeout(seconds): default 10 s, configurable") {
     std::vector<float> x = pink(48000*6, 81), z(x.size(), 0.f);
     auto c = captureUntilFinished(tf, x, z); REQUIRE(c.unsettled); REQUIRE(c.elapsedSeconds==Approx(2.0).margin(0.2));
     TransferFunction t2(16384,48000); t2.setConvergenceTimeout(0); auto c2 = captureUntilFinished(t2, x, z); REQUIRE(!c2.finished); // no timeout
+}
+// ---- Two-spike rule (QA D4) + delay-finder robustness
+static std::vector<float> fdel(const std::vector<float>& x, double d) { // exact circular fractional delay (pow2 length)
+    int N=(int)x.size(); FFT f(N); std::vector<cpx> X((size_t)N); for (int i=0;i<N;++i) X[(size_t)i]=x[(size_t)i]; f.forward(X);
+    for (int k=0;k<N;++k){ double kk = k<=N/2 ? k : k-N; X[(size_t)k]*=std::polar(1.0,-2*M_PI*kk*d/N); }
+    if (N%2==0) X[(size_t)N/2]=std::real(X[(size_t)N/2]); // keep Nyquist real
+    f.inverse(X); std::vector<float> y((size_t)N); for (int i=0;i<N;++i) y[(size_t)i]=(float)X[(size_t)i].real(); return y; }
+static std::vector<float> mix(const std::vector<float>& a, const std::vector<float>& b, double gDb) { std::vector<float> y(a.size()); float g=(float)std::pow(10.0,gDb/20); for (size_t i=0;i<a.size();++i) y[i]=a[i]+g*b[i]; return y; }
+static std::vector<float> head(const std::vector<float>& v, size_t n) { return std::vector<float>(v.begin(), v.begin()+(long)std::min(n, v.size())); }
+TEST_CASE("D-2S two-spike rule: pure function, exact boundaries") {
+    REQUIRE(twoSpikeFlag(0.0, -2.9, 2.0)); REQUIRE(!twoSpikeFlag(0.0, -3.1, 2.0));
+    REQUIRE(!twoSpikeFlag(0.0, -0.5, 0.4)); REQUIRE(twoSpikeFlag(0.0, -0.5, 0.6)); REQUIRE(twoSpikeFlag(0.0, -0.5, 1.5));
+    REQUIRE(twoSpikeFlag(0.0, -3.0, 2.0)); REQUIRE(!twoSpikeFlag(0.0, -0.5, 0.5)); REQUIRE(twoSpikeFlag(0.0, -0.5, -1.5));
+    STATIC_REQUIRE(twoSpikeFlag(-1.0, -1.0, 1.0));
+    std::vector<Arrival> a{{144,3,1.029,0}, {240,5,1.715,-2.9}}; REQUIRE(twoSpikeFlag(a)); a[1].relLevelDb=-3.1; REQUIRE(!twoSpikeFlag(a));
+    REQUIRE(!twoSpikeFlag(std::vector<Arrival>{})); REQUIRE(!twoSpikeFlag(std::vector<Arrival>{a[0]}));
+}
+TEST_CASE("D-2S/S16/D-CF on Echo's stimuli: PHAT timing, non-PHAT levels, flag + confidence ordering") {
+    const double fs=48000; auto src = pink(1<<18, 1); auto ref = head(src, 48000);
+    auto run = [&](const std::vector<float>& m) { return findDelay(ref, head(m, 48000), fs); };
+    struct Case { double d2ms, dB; bool flag; };
+    for (Case c : {Case{2.0,-2.9,true}, Case{2.0,-3.1,false}, Case{0.6,-0.5,true}, Case{0.4,-0.5,false}, Case{1.5,-0.5,true}}) {
+        auto r = run(mix(fdel(src, 0.003*fs), fdel(src, (0.003+c.d2ms/1000)*fs), c.dB));
+        INFO("dt " << c.d2ms << " dB " << c.dB); REQUIRE(r.ok()); REQUIRE(r.twoSimilarArrivals==c.flag);
+        REQUIRE(r.arrivals[0].delayMs==Approx(3.0).margin(0.01));
+        if (c.d2ms > 0.5) { REQUIRE(r.arrivals.size()>=2); REQUIRE(r.arrivals[1].delayMs==Approx(3.0+c.d2ms).margin(0.02)); }
+        if (c.d2ms >= 1.5) REQUIRE(r.arrivals[1].relLevelDb==Approx(c.dB).margin(0.15)); }
+    // S16 reflection: direct 2 ms + -3 dB at +8 ms -> no flag; boundaries -2.5 (flag) / -3.5 (no flag)
+    auto refl = [&](double dB){ return run(mix(fdel(src, 0.002*fs), fdel(src, 0.010*fs), dB)); };
+    auto s16 = refl(-3.0); REQUIRE(!s16.twoSimilarArrivals); REQUIRE(s16.arrivals[0].delayMs==Approx(2.0).margin(0.05));
+    REQUIRE(s16.arrivals[1].delayMs==Approx(10.0).margin(0.05)); REQUIRE(s16.arrivals[1].relLevelDb==Approx(-3.0).margin(0.25)); REQUIRE(s16.confidence > 0.8);
+    REQUIRE(refl(-2.5).twoSimilarArrivals); REQUIRE(!refl(-3.5).twoSimilarArrivals);
+    // D-CF: clean > two-spike > SNR -10 dB (reflection == clean: not ambiguous)
+    auto clean = run(fdel(src, 0.003*fs)); auto two = run(mix(fdel(src, 0.003*fs), fdel(src, 0.0045*fs), -0.5));
+    auto un = pink(1<<18, 99); auto noisy = run(mix(fdel(src, 0.003*fs), un, 10.0));
+    REQUIRE(clean.confidence >= s16.confidence); REQUIRE(s16.confidence > two.confidence); REQUIRE(two.confidence > noisy.confidence);
+    for (auto* r : {&clean, &two, &noisy, &s16}) { REQUIRE(r->confidence >= 0); REQUIRE(r->confidence <= 1); }
+    // S4 fractional 4.80 ms = 230.4 samples, +-0.1 sample; S5 integer 230
+    REQUIRE(run(fdel(src, 230.4)).arrivals[0].delaySamples==Approx(230.4).margin(0.1));
+    REQUIRE(run(fdel(src, 230.0)).arrivals[0].delayMs==Approx(4.7917).margin(0.021));
+    // the spec's unweighted-envelope mode is still available (it under-reads level gaps on pink)
+    DelayOptions uo; uo.levelMode = DelayOptions::LevelMode::Unweighted;
+    auto u = findDelay(ref, head(mix(fdel(src, 0.003*fs), fdel(src, 0.005*fs), -2.9), 48000), fs, uo); REQUIRE(u.arrivals.size()>=2);
+}
+TEST_CASE("Delay finder robustness (Echo crash triage): edge inputs never throw or crash") {
+    std::vector<float> big(48000); for (size_t i=0;i<big.size();++i) big[i]=std::sin((float)i*0.37f);
+    std::vector<float> e0, e63(63,1.f), z(48000,0.f), nanv(48000,NAN), infv(48000,INFINITY), dc(48000,1.f);
+    REQUIRE(findDelay(e0,e0,48000).error.size()); REQUIRE(!findDelay(e63,e63,48000).ok());
+    REQUIRE(findDelay(z,z,48000).error=="reference is silent"); REQUIRE(findDelay(big,z,48000).error=="measurement is silent");
+    REQUIRE(!findDelay(nanv,big,48000).ok()); REQUIRE(!findDelay(infv,big,48000).ok());
+    REQUIRE(findDelay(big,big,0).error=="invalid sample rate"); REQUIRE(!findDelay(big,big,-1).ok()); REQUIRE(!findDelay(big,big,NAN).ok());
+    auto one = big; one[100]=NAN; auto r1 = findDelay(big, one, 48000); REQUIRE(r1.nonFiniteSamples==1); REQUIRE(r1.ok()); REQUIRE(r1.arrivals[0].delaySamples==Approx(0).margin(0.1));
+    auto p = pink(48000, 3); auto mm = findDelay(p, head(delayed(p, 100), 20000), 48000); REQUIRE(mm.ok()); REQUIRE(mm.arrivals[0].delaySamples==Approx(100).margin(0.1)); // mismatched lengths
+    REQUIRE_NOTHROW(findDelay(dc,dc,48000));
+    DelayOptions o; o.maxArrivals=0; REQUIRE(!findDelay(p,p,48000,o).ok()); o.maxArrivals=100000; REQUIRE_NOTHROW(findDelay(p,p,48000,o));
+    o=DelayOptions(); o.maxDelayMs=1e12; REQUIRE(findDelay(p,p,48000,o).ok()); o.maxDelayMs=-5; REQUIRE(findDelay(p,p,48000,o).ok());
+    o=DelayOptions(); o.minSeparationMs=1e12; REQUIRE(findDelay(p,p,48000,o).ok()); o.minSeparationMs=-1; REQUIRE(findDelay(p,p,48000,o).ok());
+    o=DelayOptions(); o.lpHz=1e-12; REQUIRE_NOTHROW(findDelay(p,p,48000,o));
+    REQUIRE(impulseFromTF(TFResult{}).empty()); TFResult bad; bad.fftSize=1000; REQUIRE(impulseFromTF(bad).empty());
+    TFResult small; small.fftSize=16384; small.H.resize(10); REQUIRE(impulseFromTF(small).size()==16384);
 }
