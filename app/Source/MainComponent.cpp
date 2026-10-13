@@ -4,7 +4,8 @@
  #define FOH_HAS_FONTS 1
 #endif
 using namespace juce;
-namespace C = foh::theme::colour;
+namespace C = foh::ui::col;
+namespace D = foh::ui::dim;
 namespace T = foh::theme::type;
 
 // ===================== Look and feel =====================
@@ -17,13 +18,16 @@ FohLookAndFeel::FohLookAndFeel() {
         bold     = Typeface::createSystemTypefaceFor(BinaryData::InterBold_ttf, BinaryData::InterBold_ttfSize);
     }
 #endif
-    setColour(ResizableWindow::backgroundColourId, C::background);
-    setColour(Label::textColourId, C::textPrimary);
-    setColour(TextButton::buttonColourId, C::pillBackground); setColour(TextButton::textColourOffId, C::textBody);
-    setColour(TextButton::buttonOnColourId, C::navItemActiveBg); setColour(TextButton::textColourOnId, C::textStrong);
-    setColour(ComboBox::backgroundColourId, C::pillBackground); setColour(ComboBox::outlineColourId, C::pillBorder); setColour(ComboBox::textColourId, C::textBody);
-    setColour(PopupMenu::backgroundColourId, C::cardBackground); setColour(ListBox::backgroundColourId, C::cardBackground);
-    setColour(Slider::thumbColourId, C::accent); setColour(Slider::trackColourId, C::divider);
+    applyTheme();
+}
+void FohLookAndFeel::applyTheme() {
+    setColour(ResizableWindow::backgroundColourId, C::background());
+    setColour(Label::textColourId, C::textPrimary());
+    setColour(TextButton::buttonColourId, C::pillBackground()); setColour(TextButton::textColourOffId, C::textBody());
+    setColour(TextButton::buttonOnColourId, C::navItemActiveBg()); setColour(TextButton::textColourOnId, C::textStrong());
+    setColour(ComboBox::backgroundColourId, C::pillBackground()); setColour(ComboBox::outlineColourId, C::pillBorder()); setColour(ComboBox::textColourId, C::textBody());
+    setColour(PopupMenu::backgroundColourId, C::cardBackground()); setColour(ListBox::backgroundColourId, C::cardBackground());
+    setColour(Slider::thumbColourId, C::accent()); setColour(Slider::trackColourId, C::divider());
 }
 Typeface::Ptr FohLookAndFeel::getTypefaceForFont(const Font& f) {
     if (regular != nullptr && f.getTypefaceName() == Font::getDefaultSansSerifFontName()) {
@@ -40,12 +44,12 @@ Font FohLookAndFeel::font(float size, bool b, bool sb) {
 void FohLookAndFeel::drawButtonBackground(Graphics& g, Button& b, const Colour& bgc, bool over, bool down) {
     auto r = b.getLocalBounds().toFloat().reduced(0.5f);
     bool primary = b.getProperties()["primary"];
-    if (primary) { g.setColour(C::accent.brighter(over ? 0.1f : 0.f).darker(down ? 0.2f : 0.f)); g.fillRoundedRectangle(r, th::radius::button); return; }
-    g.setColour(b.getToggleState() ? C::navItemActiveBg : bgc.brighter(over ? 0.05f : 0.f));
-    g.fillRoundedRectangle(r, th::radius::button);
-    g.setColour(C::ghostBorder); g.drawRoundedRectangle(r, th::radius::button, th::stroke::hairline);
+    if (primary) { g.setColour(C::accent().brighter(over ? 0.1f : 0.f).darker(down ? 0.2f : 0.f)); g.fillRoundedRectangle(r, D::radiusButton()); return; }
+    g.setColour(b.getToggleState() ? C::navItemActiveBg() : bgc.brighter(over ? 0.05f : 0.f));
+    g.fillRoundedRectangle(r, D::radiusButton());
+    g.setColour(C::ghostBorder()); g.drawRoundedRectangle(r, D::radiusButton(), D::hairline());
 }
-static void makePrimary(TextButton& b) { b.getProperties().set("primary", true); b.setColour(TextButton::textColourOffId, C::textOnAccent); }
+static void makePrimary(TextButton& b) { b.getProperties().set("primary", true); b.setColour(TextButton::textColourOffId, C::textOnAccent()); }
 
 // ===================== Plot =====================
 float PlotComponent::xOf(double f) const { return (float) (plotX() + plotW() * std::log10(f / fMin) / std::log10(fMax / fMin)); }
@@ -53,33 +57,38 @@ float PlotComponent::yOf(double v) const { return (float) (plotY() + plotH() * (
 void PlotComponent::paint(Graphics& g) {
     auto pr = Rectangle<float>((float) plotX(), (float) plotY(), (float) plotW(), (float) plotH());
     g.setFont(FohLookAndFeel::font(T::axisTick));
-    for (auto& s : shade) { float a = xOf(s.first), b = xOf(s.second); g.setColour(C::accent.withAlpha(C::crossoverBandAlpha)); g.fillRect(a, pr.getY(), b - a, pr.getHeight());
-        if (shadeLabel.isNotEmpty()) { g.setColour(C::accent); g.setFont(FohLookAndFeel::font(T::label)); g.drawText(shadeLabel, (int) a - 40, (int) pr.getY() + 10, (int) (b - a) + 80, 14, Justification::centred); g.setFont(FohLookAndFeel::font(T::axisTick)); } }
+    for (auto& s : shade) { float a = xOf(s.first), b = xOf(s.second); g.setColour(C::accent().withAlpha(C::crossoverBandAlpha())); g.fillRect(a, pr.getY(), b - a, pr.getHeight());
+        if (shadeLabel.isNotEmpty()) { g.setColour(C::accent()); g.setFont(FohLookAndFeel::font(T::label)); g.drawText(shadeLabel, (int) a - 40, (int) pr.getY() + 10, (int) (b - a) + 80, 14, Justification::centred); g.setFont(FohLookAndFeel::font(T::axisTick)); } }
     for (auto& a : annotations) { float x0 = xOf(a.lo), x1 = xOf(a.hi); // layout-spec: warning @ annotationBandAlpha, label at band right + 6, y 30
-        g.setColour(C::warning.withAlpha(C::annotationBandAlpha)); g.fillRect(x0, pr.getY(), x1 - x0, pr.getHeight());
-        if (a.label.isNotEmpty()) { g.setColour(C::warning); g.setFont(FohLookAndFeel::font(T::label)); g.drawText(a.label, (int) x1 + 6, (int) pr.getY() + 30 - 7, 160, 14, Justification::left); g.setFont(FohLookAndFeel::font(T::axisTick)); } }
+        g.setColour(C::warning().withAlpha(C::annotationBandAlpha())); g.fillRect(x0, pr.getY(), x1 - x0, pr.getHeight());
+        if (a.label.isNotEmpty()) { g.setColour(C::warning()); g.setFont(FohLookAndFeel::font(T::label)); g.drawText(a.label, (int) x1 + 6, (int) pr.getY() + 30 - 7, 160, 14, Justification::left); g.setFont(FohLookAndFeel::font(T::axisTick)); } }
     if (showLegend) { int x = plotX() + 14; int y = (int) pr.getBottom() + 24 + 4; g.setFont(FohLookAndFeel::font(T::small));
         for (auto& s : series) { if (s.label.isEmpty()) continue; g.setColour(s.c);
             if (s.dash) { for (int k = 0; k < 18; k += 6) g.fillRect((float) x + k, (float) y + 7, 4.f, s.width); } else g.fillRect((float) x, (float) y + 7, 18.f, s.width);
-            int tw = GlyphArrangement::getStringWidthInt(g.getCurrentFont(), s.label); g.setColour(C::textBody); g.drawText(s.label, x + 24, y, tw + 4, 16, Justification::left); x += 24 + tw + 18; }
+            int tw = GlyphArrangement::getStringWidthInt(g.getCurrentFont(), s.label); g.setColour(C::textBody()); g.drawText(s.label, x + 24, y, tw + 4, 16, Justification::left); x += 24 + tw + 18; }
         g.setFont(FohLookAndFeel::font(T::axisTick)); }
-    g.setColour(C::border);
+    g.setColour(C::border());
     for (double f : {20., 50., 100., 200., 500., 1000., 2000., 5000., 10000., 20000.}) { if (f < fMin || f > fMax) continue;
         float x = xOf(f); g.drawVerticalLine((int) x, pr.getY(), pr.getBottom());
-        g.setColour(C::textAxis); g.drawText(f >= 1000 ? String((int) (f / 1000)) + "k" : String((int) f), (int) x - 15, (int) pr.getBottom() + 4, 30, 14, Justification::centred); g.setColour(C::border); }
+        g.setColour(C::textAxis()); g.drawText(f >= 1000 ? String((int) (f / 1000)) + "k" : String((int) f), (int) x - 15, (int) pr.getBottom() + 4, 30, 14, Justification::centred); g.setColour(C::border()); }
     for (double v = yMin; v <= yMax + 1e-9; v += yStep) { float y = yOf(v); g.drawHorizontalLine((int) y, pr.getX(), pr.getRight());
-        g.setColour(C::textAxis); g.drawText(yStep < 1 ? String(v, 1) : String((int) v), 0, (int) y - 7, plotX() - 6, 14, Justification::right); g.setColour(C::border); }
-    if (note.isNotEmpty()) { g.setColour(C::textAxis); g.drawText(note, (int) pr.getRight() - 300, (int) pr.getY() + 2, 296, 14, Justification::right); }
-    if (centreNote.isNotEmpty()) { g.setColour(C::textAxis); g.setFont(FohLookAndFeel::font(T::small)); g.drawText(centreNote, (int) xOf(1500) - 120, (int) pr.getCentreY() - 8, 240, 16, Justification::centred); }
+        g.setColour(C::textAxis()); g.drawText(yStep < 1 ? String(v, 1) : String((int) v), 0, (int) y - 7, plotX() - 6, 14, Justification::right); g.setColour(C::border()); }
+    if (note.isNotEmpty()) { g.setColour(C::textAxis()); g.drawText(note, (int) pr.getRight() - 300, (int) pr.getY() + 2, 296, 14, Justification::right); }
+    if (centreNote.isNotEmpty()) { g.setColour(C::textAxis()); g.setFont(FohLookAndFeel::font(T::small)); g.drawText(centreNote, (int) xOf(1500) - 120, (int) pr.getCentreY() - 8, 240, 16, Justification::centred); }
     if (exampleData) { // top-right, ~103x20, 11 px warning text, 1 px warning border, radius 4 (layout-spec)
         auto tag = Rectangle<float>(pr.getRight() - 109, pr.getY() + 6, 103, 20);
-        g.setColour(C::warning); g.drawRoundedRectangle(tag.reduced(0.5f), th::radius::tag, th::stroke::hairline);
+        g.setColour(C::warning()); g.drawRoundedRectangle(tag.reduced(0.5f), D::radiusTag(), D::hairline());
         g.setFont(FohLookAndFeel::font(T::axisTick, false, true)); g.drawText("EXAMPLE DATA", tag, Justification::centred); g.setFont(FohLookAndFeel::font(T::axisTick)); }
+    if (!lowCoh.empty()) { auto hc = C::textAxis().withAlpha(foh::ui::theme().trace.lowCoherenceHatchAlpha);
+        if (hatchTile.isNull() || hatchFor != hc) { hatchFor = hc; hatchTile = Image(Image::ARGB, 8, 8, true); Graphics hg(hatchTile); hg.setColour(hc);
+            hg.drawLine(0, 8, 8, 0, 1.0f); hg.drawLine(-4, 4, 4, -4, 1.0f); hg.drawLine(4, 12, 12, 4, 1.0f); }
+        Graphics::ScopedSaveState hs(g); g.setTiledImageFill(hatchTile, 0, 0, 1.0f);
+        for (auto& r : lowCoh) { float a = jmax(pr.getX(), xOf(r.first)), b = jmin(pr.getRight(), xOf(r.second)); if (b > a) g.fillRect(a, pr.getY(), b - a, pr.getHeight()); } }
     Graphics::ScopedSaveState ss(g); g.reduceClipRegion(pr.toNearestInt());
-    if (bars) for (auto& s : series) { if (s.dash) continue; g.setColour(C::rtaBar);
+    if (bars) for (auto& s : series) { if (s.dash) continue; g.setColour(C::rtaBar());
         for (size_t i = 0; i < s.v.size() && i < barLo.size(); ++i) { float a = xOf(barLo[i]) + 1, b = xOf(barHi[i]) - 1, y = yOf(s.v[i]); g.fillRect(a, y, std::max(1.f, b - a), pr.getBottom() - y); }
         Path p; for (size_t i = 0; i < s.v.size(); ++i) { float x = xOf(s.f[i]), y = yOf(s.v[i]); if (i == 0) p.startNewSubPath(x, y); else p.lineTo(x, y); }
-        g.setColour(s.c); g.strokePath(p, PathStrokeType(th::stroke::traceSecondary, PathStrokeType::curved, PathStrokeType::rounded)); }
+        g.setColour(s.c); g.strokePath(p, PathStrokeType(D::traceSecondary(), PathStrokeType::curved, PathStrokeType::rounded)); }
     for (auto& s : series) {
         if (bars && !s.dash) continue;
         Path p; bool started = false; double prev = 0;
@@ -87,6 +96,7 @@ void PlotComponent::paint(Graphics& g) {
             float x = xOf(f), y = yOf(s.v[i]);
             bool jump = started && wrapPhase && std::abs(s.v[i] - prev) > 180;
             if (!started || jump) { p.startNewSubPath(x, y); started = true; } else p.lineTo(x, y); prev = s.v[i]; }
+        if (!s.dash && foh::ui::theme().trace.glow) { g.setColour(s.c.withMultipliedAlpha(0.22f)); g.strokePath(p, PathStrokeType(s.width * 3.5f, PathStrokeType::curved, PathStrokeType::rounded)); } // glow = second wide stroke, no shadow effects
         g.setColour(s.c); PathStrokeType st(s.width, PathStrokeType::curved, PathStrokeType::rounded);
         if (s.dash) { Path d; st.createDashedStroke(d, p, s.dash, 2); g.fillPath(d); } else g.strokePath(p, st);
     }
@@ -130,9 +140,9 @@ MainComponent::MainComponent() {
 
     const char* pages[] = {"Home / Setup", "Transfer Function", "RTA / Spectrum", "Guides"};
     for (int i = 0; i < 4; ++i) { auto* b = nav.add(new TextButton(pages[i])); b->onClick = [this, i] { showPage(i); }; addAndMakeVisible(b); }
-    addAndMakeVisible(status); status.setFont(FohLookAndFeel::font(T::small)); status.setColour(Label::textColourId, C::textBody);
+    addAndMakeVisible(status); status.setFont(FohLookAndFeel::font(T::small)); status.setColour(Label::textColourId, C::textBody());
     addAndMakeVisible(pauseBtn); pauseBtn.setClickingTogglesState(true); pauseBtn.onClick = [this] { paused = pauseBtn.getToggleState(); pauseBtn.setButtonText(paused ? "Resume" : "Pause"); };
-    addAndMakeVisible(help); help.setJustificationType(Justification::topLeft); help.setColour(Label::textColourId, C::textBody); help.setFont(FohLookAndFeel::font(T::body));
+    addAndMakeVisible(help); help.setJustificationType(Justification::topLeft); help.setColour(Label::textColourId, C::textBody()); help.setFont(FohLookAndFeel::font(T::body));
     addAndMakeVisible(pageTitle); pageTitle.setFont(FohLookAndFeel::font(T::title, true));
 
     auto chanItems = [](ComboBox& b, const char* pre) { for (int i = 1; i <= 4; ++i) b.addItem(String(pre) + String(i), i); };
@@ -149,8 +159,11 @@ MainComponent::MainComponent() {
     calBtn.onClick = [this] { loadCal(); }; addChildComponent(calBtn);
     calToggle.setClickingTogglesState(true); calToggle.onClick = [this] { calOn = calToggle.getToggleState() && cal.ok(); }; addChildComponent(calToggle);
     for (auto* l : {&setupHelp, &calLabel, &levelLabel}) { l->setFont(FohLookAndFeel::font(T::body)); addChildComponent(*l); }
-    setupHelp.setText("ROUTING (UMC404HD defaults)", dontSendNotification); setupHelp.setColour(Label::textColourId, C::textSecondary);
+    setupHelp.setText("ROUTING (UMC404HD defaults)", dontSendNotification); setupHelp.setColour(Label::textColourId, C::textSecondary());
     calLabel.setText("No mic cal loaded", dontSendNotification);
+    { auto& tm = foh::theme::ThemeManager::get(); int i = 1; for (auto& t : tm.all()) { themeBox.addItem("Theme: " + t.displayName, i); if (t.id == tm.current().id) themeBox.setSelectedId(i, dontSendNotification); ++i; }
+      themeBox.onChange = [this] { auto& all = foh::theme::ThemeManager::get().all(); int k = themeBox.getSelectedId() - 1; if (k >= 0 && k < (int) all.size()) foh::theme::ThemeManager::get().setTheme(all[(size_t) k].id); };
+      addChildComponent(themeBox); tm.addChangeListener(this); }
 
     magPlot.yLabel = "MAGNITUDE DB"; magPlot.showLegend = true; magPlot.yMin = -12; magPlot.yMax = 12; magPlot.yStep = 6;
     phasePlot.yLabel = u8("PHASE \xc2\xb0"); phasePlot.yMin = -180; phasePlot.yMax = 180; phasePlot.yStep = 90; phasePlot.wrapPhase = true;
@@ -166,9 +179,9 @@ MainComponent::MainComponent() {
     findBtn.onClick = [this] { findDelay(); };
     insertBtn.onClick = [this] { if (!lastDelay.arrivals.empty()) { tf->setReferenceDelaySamples((int) std::lround(lastDelay.arrivals[0].delaySamples)); lockedDelayMs = lastDelay.arrivals[0].delayMs; } };
     clearAvgBtn.onClick = [this] { tf->reset(); rta->reset(); };
-    delayCaption.setText("DELAY FINDER", dontSendNotification); delayCaption.setFont(FohLookAndFeel::font(T::label)); delayCaption.setColour(Label::textColourId, C::textSecondary);
+    delayCaption.setText("DELAY FINDER", dontSendNotification); delayCaption.setFont(FohLookAndFeel::font(T::label)); delayCaption.setColour(Label::textColourId, C::textSecondary());
     delayValue.setFont(FohLookAndFeel::font(T::valueDelay, true)); delayValue.setText("--", dontSendNotification);
-    delayDetail.setFont(FohLookAndFeel::font(T::body)); delayDetail.setColour(Label::textColourId, C::textSecondary); delayDetail.setText("press Find again", dontSendNotification);
+    delayDetail.setFont(FohLookAndFeel::font(T::body)); delayDetail.setColour(Label::textColourId, C::textSecondary()); delayDetail.setText("press Find again", dontSendNotification);
     traceModel.o = this; traceList.setModel(&traceModel); traceList.setRowHeight(22);
     delTraceBtn.onClick = [this] { traces.remove(traceList.getSelectedRow()); refreshTraceList(); };
 
@@ -180,9 +193,9 @@ MainComponent::MainComponent() {
     guideBox.setSelectedId(2, dontSendNotification); guideBox.onChange = [this] { guide = guideBox.getSelectedId() - 1; step = 0; guideResult.setText({}, dontSendNotification); layoutGuide(); };
     for (auto* c : std::initializer_list<Component*>{&guideBox, &guideStepLabel, &guideBody, &guideResult, &guideReadout, &guidePrev, &guideAct, &doneSummary, &doneActions, &doneAgain, &doneHome}) addChildComponent(c);
     makePrimary(guideAct);
-    guideStepLabel.setFont(FohLookAndFeel::font(T::label)); guideStepLabel.setColour(Label::textColourId, C::accent);
+    guideStepLabel.setFont(FohLookAndFeel::font(T::label)); guideStepLabel.setColour(Label::textColourId, C::accent());
     guideBody.setFont(FohLookAndFeel::font(T::logo)); guideBody.setJustificationType(Justification::centredLeft);
-    guideResult.setFont(FohLookAndFeel::font(T::body)); guideResult.setJustificationType(Justification::topLeft); guideResult.setColour(Label::textColourId, C::textBody);
+    guideResult.setFont(FohLookAndFeel::font(T::body)); guideResult.setJustificationType(Justification::topLeft); guideResult.setColour(Label::textColourId, C::textBody());
     guideReadout.setFont(FohLookAndFeel::font(T::valueMedium, true));
     doneSummary.setFont(FohLookAndFeel::font(T::logo)); doneSummary.setJustificationType(Justification::topLeft);
     doneActions.setFont(FohLookAndFeel::font(T::logo)); doneActions.setJustificationType(Justification::topLeft);
@@ -197,31 +210,31 @@ MainComponent::MainComponent() {
     if (auto* e = std::getenv("FOH_START_PAGE")) { guide = std::getenv("FOH_GUIDE") ? std::atoi(std::getenv("FOH_GUIDE")) : 1; step = std::getenv("FOH_STEP") ? std::atoi(std::getenv("FOH_STEP")) : 0;
         guideBox.setSelectedId(guide + 1, dontSendNotification); showPage(jlimit(0, 3, std::atoi(e))); }
 }
-MainComponent::~MainComponent() { stopTimer(); dm.removeAudioCallback(&engine); traceList.setModel(nullptr); setLookAndFeel(nullptr); }
+MainComponent::~MainComponent() { foh::theme::ThemeManager::get().removeChangeListener(this); stopTimer(); dm.removeAudioCallback(&engine); traceList.setModel(nullptr); setLookAndFeel(nullptr); }
 
 Rectangle<int> MainComponent::mainArea() const {
-    return getLocalBounds().withTrimmedTop(th::frame::statusBarHeight).withTrimmedLeft(th::frame::navWidth).withTrimmedRight(th::frame::helperWidth).reduced(th::frame::mainPadding);
+    return getLocalBounds().withTrimmedTop(D::statusBarHeight()).withTrimmedLeft(D::navWidth()).withTrimmedRight(D::helperWidth()).reduced(D::mainPadding());
 }
 
-static void card(Graphics& g, Rectangle<int> r, Colour border = C::border) {
-    g.setColour(C::cardBackground); g.fillRoundedRectangle(r.toFloat(), th::radius::card);
-    g.setColour(border); g.drawRoundedRectangle(r.toFloat().reduced(0.5f), th::radius::card, th::stroke::hairline);
+static void card(Graphics& g, Rectangle<int> r, Colour border = C::border()) {
+    g.setColour(C::cardBackground()); g.fillRoundedRectangle(r.toFloat(), D::radiusCard());
+    g.setColour(border); g.drawRoundedRectangle(r.toFloat().reduced(0.5f), D::radiusCard(), D::hairline());
 }
 
 void MainComponent::paint(Graphics& g) {
-    using namespace th::frame;
-    g.fillAll(C::background);
-    g.setColour(C::statusBarBackground); g.fillRect(0, 0, getWidth(), statusBarHeight);
-    g.setColour(C::navBackground); g.fillRect(0, statusBarHeight, navWidth, getHeight());
-    g.setColour(C::helperBackground); g.fillRect(getWidth() - helperWidth, statusBarHeight, helperWidth, getHeight());
-    g.setColour(C::border); g.drawHorizontalLine(statusBarHeight - 1, 0, (float) getWidth());
+    const int statusBarHeight = D::statusBarHeight(), navWidth = D::navWidth(), helperWidth = D::helperWidth();
+    g.fillAll(C::background());
+    g.setColour(C::statusBarBackground()); g.fillRect(0, 0, getWidth(), statusBarHeight);
+    g.setColour(C::navBackground()); g.fillRect(0, statusBarHeight, navWidth, getHeight());
+    g.setColour(C::helperBackground()); g.fillRect(getWidth() - helperWidth, statusBarHeight, helperWidth, getHeight());
+    g.setColour(C::border()); g.drawHorizontalLine(statusBarHeight - 1, 0, (float) getWidth());
     g.drawVerticalLine(navWidth - 1, (float) statusBarHeight, (float) getHeight()); g.drawVerticalLine(getWidth() - helperWidth, (float) statusBarHeight, (float) getHeight());
-    g.setFont(FohLookAndFeel::font(T::logo, true)); g.setColour(C::textPrimary); g.drawText("FOH", 16, 0, 40, statusBarHeight, Justification::centredLeft);
-    g.setColour(C::accent); g.drawText("Gauge", 52, 0, 80, statusBarHeight, Justification::centredLeft);
+    g.setFont(FohLookAndFeel::font(T::logo, true)); g.setColour(C::textPrimary()); g.drawText("FOH", 16, 0, 40, statusBarHeight, Justification::centredLeft);
+    g.setColour(C::accent()); g.drawText("Gauge", 52, 0, 80, statusBarHeight, Justification::centredLeft);
     g.setFont(FohLookAndFeel::font(T::small, false, true)); g.drawText("WHAT AM I LOOKING AT?", getWidth() - helperWidth + 20, statusBarHeight + 20, 280, 16, Justification::left);
-    if (page >= 0 && page < nav.size()) { auto b = nav[page]->getBounds(); g.setColour(C::accent); g.fillRect(b.getX(), b.getY() + 6, (int) th::stroke::navActiveBar, b.getHeight() - 12); }
-    if (page == 1) { card(g, tfCard); card(g, delayCard, C::cardBorderEmphasis);
-        g.setFont(FohLookAndFeel::font(T::label)); g.setColour(C::textSecondary);
+    if (page >= 0 && page < nav.size()) { auto b = nav[page]->getBounds(); g.setColour(C::accent()); g.fillRect(b.getX(), b.getY() + 6, (int) D::navActiveBar(), b.getHeight() - 12); }
+    if (page == 1) { card(g, tfCard); card(g, delayCard, C::cardBorderEmphasis());
+        g.setFont(FohLookAndFeel::font(T::label)); g.setColour(C::textSecondary());
         for (auto* p : {&magPlot, &phasePlot, &cohPlot}) { auto b = p->getBounds(); Graphics::ScopedSaveState s(g);
             g.addTransform(AffineTransform::rotation(-MathConstants<float>::halfPi, (float) b.getX() - 14, (float) b.getCentreY()));
             g.drawText(p->yLabel, b.getX() - 14 - b.getHeight() / 2, b.getCentreY() - 8, b.getHeight(), 16, Justification::centred); } }
@@ -229,22 +242,22 @@ void MainComponent::paint(Graphics& g) {
     if (page == 3) {
         auto& steps = kGuides[(size_t) guide]; int n = (int) steps.size(), gap = 8; float w = (gProgress.getWidth() - gap * (n - 1)) / (float) n;
         for (int i = 0; i < n; ++i) { float x = gProgress.getX() + i * (w + gap);
-            Colour bar = i < step ? C::ok : i == step ? C::accent : C::ghostBorder, lab = i < step ? C::ok : i == step ? C::textStrong : C::textAxis;
-            g.setColour(bar); g.fillRoundedRectangle(x, (float) gProgress.getY(), w, 6.f, th::radius::progress);
+            Colour bar = i < step ? C::ok() : i == step ? C::accent() : C::ghostBorder(), lab = i < step ? C::ok() : i == step ? C::textStrong() : C::textAxis();
+            g.setColour(bar); g.fillRoundedRectangle(x, (float) gProgress.getY(), w, 6.f, D::radiusProgress());
             g.setColour(lab); g.setFont(FohLookAndFeel::font(T::small)); g.drawText(String(i < step ? u8("\xe2\x9c\x93 ") : "") + String(i + 1) + ". " + u8(steps[(size_t) i].progress), (int) x, gProgress.getY() + 14, (int) w, 16, Justification::left); }
         if (!gChartCard.isEmpty()) card(g, gChartCard);
-        if (!gActionCard.isEmpty()) card(g, gActionCard, C::cardBorderEmphasis);
+        if (!gActionCard.isEmpty()) card(g, gActionCard, C::cardBorderEmphasis());
         if (!gDoneA.isEmpty()) { card(g, gDoneA); card(g, gDoneB);
-            auto c = Rectangle<float>((float) gDoneA.getX() + 22, (float) gDoneA.getY() + 22, 56, 56); g.setColour(C::successBadgeBg); g.fillEllipse(c);
-            g.setColour(C::ok); g.setFont(FohLookAndFeel::font(T::icon, true)); g.drawText(u8("\xe2\x9c\x93"), c, Justification::centred); }
+            auto c = Rectangle<float>((float) gDoneA.getX() + 22, (float) gDoneA.getY() + 22, 56, 56); g.setColour(C::successBadgeBg()); g.fillEllipse(c);
+            g.setColour(C::ok()); g.setFont(FohLookAndFeel::font(T::icon, true)); g.drawText(u8("\xe2\x9c\x93"), c, Justification::centred); }
     }
 }
 
 void MainComponent::resized() {
-    using namespace th::frame;
+    const int statusBarHeight = D::statusBarHeight(), navWidth = D::navWidth(), helperWidth = D::helperWidth();
     auto nr = Rectangle<int>(10, statusBarHeight + 16, navWidth - 20, 44);
     for (auto* b : nav) { b->setBounds(nr); nr.translate(0, 48); }
-    status.setBounds(200, 0, getWidth() - 200 - 140, statusBarHeight);
+    status.setBounds(navWidth, 0, getWidth() - navWidth - 140, statusBarHeight);
     pauseBtn.setBounds(getWidth() - 120, 10, 100, 35);
     help.setBounds(getWidth() - helperWidth + 14, statusBarHeight + 44, helperWidth - 34, getHeight() - statusBarHeight - 60);
     auto c = mainArea();
@@ -257,7 +270,8 @@ void MainComponent::resized() {
       auto row = s.removeFromTop(30); int w = row.getWidth() / 4; for (auto* b : {&micBox, &refBox, &outABox, &outBBox}) b->setBounds(row.removeFromLeft(w).reduced(4, 0));
       s.removeFromTop(12); row = s.removeFromTop(30); genBox.setBounds(row.removeFromLeft(300).reduced(4, 0)); genGain.setBounds(row.removeFromLeft(360).reduced(8, 0));
       s.removeFromTop(12); row = s.removeFromTop(30); calBtn.setBounds(row.removeFromLeft(150).reduced(4, 0)); calToggle.setBounds(row.removeFromLeft(90).reduced(4, 0)); calLabel.setBounds(row);
-      s.removeFromTop(12); levelLabel.setBounds(s.removeFromTop(30)); }
+      s.removeFromTop(12); levelLabel.setBounds(s.removeFromTop(30));
+      s.removeFromTop(12); row = s.removeFromTop(30); themeBox.setBounds(row.removeFromLeft(300).reduced(4, 0)); }
     // TF: card, then delay bar 63 h, then trace list
     { auto s = c; auto traceArea = s.removeFromBottom(96); s.removeFromBottom(10);
       delayCard = s.removeFromBottom(63); s.removeFromBottom(10); tfCard = s;
@@ -273,15 +287,24 @@ void MainComponent::resized() {
     layoutGuide();
 }
 
+void MainComponent::changeListenerCallback(ChangeBroadcaster*) { // theme switched: refresh stock-widget colours, then re-layout (widths) + repaint
+    lnf.applyTheme(); makePrimary(insertBtn); makePrimary(guideAct); makePrimary(doneAgain);
+    status.setColour(Label::textColourId, C::textBody()); help.setColour(Label::textColourId, C::textBody()); setupHelp.setColour(Label::textColourId, C::textSecondary());
+    delayCaption.setColour(Label::textColourId, C::textSecondary()); delayDetail.setColour(Label::textColourId, C::textSecondary());
+    guideStepLabel.setColour(Label::textColourId, C::accent()); guideResult.setColour(Label::textColourId, C::textBody());
+    sendLookAndFeelChange(); updateTF(); updateGuidePlots(); resized(); repaint();
+    if (auto* w = getTopLevelComponent()) if (auto* dw = dynamic_cast<DocumentWindow*>(w)) dw->setBackgroundColour(C::background());
+}
+
 void MainComponent::showPage(int p) {
     page = p;
     for (int i = 0; i < nav.size(); ++i) { nav[i]->setToggleState(i == p, dontSendNotification); }
-    std::vector<Component*> all {selector.get(), &micBox, &refBox, &outABox, &outBBox, &genBox, &genGain, &calBtn, &calToggle, &setupHelp, &calLabel, &levelLabel,
+    std::vector<Component*> all {selector.get(), &micBox, &refBox, &outABox, &outBBox, &genBox, &genGain, &calBtn, &calToggle, &setupHelp, &calLabel, &levelLabel, &themeBox,
         &magPlot, &phasePlot, &cohPlot, &smoothBox, &avgBox, &storeBtn, &findBtn, &clearAvgBtn, &delayCaption, &delayValue, &delayDetail, &insertBtn, &traceList, &delTraceBtn,
         &rtaPlot, &rtaFracBox, &guideBox, &guideStepLabel, &guideBody, &guideResult, &guideReadout, &guidePrev, &guideAct, &gPlotA, &gPlotB, &doneSummary, &doneActions, &doneAgain, &doneHome};
     for (auto* x : all) x->setVisible(false);
     std::vector<Component*> on;
-    if (p == 0) on = {selector.get(), &micBox, &refBox, &outABox, &outBBox, &genBox, &genGain, &calBtn, &calToggle, &setupHelp, &calLabel, &levelLabel};
+    if (p == 0) on = {selector.get(), &micBox, &refBox, &outABox, &outBBox, &genBox, &genGain, &calBtn, &calToggle, &setupHelp, &calLabel, &levelLabel, &themeBox};
     if (p == 1) on = {&magPlot, &phasePlot, &cohPlot, &smoothBox, &avgBox, &storeBtn, &findBtn, &clearAvgBtn, &delayCaption, &delayValue, &delayDetail, &insertBtn, &traceList, &delTraceBtn};
     if (p == 2) on = {&rtaPlot, &rtaFracBox};
     for (auto* x : on) x->setVisible(true);
@@ -329,15 +352,18 @@ void MainComponent::updateTF() {
     lastTF = tf->result(sm); if (calOn) cal.apply(lastTF);
     if (page != 1) return;
     for (auto* p : {&magPlot, &phasePlot, &cohPlot}) p->series.clear();
-    const Colour tc[] = {C::traceStored, C::warning, Colour(0xffa080ff), C::ok, Colour(0xffff7090), Colour(0xff70a0ff), Colour(0xffd0d060), Colour(0xffff9050)};
     for (int i = 0; i < traces.count(); ++i) { auto& t = traces.at(i); if (!t.visible) continue;
-        PlotComponent::Series s; s.c = tc[i % 8]; s.dash = th::stroke::dashStored; s.width = th::stroke::traceStored; s.label = String(t.name);
+        PlotComponent::Series s; s.c = C::storedTrace(i % 8); s.dash = th::stroke::dashStored; s.width = D::traceStored(); s.label = String(t.name);
         logDecimate(t.tf, t.tf.magDb, s.f, s.v); magPlot.series.push_back(s);
         logDecimate(t.tf, t.tf.phaseDeg, s.f, s.v); phasePlot.series.push_back(s); }
-    PlotComponent::Series s; s.c = C::accent; s.label = "Live";
+    PlotComponent::Series s; s.c = C::accent(); s.label = "Live";
     logDecimate(lastTF, lastTF.magDb, s.f, s.v); magPlot.series.push_back(s);
     logDecimate(lastTF, lastTF.phaseDeg, s.f, s.v); phasePlot.series.push_back(s);
-    s.label = {}; s.c = C::traceCoherence; s.width = th::stroke::traceSecondary; logDecimate(lastTF, lastTF.coherence, s.f, s.v); cohPlot.series.push_back(s);
+    s.label = {}; s.c = C::traceCoherence(); s.width = D::traceSecondary(); logDecimate(lastTF, lastTF.coherence, s.f, s.v); cohPlot.series.push_back(s);
+    { std::vector<std::pair<double,double>> lc; // display-only: hatch where coherence < 0.6 (red in the traffic-light scheme)
+      for (size_t i = 0; i < s.v.size(); ++i) if (s.v[i] < 0.6) { double lo = i ? std::sqrt(s.f[i - 1] * s.f[i]) : s.f[i], hi = i + 1 < s.f.size() ? std::sqrt(s.f[i] * s.f[i + 1]) : s.f[i];
+          if (!lc.empty() && lc.back().second >= lo * 0.999) lc.back().second = hi; else lc.push_back({lo, hi}); }
+      magPlot.lowCoh = lc; phasePlot.lowCoh = lc; }
     magPlot.note = "averages " + String(lastTF.averages) + (calOn ? u8(" \xc2\xb7 cal applied") : "");
     for (auto* p : {&magPlot, &phasePlot, &cohPlot}) p->repaint();
 }
@@ -345,7 +371,7 @@ void MainComponent::updateTF() {
 void MainComponent::updateGuidePlots() {
     auto& st = kGuides[(size_t) guide][(size_t) step];
     auto* main = findTrace("Main"); auto* sub = findTrace("Sub");
-    auto add = [](PlotComponent& p, const foh::TFResult& r, const std::vector<double>& v, Colour c, const float* dash, double maxF = 1e9, float w = th::stroke::trace, const String& label = {}) {
+    auto add = [](PlotComponent& p, const foh::TFResult& r, const std::vector<double>& v, Colour c, const float* dash, double maxF = 1e9, float w = D::trace(), const String& label = {}) {
         PlotComponent::Series s; s.label = label; s.c = c; s.dash = dash; s.maxF = maxF; s.width = w; logDecimate(r, v, s.f, s.v); p.series.push_back(s); };
     gPlotA.series.clear(); gPlotB.series.clear();
     std::vector<std::pair<double,double>> band; if (xover.found) band = {{xover.lo, xover.hi}};
@@ -354,18 +380,18 @@ void MainComponent::updateGuidePlots() {
     auto magSetup = [](PlotComponent& p, double lo, double hi) { p.yMin = lo; p.yMax = hi; p.yStep = 6; p.wrapPhase = false; };
     auto phSetup = [](PlotComponent& p) { p.yMin = -180; p.yMax = 180; p.yStep = 90; p.wrapPhase = true; };
     switch (st.chart) {
-        case 1: magSetup(gPlotA, -24, 6); add(gPlotA, lastTF, lastTF.magDb, C::accent, nullptr); break;
-        case 2: magSetup(gPlotA, -24, 6); if (main) add(gPlotA, main->tf, main->tf.magDb, C::traceStored, th::stroke::dashStored, 1e9, th::stroke::traceStored, "Mains (stored)");
-                add(gPlotA, lastTF, lastTF.magDb, C::warning, nullptr, 1e9, th::stroke::trace, "Sub (live)"); break;
+        case 1: magSetup(gPlotA, -24, 6); add(gPlotA, lastTF, lastTF.magDb, C::accent(), nullptr); break;
+        case 2: magSetup(gPlotA, -24, 6); if (main) add(gPlotA, main->tf, main->tf.magDb, C::traceStored(), th::stroke::dashStored, 1e9, D::traceStored(), "Mains (stored)");
+                add(gPlotA, lastTF, lastTF.magDb, C::warning(), nullptr, 1e9, D::trace(), "Sub (live)"); break;
         case 3: phSetup(gPlotA); gPlotA.centreNote = "phase hidden above 400 Hz";
-                if (main) add(gPlotA, main->tf, main->tf.phaseDeg, C::accent, nullptr, 400, th::stroke::trace, "Mains phase"); if (sub) add(gPlotA, sub->tf, sub->tf.phaseDeg, C::warning, nullptr, 400, th::stroke::trace, "Sub phase"); break;
+                if (main) add(gPlotA, main->tf, main->tf.phaseDeg, C::accent(), nullptr, 400, D::trace(), "Mains phase"); if (sub) add(gPlotA, sub->tf, sub->tf.phaseDeg, C::warning(), nullptr, 400, D::trace(), "Sub phase"); break;
         case 4: phSetup(gPlotA); gPlotA.centreNote = "phase hidden above 400 Hz"; magSetup(gPlotB, -24, 12);
-                if (main) add(gPlotA, main->tf, main->tf.phaseDeg, C::accent, nullptr, 400, th::stroke::trace, "Mains phase");
-                if (sub) add(gPlotA, sub->tf, sub->tf.phaseDeg, C::warning, th::stroke::dashLimit, 400, th::stroke::trace, "Sub phase");
-                if (main) add(gPlotB, main->tf, main->tf.magDb, C::traceMainsMuted, th::stroke::dashComponent, 1e9, th::stroke::traceSecondary, "Mains");
-                if (sub) add(gPlotB, sub->tf, sub->tf.magDb, C::traceSubMuted, th::stroke::dashComponent, 1e9, th::stroke::traceSecondary, "Sub");
-                add(gPlotB, lastTF, lastTF.magDb, C::traceSum, nullptr, 1e9, th::stroke::trace, "Sum (live)"); break;
-        case 6: magSetup(gPlotA, -24, 12); add(gPlotA, lastTF, lastTF.magDb, C::accent, nullptr); break;
+                if (main) add(gPlotA, main->tf, main->tf.phaseDeg, C::accent(), nullptr, 400, D::trace(), "Mains phase");
+                if (sub) add(gPlotA, sub->tf, sub->tf.phaseDeg, C::warning(), th::stroke::dashLimit, 400, D::trace(), "Sub phase");
+                if (main) add(gPlotB, main->tf, main->tf.magDb, C::traceMainsMuted(), th::stroke::dashComponent, 1e9, D::traceSecondary(), "Mains");
+                if (sub) add(gPlotB, sub->tf, sub->tf.magDb, C::traceSubMuted(), th::stroke::dashComponent, 1e9, D::traceSecondary(), "Sub");
+                add(gPlotB, lastTF, lastTF.magDb, C::traceSum(), nullptr, 1e9, D::trace(), "Sum (live)"); break;
+        case 6: magSetup(gPlotA, -24, 12); add(gPlotA, lastTF, lastTF.magDb, C::accent(), nullptr); break;
         default: break;
     }
     gPlotA.repaint(); gPlotB.repaint();
@@ -374,7 +400,7 @@ void MainComponent::updateGuidePlots() {
 void MainComponent::updateRTA() {
     if (calOn) rta->setCalibrationDb(cal.correctionDb(8193, analysisRate / 16384)); else rta->setCalibrationDb({});
     auto b = rta->bandsDb(); rtaPlot.series.clear(); rtaPlot.barLo.clear(); rtaPlot.barHi.clear();
-    PlotComponent::Series s; s.c = C::accent;
+    PlotComponent::Series s; s.c = C::accent();
     for (size_t i = 0; i < b.size(); ++i) { auto& bd = rta->bands()[i]; rtaPlot.barLo.push_back(bd.fLo); rtaPlot.barHi.push_back(bd.fHi); s.f.push_back(bd.fCenter); s.v.push_back(b[i]); }
     rtaPlot.series.push_back(s); rtaPlot.note = calOn ? "cal applied" : ""; rtaPlot.repaint();
 }
@@ -403,8 +429,8 @@ void MainComponent::refreshTraceList() { traceList.updateContent(); traceList.re
 int MainComponent::TraceModel::getNumRows() { return o->traces.count(); }
 void MainComponent::TraceModel::paintListBoxItem(int row, Graphics& g, int w, int h, bool sel) {
     if (row >= o->traces.count()) return; auto& t = o->traces.at(row);
-    if (sel) g.fillAll(C::navItemActiveBg);
-    g.setColour(t.visible ? C::textPrimary : C::textAxis); g.setFont(FohLookAndFeel::font(T::small));
+    if (sel) g.fillAll(C::navItemActiveBg());
+    g.setColour(t.visible ? C::textPrimary() : C::textAxis()); g.setFont(FohLookAndFeel::font(T::small));
     g.drawText(String(t.visible ? "[x] " : "[ ] ") + String(t.name) + "  (ref delay " + String(t.refDelayMs, 2) + " ms)", 6, 0, w - 6, h, Justification::centredLeft);
 }
 void MainComponent::TraceModel::listBoxItemClicked(int row, const MouseEvent& e) {

@@ -2,7 +2,7 @@
 #include <juce_audio_utils/juce_audio_utils.h>
 #include <juce_gui_extra/juce_gui_extra.h>
 #include "fohcore/fohcore.h"
-#include "FohTheme.h"
+#include "ThemeBridge.h"
 
 namespace th = foh::theme;
 
@@ -32,6 +32,7 @@ private:
 class FohLookAndFeel : public juce::LookAndFeel_V4 {
 public:
     FohLookAndFeel();
+    void applyTheme(); // re-read ColourIds from the current Theme
     juce::Typeface::Ptr getTypefaceForFont(const juce::Font&) override;
     void drawButtonBackground(juce::Graphics&, juce::Button&, const juce::Colour&, bool, bool) override;
     static juce::Font font(float size, bool bold = false, bool semibold = false);
@@ -40,24 +41,26 @@ public:
 
 class PlotComponent : public juce::Component {
 public:
-    struct Series { std::vector<double> f, v; juce::Colour c; const float* dash = nullptr; float width = th::stroke::trace; double maxF = 1e9; juce::String label; };
+    struct Series { std::vector<double> f, v; juce::Colour c; const float* dash = nullptr; float width = foh::ui::dim::trace(); double maxF = 1e9; juce::String label; };
     struct Annotation { double lo, hi; juce::String label; };
     std::vector<Annotation> annotations; bool showLegend = false; // legend row: series with a label, 13 px, gap 18, padding 4/14
     juce::String yLabel; double yMin = -12, yMax = 12, yStep = 6; double fMin = 20, fMax = 20000; bool wrapPhase = false;
     std::vector<Series> series; std::vector<std::pair<double,double>> shade; juce::String shadeLabel; juce::String note, centreNote;
     bool bars = false; std::vector<double> barLo, barHi;
+    std::vector<std::pair<double,double>> lowCoh; // hatched low-coherence regions (Hz)
     bool exampleData = false; // spec: EXAMPLE DATA tag must stay on every example/mock trace until real data exists
     void paint(juce::Graphics&) override;
-    float xOf(double f) const; float yOf(double v) const;
+    float xOf(double f) const; juce::Image hatchTile; juce::Colour hatchFor; // cached hatch pattern, rebuilt only on theme colour change
+    float yOf(double v) const;
     int plotX() const { return 46; } int plotY() const { return 8; } int plotW() const { return getWidth() - 46 - 14; } int plotH() const { return getHeight() - 8 - 24 - (showLegend ? 22 : 0); }
 };
 
-class MainComponent : public juce::Component, private juce::Timer {
+class MainComponent : public juce::Component, private juce::Timer, private juce::ChangeListener {
 public:
     MainComponent(); ~MainComponent() override;
     void paint(juce::Graphics&) override; void resized() override;
 private:
-    void timerCallback() override;
+    void timerCallback() override; void changeListenerCallback(juce::ChangeBroadcaster*) override;
     void showPage(int p); void updateTF(); void updateRTA(); void updateGuidePlots(); void findDelay(); bool storeTrace(const juce::String& name);
     void refreshTraceList(); void loadCal(); void layoutGuide(); void guideAction(int which);
     juce::String explain() const; const foh::Trace* findTrace(const char* n) const;
@@ -75,7 +78,7 @@ private:
     juce::Label help, pageTitle;
     // setup
     juce::ComboBox micBox, refBox, outABox, outBBox, genBox; juce::Slider genGain; juce::TextButton calBtn {"Load mic cal..."}, calToggle {"Cal ON"};
-    juce::Label setupHelp, calLabel, levelLabel;
+    juce::Label setupHelp, calLabel, levelLabel; juce::ComboBox themeBox;
     // TF
     PlotComponent magPlot, phasePlot, cohPlot; juce::ComboBox smoothBox, avgBox; juce::TextButton storeBtn {"Store"}, clearAvgBtn {"Reset avg"};
     juce::Label delayCaption, delayValue, delayDetail; juce::TextButton findBtn {"Find again"}, insertBtn {"Insert delay"};
