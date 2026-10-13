@@ -370,3 +370,19 @@ TEST_CASE("UI bridge: commands drive the analysis objects end to end") {
     auto& r = p.latest(); REQUIRE(r.smoothingFraction==24); REQUIRE(r.tf.blankThreshold==0.8); REQUIRE(r.delaySeq==42);
     REQUIRE(!r.delayWasSub); REQUIRE(r.delay.arrivals[0].delaySamples==Approx(480).margin(0.5));
 }
+TEST_CASE("T6 traffic light: exact thresholds, NaN red") {
+    REQUIRE(classifyCoherence(1.0)==TrafficLight::Green); REQUIRE(classifyCoherence(0.9)==TrafficLight::Green);
+    REQUIRE(classifyCoherence(0.8999)==TrafficLight::Amber); REQUIRE(classifyCoherence(0.75)==TrafficLight::Amber);
+    REQUIRE(classifyCoherence(0.6)==TrafficLight::Amber); REQUIRE(classifyCoherence(0.5999)==TrafficLight::Red);
+    REQUIRE(classifyCoherence(0.0)==TrafficLight::Red); REQUIRE(classifyCoherence(std::nan(""))==TrafficLight::Red);
+    STATIC_REQUIRE(classifyCoherence(0.95)==TrafficLight::Green);
+    REQUIRE(std::string(trafficLightName(TrafficLight::Amber))=="amber");
+    // on a real TF: clean -> green, SNR 0 dB -> red (~0.5)
+    auto x = pink(48000*6, 5); auto nz = pink(48000*6, 99); std::vector<float> y(x.size()); for (size_t i=0;i<y.size();++i) y[i]=x[i]+nz[i];
+    TransferFunction a(16384,48000), b(16384,48000); a.setAverages(0); b.setAverages(0);
+    a.process(x.data(), x.data(), (int)x.size()); b.process(x.data(), y.data(), (int)x.size());
+    auto ra = a.result(), rb = b.result(3);
+    REQUIRE(coherenceSummary(ra).light==TrafficLight::Green); REQUIRE(coherenceSummary(rb).light==TrafficLight::Red);
+    REQUIRE(ra.light(binOf(ra,1000))==TrafficLight::Green); REQUIRE(ra.light(999999)==TrafficLight::Red);
+    TFResult empty; REQUIRE(coherenceSummary(empty).bins==0); REQUIRE(coherenceSummary(empty).light==TrafficLight::Red);
+}
