@@ -175,6 +175,23 @@ struct DelayResult { std::vector<Arrival> arrivals; double confidence = 0; std::
 DelayResult findDelay(const std::vector<float>& ref, const std::vector<float>& meas, double sampleRate,
                       bool phat = true, int maxArrivals = 3, double minSeparationMs = 0.5,
                       double speedOfSound = 343.0);
+// Options form. lpHz/hpHz apply a zero-phase band weighting (4th-order Butterworth
+// magnitude) to the cross-spectrum, e.g. LF-weighting for subs. maxDelayMs bounds the lag
+// search (0 = whole window). forSubs(): 20-150 Hz, GCC-PHAT, 10 ms arrival separation (> LF main lobe).
+struct DelayOptions {
+    bool phat = true; int maxArrivals = 3; double minSeparationMs = 0.5;
+    double speedOfSound = 343.0; double hpHz = 0, lpHz = 0; double maxDelayMs = 0;
+    static DelayOptions forSubs() { DelayOptions o; o.hpHz = 20; o.lpHz = 150; o.minSeparationMs = 10; o.maxDelayMs = 500; return o; }
+};
+DelayResult findDelay(const std::vector<float>& ref, const std::vector<float>& meas, double sampleRate,
+                      const DelayOptions& opt);
+// Capture length the caller should use: 1 s for mains, 3 s for subs (LF needs
+// many periods for a stable estimate; clamp to 2..4 s for sub work).
+inline int recommendedDelayWindowSamples(double sampleRate, bool sub, double seconds = 0) {
+    double s = seconds > 0 ? seconds : (sub ? 3.0 : 1.0);
+    if (sub) s = s < 2.0 ? 2.0 : (s > 4.0 ? 4.0 : s);
+    return (int) (s * sampleRate);
+}
 // Impulse response from an averaged TF (IFFT of H).
 std::vector<double> impulseFromTF(const TFResult& tf);
 
