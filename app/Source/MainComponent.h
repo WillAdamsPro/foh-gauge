@@ -3,6 +3,7 @@
 #include <juce_gui_extra/juce_gui_extra.h>
 #include "fohcore/fohcore.h"
 #include "ThemeBridge.h"
+#include "AnalysisEngine.h"
 
 namespace th = foh::theme;
 
@@ -42,7 +43,7 @@ public:
 
 class PlotComponent : public juce::Component {
 public:
-    struct Series { std::vector<double> f, v; juce::Colour c; const float* dash = nullptr; float width = foh::ui::dim::trace(); double maxF = 1e9; juce::String label; };
+    struct Series { std::vector<double> f, v; juce::Colour c; const float* dash = nullptr; float width = foh::ui::dim::trace(); double maxF = 1e9; juce::String label; std::vector<uint8_t> gap; }; // gap[i]: blanked bin -> break the trace
     struct Annotation { double lo, hi; juce::String label; };
     std::vector<Annotation> annotations; bool showLegend = false; // legend row: series with a label, 13 px, gap 18, padding 4/14
     juce::String yLabel; double yMin = -12, yMax = 12, yStep = 6; double fMin = 20, fMax = 20000; bool wrapPhase = false;
@@ -122,7 +123,8 @@ public:
     void paint(juce::Graphics&) override; void resized() override;
 private:
     void timerCallback() override; void changeListenerCallback(juce::ChangeBroadcaster*) override;
-    void showPage(int p); void updateTF(); void updateRTA(); void updateGuidePlots(); void findDelay(); bool storeTrace(const juce::String& name);
+    void showPage(int p); void updateTF(); void updateRTA(); void updateGuidePlots(); void requestDelay(bool sub, std::function<void()> then = {}); void onDelayResult(); void beginCapture(const juce::String& name, std::function<void(bool)> then); void lockDelayFromLast();
+    bool delayLocked() const { return !lastDelay.arrivals.empty() && lastDelay.confidence > 0; } /* confidence 0 = no lock */ bool storeTrace(const juce::String& name);
     void refreshTraceList(); void loadCal(); void layoutGuide(); void guideAction(int which);
     juce::String explain() const; const foh::Trace* findTrace(const char* n) const;
     juce::Rectangle<int> mainArea() const;
@@ -130,8 +132,14 @@ private:
     FohLookAndFeel lnf;
     juce::AudioDeviceManager dm; AudioEngine engine;
     std::unique_ptr<juce::AudioDeviceSelectorComponent> selector;
-    std::unique_ptr<foh::TransferFunction> tf; std::unique_ptr<foh::RTA> rta; double analysisRate = 48000;
-    std::vector<float> micHist, refHist; int histPos = 0;
+    AnalysisEngine analysis {engine}; double analysisRate = 48000;
+    // copied out of AnalysisSnapshot (latest() is only valid until the next call)
+    uint64_t lastSeq = 0, lastDelaySeq = 0, nextDelayId = 0; double refDelaySamples = 0, refDelayMs = 0;
+    foh::ConvergenceState conv; std::vector<double> rtaDb; std::vector<foh::Band> rtaBands; bool calApplied = false; juce::String calName;
+    struct { uint64_t id = 0; std::function<void()> then; } pendingDelay;
+    struct { bool active = false; juce::String name; double startMs = 0; std::function<void(bool)> then; } capture; // wait for convergence.settled
+    juce::ComboBox blankBox; juce::String calLabelName; bool lastWasSub = false;
+    bool lastDelayWasSub() const { return lastWasSub; } juce::String lastDelayWasSubText() const { return lastWasSub ? juce::String(" (sub, LF)") : juce::String(); }
     foh::TraceStore traces; foh::MicCal cal; bool calOn = false; foh::DelayResult lastDelay; foh::TFResult lastTF;
     bool paused = false; foh::Band2 xover; std::vector<std::pair<juce::String, juce::String>> summaryRows; // step 09 Done card rows (label, value)
     // frame
