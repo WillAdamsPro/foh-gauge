@@ -27,6 +27,10 @@ Tolerances: **TF magnitude ±0.5 dB**, **phase ±5° wherever coherence > 0.9**,
 | S12 | Repeat S1–S5 at 44.1 and 96 kHz | as above (scale the samples) | as above |
 | S13 | Long delays (50, 200, 500 ms) and the edge of the search window | found, or a clear "out of range" message | ±0.05 ms |
 
+| S14 | Polarity + delay ambiguity: lowpassed (100 Hz, LR4) "sub" vs highpassed "main", offset by 5 ms with sub inverted, vs 10 ms non-inverted | app (or GW) does not lock onto the wrong cycle; it presents ±½-cycle/INV alternatives or picks max-summation | sum within 3 dB → ±1.25 ms |
+| S15 | Band-limited sub signal (30–120 Hz) with 2 ms DSP-style group delay | delay finder value is labeled as an impulse-peak estimate; phase-slope readout agrees with reference_tf in the crossover band | ±5° where coh>0.9 |
+| S16 | Synthetic reflection: direct + copy at -3 dB, +8 ms (comb) | delay finder picks the direct arrival, not the reflection; comb nulls flagged as low-coherence/not EQ-able | ±0.05 ms |
+| S17 | Reference taken through processing (ref = post-EQ copy) | TF shows ~flat; documented as user error; help text warns ref must be pre-DUT | qualitative |
 ## 2. Calibration file import
 Reference file `/workspace/will-gear/ecm8000-cal.csv`: comma-separated with header `Hz,dB,Phase`, then 124 rows. Frequencies run from 20 Hz to 21999 Hz in strictly increasing order, at a log-ish spacing of about 1/10 octave with extra points around 300–380 Hz. dB runs from -4.92 to +1.02. Phase is in degrees. There is no sensitivity line. A tab-separated REW-style copy `ecm8000-cal-rew.txt` uses a `*` comment header, and that header says "Sign convention unverified". **Open question for Vega/Will:** are the dB values the mic's response (to subtract) or the correction (to add)?
 | ID | Case | Expected |
@@ -41,6 +45,8 @@ Reference file `/workspace/will-gear/ecm8000-cal.csv`: comma-separated with head
 | C8 | Malformed: empty file, binary, non-numeric, missing column, NaN, decimal comma, BOM, CRLF | clear error and no crash; the previous cal is kept |
 | C9 | 2-column file (no phase) | accepted |
 | C10 | **Curve actually applied:** measure a flat loopback with and without the cal | difference = cal curve (sign per the convention) ±0.1 dB at the cal points |
+| C12 | **Sign trap:** load the cal with inverted sign, measure a flat loopback | result deviates by 2× cal (documented); app shows convention in UI ("mic response, subtracted") |
+| C13 | SPL calibration with acoustic calibrator (94/114 dB @1 kHz) | stored offset, gain at cal time, date; warns if interface gain changes afterward; weighting (A/C/Z) labeled, no fixed-offset conversion |
 | C11 | Cal per input channel; persists after relaunch; can be removed | ✔ |
 
 ## 3. Guided workflows (placeholders — Vega to fill in)
@@ -65,6 +71,25 @@ For each of GW1–GW3 (names TBD: e.g. delay alignment, sub/main alignment, EQ):
 - D7 Sharing the device with other apps (SuperRack Performer, Music/Safari playback): no exclusive-mode lockout, and no rate change forced on other apps without a warning.
 - D8 Built-in mic/speakers as a fallback device; Aggregate Device behavior.
 - D9 Microphone permission prompt (TCC) on first launch; behavior when permission is denied.
+
+
+## 4b. Field scenarios (Will's Mac + UMC404HD + real speakers/room; permission required; realistic but safe levels)
+Run after §1/§4 pass. Use the ECM8000 + cal; log mic positions, temperature, and room state. Cross-check each result against REW/reference_tf from the same capture.
+| ID | Scenario | Setup | Expected app behavior |
+|---|---|---|---|
+| F1 | Noisy room | pink noise at ~10 dB and ~0 dB above ambient (HVAC, talking, music playback) | coherence drops visibly; low-coh regions masked/blanked; averaging (8→16) improves stability; no confident phase in noise; RTA vs TF distinction clear |
+| F2 | Low coherence diagnosis | mic far off-axis / behind speaker; level too low; wind/handling (fan on mic) | app flags low validity and suggests cause (level, delay not set, noise); guided workflow refuses to compute a result or warns |
+| F3 | Delay not set / drifting | start TF without delay finder; then move mic 3 ft during capture | phase wraps & coherence collapse until delay set; tracker (if present) follows movement (≈0.889 ms/ft); finder sign: + = mic later than ref |
+| F4 | Strong reflections | mic near wall/table (floor bounce), or hard room | delay finder locks to direct sound, not reflection; time-window/smoothing options change result as documented; HF combing not offered as EQ target |
+| F5 | Sub/main alignment | solo main, capture; solo sub, capture (same ref, no re-find); then combined | crossover region phase-slope comparison; app proposes delay and polarity options incl. ½-cycle+INV alternative; summed trace ≥ either alone ±1 dB in XO band; repeat at 3 positions and report spread |
+| F6 | Delay tower / fill alignment (simulate with second speaker 20–40 ft downstream) | measure main and fill separately at transition seat | geometric delay suggestion from distance & temperature; measured result within ±0.5 ms of reference; option to add precedence offset (e.g. +2–5 ms); recheck after temp change note (~0.1%/°F) |
+| F7 | Wrong channel / mispatch | stimulus routed to out 3/4 while app expects 1/2; ref and meas inputs swapped; mic on wrong input | app detects no signal / unexpected level / negative delay and states the likely mispatch instead of showing garbage |
+| F8 | Wrong polarity | reverse one speaker's wiring (or invert in DSP) | polarity flag shown in solo measurement and in sub/main workflow; not "fixed" by EQ |
+| F9 | Clipping / overload | drive interface input into clip; phantom accidentally off/on for ECM8000 | clip indicator, measurement marked invalid; no phantom → "no signal" guidance |
+| F10 | Multi-position averaging | 5 seats, captured and averaged | raw traces kept; average method labeled; outlier seats still visible; export includes metadata (time, position, SR, cal, averages) |
+| F11 | Sample-rate change by another app mid-measurement (SuperRack/Audio MIDI Setup) | change device SR during TF | app detects, warns, recalculates ms correctly or stops; no silent wrong delays |
+| F12 | Interference/ground hum | laptop on charger vs battery, LED/lighting nearby | hum/buzz visible as narrowband RTA lines; app doesn't misreport as system response; note for user |
+| F13 | Save/recover under failure | quit/crash app (force quit) and unplug device mid-workflow | captured traces & settings preserved; workflow resumable or cleanly restarted |
 
 ## 5. Stability and performance
 - P1 Continuous RTA + TF for 2 h: no memory growth over 10%, no dropouts, UI ≥ 30 fps.
@@ -92,6 +117,8 @@ For each of GW1–GW3 (names TBD: e.g. delay alignment, sub/main alignment, EQ):
 | … | | | | | | | |
 
 ## Missing inputs
+- Vega: does build #1 have coherence masking, delay tracker, time windowing, multi-trace averaging, polarity/½-cycle suggestions? (needed for §4b expectations)
+- Will: a second speaker/sub available for F5/F6, and a room he's OK making noise in.
 - Vega: build #1 feature spec, GW1–GW3 contents, supported cal formats, FFT/averaging defaults, export format (needed to compare against reference_tf CSV).
 - Cal sign convention (see §2).
 - Will's permission for each Mac session.

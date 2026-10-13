@@ -9,7 +9,7 @@ public:
     struct Window : juce::DocumentWindow {
         Window() : DocumentWindow("FOH Gauge", juce::Colour(0xff0e1013), allButtons) {
             setUsingNativeTitleBar(true); setContentOwned(new MainComponent(), true);
-            setResizable(true, true); centreWithSize(1280, 820); setVisible(true); }
+            setResizable(true, true); setResizeLimits(1280, 800, 4000, 3000); centreWithSize(1440, 900); setVisible(true); }
         void closeButtonPressed() override { juce::JUCEApplication::getInstance()->systemRequestedQuit(); }
     };
     std::unique_ptr<Window> window;

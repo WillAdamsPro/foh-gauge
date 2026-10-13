@@ -2,11 +2,9 @@
 #include <juce_audio_utils/juce_audio_utils.h>
 #include <juce_gui_extra/juce_gui_extra.h>
 #include "fohcore/fohcore.h"
+#include "FohTheme.h"
 
-namespace Col {
-const juce::Colour bg(0xff0e1013), panel(0xff171a1f), grid(0xff2a2f37), text(0xffe6e8eb), dim(0xff8a919c),
-                   cyan(0xff2fd4e0), amber(0xffffb020), red(0xffff5a5a);
-}
+namespace th = foh::theme;
 
 // Audio engine: generator out + capture of mic/ref into lock-free rings. RT-safe callback.
 class AudioEngine : public juce::AudioIODeviceCallback {
@@ -16,7 +14,7 @@ public:
     std::atomic<float> genGainDb{-20.f};
     std::atomic<float> micPeak{0}, refPeak{0};
     foh::RingBuffer micRing{1 << 19}, refRing{1 << 19};
-    double sampleRate = 48000;
+    std::atomic<double> sampleRate{48000};
     void audioDeviceIOCallbackWithContext(const float* const* in, int nIn, float* const* out, int nOut, int n,
                                           const juce::AudioIODeviceCallbackContext&) override;
     void audioDeviceAboutToStart(juce::AudioIODevice* d) override;
@@ -26,15 +24,25 @@ private:
     float scratch[4096] {};
 };
 
+// Inter (OFL) bundled via BinaryData; falls back to system sans if missing.
+class FohLookAndFeel : public juce::LookAndFeel_V4 {
+public:
+    FohLookAndFeel();
+    juce::Typeface::Ptr getTypefaceForFont(const juce::Font&) override;
+    void drawButtonBackground(juce::Graphics&, juce::Button&, const juce::Colour&, bool, bool) override;
+    static juce::Font font(float size, bool bold = false, bool semibold = false);
+    static juce::Typeface::Ptr regular, semibold, bold;
+};
+
 class PlotComponent : public juce::Component {
 public:
-    struct Series { std::vector<double> f, v; juce::Colour c; bool dashed = false; float width = 1.5f; };
-    juce::String yLabel; double yMin = -12, yMax = 12; bool logY = false; double fMin = 20, fMax = 20000;
-    std::vector<Series> series; std::vector<std::pair<double,double>> shade; // freq bands to shade
-    juce::String note;
+    struct Series { std::vector<double> f, v; juce::Colour c; const float* dash = nullptr; float width = th::stroke::trace; double maxF = 1e9; };
+    juce::String yLabel; double yMin = -12, yMax = 12, yStep = 6; double fMin = 20, fMax = 20000; bool wrapPhase = false;
+    std::vector<Series> series; std::vector<std::pair<double,double>> shade; juce::String shadeLabel; juce::String note, centreNote;
+    bool bars = false; std::vector<double> barLo, barHi;
     void paint(juce::Graphics&) override;
     float xOf(double f) const; float yOf(double v) const;
-    bool bars = false; std::vector<double> barLo, barHi; // for RTA
+    int plotX() const { return 46; } int plotY() const { return 8; } int plotW() const { return getWidth() - 46 - 14; } int plotH() const { return getHeight() - 8 - 24; }
 };
 
 class MainComponent : public juce::Component, private juce::Timer {
@@ -43,31 +51,36 @@ public:
     void paint(juce::Graphics&) override; void resized() override;
 private:
     void timerCallback() override;
-    void showPage(int p); void updateTF(); void updateRTA(); void findDelay(); void storeTrace(const juce::String& name);
+    void showPage(int p); void updateTF(); void updateRTA(); void updateGuidePlots(); void findDelay(); bool storeTrace(const juce::String& name);
     void refreshTraceList(); void loadCal(); void layoutGuide(); void guideAction(int which);
-    juce::String explain() const;
+    juce::String explain() const; const foh::Trace* findTrace(const char* n) const;
+    juce::Rectangle<int> mainArea() const;
 
+    FohLookAndFeel lnf;
     juce::AudioDeviceManager dm; AudioEngine engine;
     std::unique_ptr<juce::AudioDeviceSelectorComponent> selector;
-    // analysis
-    std::unique_ptr<foh::TransferFunction> tf; std::unique_ptr<foh::RTA> rta;
-    std::vector<float> micHist, refHist; int histPos = 0; // last ~2 s for delay finder
+    std::unique_ptr<foh::TransferFunction> tf; std::unique_ptr<foh::RTA> rta; double analysisRate = 48000;
+    std::vector<float> micHist, refHist; int histPos = 0;
     foh::TraceStore traces; foh::MicCal cal; bool calOn = false; foh::DelayResult lastDelay; foh::TFResult lastTF;
-    bool paused = false; double analysisRate = 48000;
-    // nav
-    juce::OwnedArray<juce::TextButton> nav; int page = 0; juce::Label status;
-    // setup page
+    bool paused = false; foh::Band2 xover; juce::String w2Summary;
+    // frame
+    juce::OwnedArray<juce::TextButton> nav; int page = 0; juce::Label status; juce::TextButton pauseBtn {"Pause"};
+    juce::Label help, pageTitle;
+    // setup
     juce::ComboBox micBox, refBox, outABox, outBBox, genBox; juce::Slider genGain; juce::TextButton calBtn {"Load mic cal..."}, calToggle {"Cal ON"};
     juce::Label setupHelp, calLabel, levelLabel;
-    // TF page
-    PlotComponent magPlot, phasePlot, cohPlot; juce::ComboBox smoothBox, avgBox; juce::TextButton storeBtn {"Store"}, findBtn {"Find delay"}, clearAvgBtn {"Reset avg"}, pauseBtn {"Pause"};
-    juce::Label delayLabel; juce::TextButton insertBtn {"Insert delay"}; juce::ListBox traceList; juce::TextButton delTraceBtn {"Delete trace"};
+    // TF
+    PlotComponent magPlot, phasePlot, cohPlot; juce::ComboBox smoothBox, avgBox; juce::TextButton storeBtn {"Store"}, clearAvgBtn {"Reset avg"};
+    juce::Label delayCaption, delayValue, delayDetail; juce::TextButton findBtn {"Find again"}, insertBtn {"Insert delay"};
+    juce::ListBox traceList; juce::TextButton delTraceBtn {"Delete trace"};
     struct TraceModel : juce::ListBoxModel { MainComponent* o = nullptr; int getNumRows() override; void paintListBoxItem(int, juce::Graphics&, int, int, bool) override; void listBoxItemClicked(int, const juce::MouseEvent&) override; } traceModel;
-    // RTA page
+    juce::Rectangle<int> tfCard, delayCard;
+    // RTA
     PlotComponent rtaPlot; juce::ComboBox rtaFracBox;
-    // Guides page
-    juce::ComboBox guideBox; juce::Label guideTitle, guideBody, guideResult; juce::TextButton guidePrev {"< Back"}, guideNext {"Next >"}, guideAct {"Do it"};
-    int guide = 0, step = 0; double lockedDelayMs = 0;
-    juce::Label help; // right "What am I looking at?" panel
+    // Guides
+    juce::ComboBox guideBox; juce::Label guideStepLabel, guideBody, guideResult, guideReadout; juce::TextButton guidePrev {"Back"}, guideAct {"Do it"};
+    PlotComponent gPlotA, gPlotB; juce::Label doneSummary, doneActions; juce::TextButton doneAgain {"Measure again"}, doneHome {"Back to Home"};
+    juce::Rectangle<int> gProgress, gChartCard, gActionCard, gDoneA, gDoneB;
+    int guide = 1, step = 0; double lockedDelayMs = 0;
     std::unique_ptr<juce::FileChooser> chooser;
 };
