@@ -127,6 +127,27 @@ static const std::vector<std::vector<Step>> kGuides = {
 };
 static const char* kGuideNames[] = {"Setup + reference delay", "Align sub to mains", "Align fills to mains"};
 
+// ===================== Status pills =====================
+void StatusPills::paint(Graphics& g) {
+    auto f = FohLookAndFeel::font(T::small); g.setFont(f); float x = 0, h = 30, y = (getHeight() - h) * 0.5f;
+    for (auto& p : pills) {
+        float tw = (float) GlyphArrangement::getStringWidthInt(f, p.text), w = 12 + (p.state >= 0 ? 8 + 6 : 0) + tw + 12;
+        if (x + w > getWidth()) break;
+        auto r = Rectangle<float>(x, y, w, h);
+        g.setColour(C::pillBackground()); g.fillRoundedRectangle(r, h * 0.5f);
+        g.setColour(C::pillBorder()); g.drawRoundedRectangle(r.reduced(0.5f), h * 0.5f, D::hairline());
+        float tx = x + 12;
+        if (p.state >= 0) { auto d = Rectangle<float>(tx, r.getCentreY() - 4, 8, 8);
+            Colour c = p.state == Good ? C::ok() : p.state == Caution ? C::warning() : C::danger(); g.setColour(c);
+            if (p.state == Good) g.fillEllipse(d);
+            else if (p.state == Caution) { Path t; t.addTriangle(d.getCentreX(), d.getY(), d.getRight(), d.getBottom(), d.getX(), d.getBottom()); g.fillPath(t); }
+            else g.fillRect(d);
+            tx += 14; }
+        g.setColour(C::textBody()); g.drawText(p.text, Rectangle<float>(tx, r.getY(), tw + 2, h), Justification::centredLeft);
+        x += w + 8;
+    }
+}
+
 // ===================== Main component =====================
 MainComponent::MainComponent() {
     setLookAndFeel(&lnf);
@@ -140,7 +161,7 @@ MainComponent::MainComponent() {
 
     const char* pages[] = {"Home / Setup", "Transfer Function", "RTA / Spectrum", "Guides"};
     for (int i = 0; i < 4; ++i) { auto* b = nav.add(new TextButton(pages[i])); b->onClick = [this, i] { showPage(i); }; addAndMakeVisible(b); }
-    addAndMakeVisible(status); status.setFont(FohLookAndFeel::font(T::small)); status.setColour(Label::textColourId, C::textBody());
+    addAndMakeVisible(status);
     addAndMakeVisible(pauseBtn); pauseBtn.setClickingTogglesState(true); pauseBtn.onClick = [this] { paused = pauseBtn.getToggleState(); pauseBtn.setButtonText(paused ? "Resume" : "Pause"); };
     addAndMakeVisible(help); help.setJustificationType(Justification::topLeft); help.setColour(Label::textColourId, C::textBody()); help.setFont(FohLookAndFeel::font(T::body));
     addAndMakeVisible(pageTitle); pageTitle.setFont(FohLookAndFeel::font(T::title, true));
@@ -265,7 +286,7 @@ void MainComponent::resized() {
     const int statusBarHeight = D::statusBarHeight(), navWidth = D::navWidth(), helperWidth = D::helperWidth();
     auto nr = Rectangle<int>(10, statusBarHeight + 16, navWidth - 20, 44);
     for (auto* b : nav) { b->setBounds(nr); nr.translate(0, 48); }
-    status.setBounds(navWidth, 0, getWidth() - navWidth - 140, statusBarHeight);
+    status.setBounds(navWidth + 12, 0, getWidth() - navWidth - 12 - 140, statusBarHeight);
     pauseBtn.setBounds(getWidth() - 120, 10, 100, 35);
     help.setBounds(getWidth() - helperWidth + 14, statusBarHeight + 44, helperWidth - 34, getHeight() - statusBarHeight - 60);
     auto c = mainArea();
@@ -297,7 +318,7 @@ void MainComponent::resized() {
 
 void MainComponent::changeListenerCallback(ChangeBroadcaster*) { // theme switched: refresh stock-widget colours, then re-layout (widths) + repaint
     lnf.applyTheme(); makePrimary(insertBtn); makePrimary(guideAct); makePrimary(doneAgain);
-    status.setColour(Label::textColourId, C::textBody()); help.setColour(Label::textColourId, C::textBody()); setupHelp.setColour(Label::textColourId, C::textSecondary());
+    status.repaint(); help.setColour(Label::textColourId, C::textBody()); setupHelp.setColour(Label::textColourId, C::textSecondary());
     delayCaption.setColour(Label::textColourId, C::textSecondary()); delayDetail.setColour(Label::textColourId, C::textSecondary());
     guideStepLabel.setColour(Label::textColourId, C::accent()); guideResult.setColour(Label::textColourId, C::textBody()); guidePolarity.setColour(Label::textColourId, C::textSecondary());
     sendLookAndFeelChange(); updateTF(); updateGuidePlots(); resized(); repaint();
@@ -346,9 +367,13 @@ void MainComponent::timerCallback() {
     float mp = engine.micPeak.exchange(0), rp = engine.refPeak.exchange(0);
     auto dbs = [](float p) { return p > 1e-6f ? String(20 * std::log10(p), 1) + " dBFS" : String("-inf"); };
     auto* dev = dm.getCurrentAudioDevice();
-    status.setText(String(paused ? u8("\xe2\x96\xa0 Paused") : u8("\xe2\x97\x8f Measuring")) + "     " + (dev ? dev->getName() + u8(" \xc2\xb7 ") + String((int) fs / 1000) + " kHz" : String("No device"))
-                   + "     Mic " + dbs(mp) + "     Ref " + dbs(rp) + "     Cal " + String(calOn ? u8("\xe2\x9c\x93") : "off")
-                   + "     Ref delay " + String(tf->referenceDelaySamples() / fs * 1000, 2) + " ms" + (mp > 0.99f || rp > 0.99f ? u8("     \xe2\x96\xb2 CLIPPING") : ""), dontSendNotification);
+    { using P = StatusPills; double rdMs = tf->referenceDelaySamples() / fs * 1000; bool clip = mp > 0.99f || rp > 0.99f;
+      auto lvl = [&](const char* n, float p) { return P::Pill{ String(n) + " " + dbs(p), p > 0.99f ? P::Poor : p > 0.01f ? P::Good : P::Caution }; };
+      std::vector<P::Pill> v { { paused ? "Paused" : "Measuring", paused ? P::Caution : P::Good },
+                               { dev ? dev->getName() + u8(" \xc2\xb7 ") + String((int) fs / 1000) + " kHz" : String("No device"), dev ? P::None : P::Poor },
+                               lvl("Mic", mp), lvl("Ref", rp), { calOn ? "Cal on" : "Cal off", calOn ? P::Good : P::None }, { "Ref delay " + String(rdMs, 2) + " ms", P::None } };
+      if (clip) v.push_back({ "CLIPPING", P::Poor });
+      status.setPills(std::move(v)); }
     if (page == 0) levelLabel.setText(String(mp > 0.01f ? u8("\xe2\x9c\x93 Mic signal     ") : u8("\xe2\x96\xa0 No mic signal     ")) + String(rp > 0.01f ? u8("\xe2\x9c\x93 Reference signal") : u8("\xe2\x96\xa0 No reference signal (check Out 2 -> In 2 loopback)")), dontSendNotification);
     if (page == 1 || page == 3) updateTF();
     if (page == 2) updateRTA();
