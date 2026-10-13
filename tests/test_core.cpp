@@ -386,3 +386,10 @@ TEST_CASE("T6 traffic light: exact thresholds, NaN red") {
     REQUIRE(ra.light(binOf(ra,1000))==TrafficLight::Green); REQUIRE(ra.light(999999)==TrafficLight::Red);
     TFResult empty; REQUIRE(coherenceSummary(empty).bins==0); REQUIRE(coherenceSummary(empty).light==TrafficLight::Red);
 }
+TEST_CASE("classifyCoherence(TFResult) band overload matches QaAdapters shape") {
+    TFResult t; for (int k=0;k<100;++k){ t.freq.push_back(k*200.0); t.coherence.push_back(k == 0 ? 0.1 : 0.95); }
+    auto c = classifyCoherence(t); REQUIRE(c.light==TrafficLight::Green); REQUIRE(c.state()==0); REQUIRE(c.mean()==Approx(0.95)); // 200..10k excludes nothing <200 except bin 0
+    t.coherence.assign(100, 0.75); REQUIRE(classifyCoherence(t).state()==1); t.coherence.assign(100, 0.6); REQUIRE(classifyCoherence(t).state()==1);
+    t.coherence.assign(100, std::nan("")); REQUIRE(classifyCoherence(t).state()==2);
+    REQUIRE(classifyCoherence(t, 0, 250).bins==1); // DC bin is never counted
+}

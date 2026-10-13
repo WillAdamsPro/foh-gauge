@@ -127,8 +127,15 @@ struct TFResult {
     TrafficLight light(size_t k) const { return k < coherence.size() ? classifyCoherence(coherence[k]) : TrafficLight::Red; }
 };
 // Band summary for the status pill: mean coherence over [lo, hi] Hz and its light.
-struct CoherenceSummary { double meanCoherence = 0; TrafficLight light = TrafficLight::Red; int bins = 0; };
+struct CoherenceSummary {
+    double meanCoherence = 0; TrafficLight light = TrafficLight::Red; int bins = 0;
+    // QaAdapters.h compatibility: state 0 good (green), 1 fair (amber), 2 poor (red); mean = meanCoherence
+    int state() const { return light == TrafficLight::Green ? 0 : light == TrafficLight::Amber ? 1 : 2; }
+    double mean() const { return meanCoherence; }
+};
 CoherenceSummary coherenceSummary(const TFResult& tf, double lo = 100.0, double hi = 10000.0);
+// Band traffic light (replaces qa::coherenceLight). Default band 200 Hz-10 kHz as in the UI.
+inline CoherenceSummary classifyCoherence(const TFResult& tf, double lo = 200.0, double hi = 10000.0) { return coherenceSummary(tf, lo, hi); }
 
 // "Wait until the average settles": after every Welch frame the TF is summarised on a
 // 1/3-oct grid (fLo..fHi); delta = coherence-weighted mean |change in dB| vs the previous
