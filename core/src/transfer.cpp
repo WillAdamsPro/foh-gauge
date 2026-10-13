@@ -45,12 +45,20 @@ void TransferFunction::updateConvergence() {
 }
 void TransferFunction::reset() { resetConvergence(); std::fill(Sxx.begin(), Sxx.end(), 0.0); std::fill(Syy.begin(), Syy.end(), 0.0);
     std::fill(Sxy.begin(), Sxy.end(), cpx{}); frameCount = 0; fill = 0; }
-void TransferFunction::setReferenceDelaySamples(int d) { refDelay = std::clamp(d, 0, (int) refHistory.size() - 1); reset(); }
+void TransferFunction::setReferenceDelaySamples(double d) {
+    if (!std::isfinite(d)) d = 0;
+    d = std::clamp(d, 0.0, (double) refHistory.size() - 1.0);
+    refDelayInt = (int) std::floor(d); refDelayFrac = d - refDelayInt;
+    if (refDelayInt >= (int) refHistory.size() - 1) refDelayFrac = 0;
+    fracRot.resize((size_t) N / 2 + 1);
+    for (int k = 0; k <= N / 2; ++k) fracRot[(size_t) k] = std::polar(1.0, -2.0 * M_PI * k * refDelayFrac / N);
+    reset();
+}
 void TransferFunction::process(const float* ref, const float* meas, int n) {
     int H = (int) refHistory.size();
     for (int i = 0; i < n; ++i) {
         refHistory[(size_t) histPos] = ref[i];
-        float delayed = refHistory[(size_t) ((histPos - refDelay + H) % H)];
+        float delayed = refHistory[(size_t) ((histPos - refDelayInt + H) % H)];
         histPos = (histPos + 1) % H;
         xbuf[(size_t) fill] = delayed; ybuf[(size_t) fill] = meas[i];
         if (++fill == N) { frame(); // 50% overlap
@@ -61,6 +69,7 @@ void TransferFunction::process(const float* ref, const float* meas, int n) {
 void TransferFunction::frame() {
     for (int i = 0; i < N; ++i) { X[(size_t) i] = xbuf[(size_t) i] * win[(size_t) i]; Y[(size_t) i] = ybuf[(size_t) i] * win[(size_t) i]; }
     fft.forward(X); fft.forward(Y);
+    if (refDelayFrac != 0) for (int k = 0; k <= N / 2; ++k) X[(size_t) k] *= fracRot[(size_t) k];
     ++frameCount;
     double a = (avgN <= 0) ? 1.0 / frameCount : std::max(1.0 / frameCount, 1.0 / avgN);
     for (size_t k = 0; k <= (size_t) N / 2; ++k) {
