@@ -1,0 +1,6 @@
+add_library(fohcore STATIC src/fft.cpp src/generators.cpp src/transfer.cpp src/delay.cpp src/rta.cpp src/miccal.cpp src/smoothing.cpp)
+target_include_directories(fohcore PUBLIC include)
+if(NOT MSVC)
+  target_compile_options(fohcore PRIVATE -Wall -Wextra)
+endif()
+target_compile_definitions(fohcore PUBLIC _USE_MATH_DEFINES)
