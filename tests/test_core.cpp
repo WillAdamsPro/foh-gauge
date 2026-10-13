@@ -265,3 +265,30 @@ TEST_CASE("Generators: gain/reset are thread-safe requests honoured on next samp
     sw.process(a.data(), 1000); sw.reset(); sw.process(b.data(), 1000); REQUIRE(a == b);
     PinkNoise p1(9), p2(9); p2.setGainDb(-20); float x1=p1.next(), x2=p2.next(); REQUIRE(x2==Approx(x1*0.1f).epsilon(1e-4));
 }
+TEST_CASE("Convergence: clean DUT settles fast, noisy DUT later, timeout honoured") {
+    auto x = pink(48000*30, 31); auto nz = pink(48000*30, 32);
+    auto runUntil = [&](TransferFunction& tf, const std::vector<float>& y) {
+        const int blk = 512; for (size_t i=0; i+blk<=x.size(); i+=blk) { tf.process(x.data()+i, y.data()+i, blk);
+            auto c = tf.convergence(); if (c.settled || c.timedOut) return c; } return tf.convergence(); };
+    ConvergenceSettings cs; cs.toleranceDb = 0.1; cs.minFrames = 8; cs.holdFrames = 6;
+    auto clean = lowpass(x, 2000, 48000);
+    TransferFunction a(16384,48000); a.setAverages(0); a.setConvergence(cs); auto ca = runUntil(a, clean);
+    REQUIRE(ca.settled); REQUIRE(ca.frames < 20); REQUIRE(ca.progress==1.0); REQUIRE(ca.meanCoherence > 0.95);
+    REQUIRE(a.frameSeconds()==Approx(0.17067).margin(1e-4));
+    std::vector<float> noisy(x.size()); for (size_t i=0;i<x.size();++i) noisy[i]=clean[i]+nz[i];
+    TransferFunction b(16384,48000); b.setAverages(0); b.setConvergence(cs); auto cb = runUntil(b, noisy);
+    REQUIRE(cb.settled); REQUIRE(cb.frames > ca.frames); REQUIRE(cb.meanCoherence < ca.meanCoherence);
+    // settled estimate is actually close to truth
+    auto r = b.result(6); REQUIRE(r.magDb[binOf(r,500)]==Approx(0).margin(0.6));
+    // timeout: impossible tolerance
+    ConvergenceSettings tight = cs; tight.toleranceDb = 1e-9; tight.maxFrames = 12;
+    TransferFunction c(16384,48000); c.setAverages(0); c.setConvergence(tight); auto cc = runUntil(c, noisy);
+    REQUIRE(!cc.settled); REQUIRE(cc.timedOut); REQUIRE(cc.frames==12);
+    // reset clears state; setting a reference delay resets too
+    c.reset(); REQUIRE(c.convergence().frames==0); REQUIRE(!c.settled());
+    // a DUT change mid-run breaks the stable streak
+    std::vector<float> step(x.size()); for (size_t i=0;i<x.size();++i) step[i] = i < 48000*4 ? clean[i] : 0.3f*clean[i];
+    TransferFunction e(16384,48000); e.setAverages(4); ConvergenceSettings ce=cs; ce.minFrames=1000; e.setConvergence(ce);
+    e.process(x.data(), step.data(), 48000*4); int before = e.convergence().stableFrames;
+    e.process(x.data()+48000*4, step.data()+48000*4, 16384); REQUIRE(before > 0); REQUIRE(e.convergence().stableFrames < before);
+}
