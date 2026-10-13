@@ -1,7 +1,7 @@
 # FOH Gauge
 
 Guided FOH measurement tool (transfer function, delay finder, RTA, sub/fill alignment guides).
-macOS Apple Silicon standalone app, JUCE 8 + CMake. DSP lives in `core/` (JUCE-free, Catch2-tested).
+macOS Apple Silicon standalone app (requires macOS 26.0+), JUCE 8 + CMake. DSP lives in `core/` (JUCE-free, Catch2-tested).
 
 ## Build
 ```
