@@ -314,7 +314,11 @@ private:
 // ---------- Mic calibration ----------
 struct MicCal {
     std::vector<double> hz, db, phaseDeg; bool hasPhase = false;
-    double sensitivityOffsetDb = 0; // e.g. from "Sens Factor" header line
+    // "Sens Factor" header line (miniDSP UMIK/REW style), e.g. "Sens Factor =-1.5dB, SERNO: 123".
+    // Parsed and exposed for display ONLY: never applied by dbAt/correctionDb/apply (QA D8,
+    // no SPL calibration in build #1). UI: "Sens Factor -1.5 dB (not applied)".
+    double sensitivityOffsetDb = 0; bool hasSensFactor = false;
+    std::string sensFactorLine;     // the raw header line, trimmed
     std::string error;
     bool ok() const { return hz.size() >= 2 && error.empty(); }
     double dbAt(double f) const;     // log-freq interpolation, clamped at ends

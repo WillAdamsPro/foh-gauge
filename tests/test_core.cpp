@@ -3,6 +3,8 @@
 #include "fohcore/fohcore.h"
 #include <cmath>
 #include <random>
+#include <fstream>
+#include <sstream>
 using namespace foh; using Catch::Approx;
 
 static std::vector<float> pink(int n, uint32_t seed = 1) { PinkNoise p(seed); std::vector<float> v((size_t) n); for (auto& x : v) x = p.next(); return v; }
@@ -542,4 +544,44 @@ TEST_CASE("D-SUBGD: sub delay from XO-band phase = 12.5 ms; alternatives +-1 per
     // S15: filtered pair (bp 0 ms vs bp 12.5 ms), 3 s window, sub options -> 12.5 +- 0.1 ms
     auto s15 = findDelay(head(mainsSig, 144000), head(subSig, 144000), fs, DelayOptions::forSubs());
     REQUIRE(s15.arrivals[0].delayMs==Approx(12.5).margin(0.1));
+}
+// ---- Calibration (QA A4)
+static std::string slurp(const std::string& p) { std::ifstream f(p, std::ios::binary); std::stringstream ss; ss << f.rdbuf(); return ss.str(); }
+TEST_CASE("C4 Sens Factor parsed and exposed, never applied") {
+    auto base = slurp(std::string(FOH_TEST_DATA) + "/ecm8000-cal.csv");
+    auto with = parseMicCal("\"Sens Factor =-1.5dB, SERNO: 123\"\r\n" + base), without = parseMicCal(base);
+    REQUIRE(with.ok()); REQUIRE(with.hasSensFactor); REQUIRE(with.sensitivityOffsetDb==Approx(-1.5)); REQUIRE(with.sensFactorLine=="Sens Factor =-1.5dB, SERNO: 123");
+    REQUIRE(!without.hasSensFactor); REQUIRE(without.sensitivityOffsetDb==0); REQUIRE(without.sensFactorLine.empty());
+    REQUIRE(with.hz==without.hz); REQUIRE(with.db==without.db);
+    REQUIRE(with.correctionDb(8193, 48000.0/16384)==without.correctionDb(8193, 48000.0/16384)); // +-0.000 dB
+    TFResult t; size_t M=8193; t.sampleRate=48000; t.fftSize=16384; t.freq.resize(M); t.H.assign(M, cpx(1,0)); t.magDb.assign(M,0); t.phaseDeg.assign(M,0); t.coherence.assign(M,1);
+    for (size_t k=0;k<M;++k) t.freq[k]=k*48000.0/16384; auto t2=t; with.apply(t); without.apply(t2); REQUIRE(t.magDb==t2.magDb);
+    REQUIRE(with.dbAt(1000)==without.dbAt(1000));
+    auto ws = parseMicCal("Sens Factor: 2.25\n100 0\n1000 0\n"); REQUIRE(ws.hasSensFactor); REQUIRE(ws.sensitivityOffsetDb==Approx(2.25)); REQUIRE(ws.dbAt(500)==0);
+}
+TEST_CASE("C2/C2b REW .txt and .frd parse identical to the CSV; C10 sign; C12 flipped file detectably wrong") {
+    auto csv = loadMicCal(std::string(FOH_TEST_DATA) + "/ecm8000-cal.csv");
+    auto txt = loadMicCal(std::string(FOH_TEST_DATA) + "/ecm8000-cal-rew.txt"), frd = loadMicCal(std::string(FOH_TEST_DATA) + "/ecm8000-cal.frd");
+    for (auto* c : {&txt, &frd}) { REQUIRE(c->ok()); REQUIRE(c->hz==csv.hz); REQUIRE(c->db==csv.db); REQUIRE(c->phaseDeg==csv.phaseDeg); REQUIRE(c->hasPhase); }
+    // C10: flat 0 dB TF corrected by ECM8000 -> -cal(f): top end reads higher
+    TFResult t; size_t M=8193; t.sampleRate=48000; t.fftSize=16384; t.freq.resize(M); t.H.assign(M, cpx(1,0)); t.magDb.assign(M,0); t.phaseDeg.assign(M,0); t.coherence.assign(M,1);
+    for (size_t k=0;k<M;++k) t.freq[k]=k*48000.0/16384;
+    auto corr = csv.correctionDb((int)M, 48000.0/16384);
+    REQUIRE(csv.dbAt(21999)==Approx(-4.92)); REQUIRE(-csv.dbAt(21999)==Approx(4.92)); REQUIRE(-csv.dbAt(20361.5)==Approx(4.01).margin(0.01)); REQUIRE(-csv.dbAt(20)==Approx(0.07));
+    auto tf = t; csv.apply(tf); REQUIRE(tf.magDb[binOf(tf,21000)]==Approx(-csv.dbAt(tf.freq[binOf(tf,21000)])).margin(0.01)); REQUIRE(tf.magDb[binOf(tf,21000)] > 4.0);
+    REQUIRE(corr[binOf(tf,21000)]==Approx(tf.magDb[binOf(tf,21000)]).margin(1e-9));
+    // C12: TF equal to the real mic response, corrected with the SIGN-FLIPPED file -> ~2x cal, >= 6 dB error above 20 kHz
+    auto flip = loadMicCal(std::string(FOH_TEST_DATA) + "/ecm8000-cal_SIGNFLIPPED.csv"); REQUIRE(flip.ok());
+    auto mic = t; for (size_t k=0;k<M;++k){ mic.H[k]=std::polar(std::pow(10.0,csv.dbAt(mic.freq[k])/20), csv.phaseAt(mic.freq[k])*M_PI/180); }
+    auto good = mic, bad = mic; csv.apply(good); flip.apply(bad);
+    REQUIRE(good.magDb[binOf(good,21000)]==Approx(0).margin(1e-6));
+    REQUIRE(bad.magDb[binOf(bad,21999)]==Approx(2*csv.dbAt(21999)).margin(0.05)); REQUIRE(std::fabs(bad.magDb[binOf(bad,20500)]) >= 6.0);
+}
+TEST_CASE("C6/C8 unsorted, duplicate and malformed cal files") {
+    auto u = parseMicCal("1000 1\n20 0\n1000 5\n100 0.5\n"); REQUIRE(u.ok()); REQUIRE(u.hz==std::vector<double>{20,100,1000}); // sorted, dedup keeps first
+    REQUIRE(!parseMicCal("").ok()); REQUIRE(!parseMicCal(std::string("\x00\x01\x02\xff\xfe", 5)).ok());
+    REQUIRE(!parseMicCal("abc,def\nfoo bar\n").ok()); REQUIRE(!parseMicCal("20,0\n").ok()); // one point is not a curve
+    auto nanf = parseMicCal("20 nan\n100 0\n1000 0\n"); REQUIRE(nanf.ok()); for (double d : nanf.db) REQUIRE(std::isfinite(d));
+    auto comma = parseMicCal("20,5;0,1\n"); REQUIRE(!comma.ok()); REQUIRE(!comma.error.empty()); // decimal comma rejected clearly
+    REQUIRE(!loadMicCal("/nonexistent/x.csv").ok());
 }
