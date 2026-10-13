@@ -63,6 +63,10 @@ void PlotComponent::paint(Graphics& g) {
         g.setColour(C::textAxis); g.drawText(yStep < 1 ? String(v, 1) : String((int) v), 0, (int) y - 7, plotX() - 6, 14, Justification::right); g.setColour(C::border); }
     if (note.isNotEmpty()) { g.setColour(C::textAxis); g.drawText(note, (int) pr.getRight() - 300, (int) pr.getY() + 2, 296, 14, Justification::right); }
     if (centreNote.isNotEmpty()) { g.setColour(C::textAxis); g.setFont(FohLookAndFeel::font(T::small)); g.drawText(centreNote, (int) xOf(1500) - 120, (int) pr.getCentreY() - 8, 240, 16, Justification::centred); }
+    if (exampleData) { // top-right, ~103x20, 11 px warning text, 1 px warning border, radius 4 (layout-spec)
+        auto tag = Rectangle<float>(pr.getRight() - 109, pr.getY() + 6, 103, 20);
+        g.setColour(C::warning); g.drawRoundedRectangle(tag.reduced(0.5f), th::radius::tag, th::stroke::hairline);
+        g.setFont(FohLookAndFeel::font(T::axisTick, false, true)); g.drawText("EXAMPLE DATA", tag, Justification::centred); g.setFont(FohLookAndFeel::font(T::axisTick)); }
     Graphics::ScopedSaveState ss(g); g.reduceClipRegion(pr.toNearestInt());
     if (bars) for (auto& s : series) { if (s.dash) continue; g.setColour(C::rtaBar);
         for (size_t i = 0; i < s.v.size() && i < barLo.size(); ++i) { float a = xOf(barLo[i]) + 1, b = xOf(barHi[i]) - 1, y = yOf(s.v[i]); g.fillRect(a, y, std::max(1.f, b - a), pr.getBottom() - y); }
