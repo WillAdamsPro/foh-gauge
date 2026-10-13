@@ -153,6 +153,51 @@ struct MicCal {
 MicCal parseMicCal(const std::string& text);
 MicCal loadMicCal(const std::string& path);
 
+// ---------- Snapshot out (analysis thread -> UI), lock-free triple buffer ----------
+// Single writer, single reader, wait-free on both sides. The writer fills writeBuffer()
+// then publish(); the reader calls latest() and gets the newest complete snapshot.
+// The reference returned by latest() stays valid until the reader's next latest().
+template <typename T>
+class TripleBuffer {
+public:
+    T& writeBuffer() { return slots[writeIdx]; }
+    void publish() {
+        int prev = mid.exchange(writeIdx | kDirty, std::memory_order_acq_rel);
+        writeIdx = prev & kIdx;
+    }
+    const T& latest() {
+        if (mid.load(std::memory_order_relaxed) & kDirty) {
+            int prev = mid.exchange(readIdx, std::memory_order_acq_rel);
+            readIdx = prev & kIdx;
+        }
+        return slots[readIdx];
+    }
+    bool hasNew() const { return (mid.load(std::memory_order_acquire) & kDirty) != 0; }
+private:
+    static constexpr int kDirty = 4, kIdx = 3;
+    T slots[3]{};
+    int writeIdx = 0, readIdx = 1;
+    std::atomic<int> mid{2};
+    static_assert(std::atomic<int>::is_always_lock_free, "atomic<int> must be lock-free");
+};
+
+struct AnalysisSnapshot {
+    uint64_t seq = 0;           // increments on every publish
+    TFResult tf;                // smoothed + blanked TF
+    std::vector<double> rtaDb;  // per-band dBFS (matches RTA::bands())
+    DelayResult delay;          // last delay-finder run (may be empty)
+    double inputPeakDbRef = -120, inputPeakDbMeas = -120;
+};
+class SnapshotPublisher {
+public:
+    AnalysisSnapshot& beginWrite() { return tb.writeBuffer(); }   // analysis thread
+    void publish() { tb.writeBuffer().seq = ++seq; tb.publish(); } // analysis thread
+    const AnalysisSnapshot& latest() { return tb.latest(); }        // UI thread
+    bool hasNew() const { return tb.hasNew(); }
+private:
+    TripleBuffer<AnalysisSnapshot> tb; uint64_t seq = 0;
+};
+
 // ---------- Trace store ----------
 struct Trace { std::string name; TFResult tf; double refDelayMs = 0; bool visible = true; };
 class TraceStore {

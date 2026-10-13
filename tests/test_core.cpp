@@ -140,3 +140,22 @@ TEST_CASE("Coherence blanking flags noisy bins only") {
     for (size_t k=1;k<r.freq.size();++k) REQUIRE(r.isBlanked(k)==(r.coherence[k]<0.5));
     tf.setCoherenceBlankThreshold(2.0); REQUIRE(tf.coherenceBlankThreshold()==1.0);
 }
+#include <thread>
+TEST_CASE("TripleBuffer: latest() returns newest published, never torn") {
+    TripleBuffer<std::vector<int>> tb; REQUIRE(!tb.hasNew());
+    tb.writeBuffer().assign(4, 1); tb.publish(); REQUIRE(tb.hasNew());
+    tb.writeBuffer().assign(4, 2); tb.publish();
+    REQUIRE(tb.latest()[0]==2); REQUIRE(!tb.hasNew()); REQUIRE(tb.latest()[0]==2);
+    // concurrent stress: writer fills every element with i; reader must see uniform, nondecreasing values
+    TripleBuffer<std::vector<int>> s; for (int k=0;k<3;++k){ s.writeBuffer().assign(256,0); s.publish(); }
+    std::atomic<bool> done{false};
+    std::thread w([&]{ for (int i=1;i<=20000;++i){ auto& b=s.writeBuffer(); b.assign(256,i); s.publish(); } done=true; });
+    int last=0; bool ok=true;
+    while(!done.load()){ auto& b=s.latest(); int v=b[0]; for(int x:b) if(x!=v) ok=false; if(v<last) ok=false; last=v; }
+    w.join(); REQUIRE(ok); REQUIRE(s.latest()[0]==20000);
+}
+TEST_CASE("SnapshotPublisher carries TF/RTA and sequence") {
+    SnapshotPublisher p; auto& a=p.beginWrite(); a.rtaDb={-10,-20}; a.tf.fftSize=16384; p.publish();
+    auto& r=p.latest(); REQUIRE(r.seq==1); REQUIRE(r.rtaDb.size()==2); REQUIRE(r.tf.fftSize==16384);
+    p.beginWrite().rtaDb={-1}; p.publish(); REQUIRE(p.latest().seq==2); REQUIRE(p.latest().rtaDb.size()==1);
+}
