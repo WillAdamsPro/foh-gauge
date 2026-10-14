@@ -33,6 +33,9 @@ MainComponent::MainComponent() {
     content.addAndMakeVisible(scaleBox);
 
     content.addAndMakeVisible(view);
+    content.addChildComponent(setup);
+    setup.onDone = [this] { setup.setVisible(false); view.setVisible(true); openFloatingWindows(); };
+    content.addAndMakeVisible(setupBtn); setupBtn.onClick = [this] { openSetup(); };
     model.requestWorkspace = [this](const std::string& id) { selectWorkspace(id); };
     content.addAndMakeVisible(wsMenuBtn); wsMenuBtn.setButtonText(u8("Workspace \xe2\x96\xbe")); wsMenuBtn.onClick = [this] { showWorkspaceMenu(); };
     view.onLayoutEdited = [this] { updateSwitcher(); };
@@ -45,10 +48,15 @@ MainComponent::MainComponent() {
     selectWorkspace(start);
     if (auto* pf = model.settings.getUserSettings()) if (pf->getBoolValue("showMode", false)) setShowMode(true);
     if (auto* f = std::getenv("FOH_FLOAT")) { std::string id = f; Timer::callAfterDelay(800, [sp = SafePointer<MainComponent>(this), id] { if (sp) sp->floatPanel(id); }); } // dev/screenshot aid
+    if (!model.settings.getUserSettings() || !model.settings.getUserSettings()->getBoolValue("setupComplete", false)) openSetup();
     startTimerHz(15);
 }
 MainComponent::~MainComponent() { removeKeyListener(presetCommands.keyMappings()); stopTimer(); leaveWorkspace(); view.setWorkspace(nullptr); model.removeListener(this); foh::theme::ThemeManager::get().removeChangeListener(this); floats.clear(); LookAndFeel::setDefaultLookAndFeel(nullptr); setLookAndFeel(nullptr); }
 
+void MainComponent::openSetup() {
+    if (showMode) setShowMode(false);
+    closeFloatingWindows(); view.setVisible(false); setup.setVisible(true); setup.toFront(true); resized();
+}
 void MainComponent::selectWorkspace(const std::string& id) { int i = mgr.indexOf(id); if (i >= 0) selectWorkspace(i); }
 void MainComponent::leaveWorkspace() {
     if (current < 0) return; view.storePanelStates(); closeFloatingWindows(); mgr.saveCurrent(current);
@@ -92,7 +100,7 @@ void MainComponent::updateSwitcher() { // "•" after a modified layout: a shape
 
 // ---- floating panels (spec §5)
 void MainComponent::openFloatingWindows() {
-    auto* w = view.workspace(); if (!w) return;
+    auto* w = view.workspace(); if (!w || setup.isVisible()) return;
     for (auto& f : w->floating) { auto* p = view.panel(f.panel); if (!p) continue; view.releasePanel(f.panel, p);
         auto* win = floats.add(new FloatingPanelWindow(*p, f)); std::string id = f.panel;
         win->addKeyListener(presetCommands.keyMappings());
@@ -236,6 +244,7 @@ void MainComponent::paintContent(Graphics& g) {
 void MainComponent::layoutContent() {
     const int top = D::statusBarHeight(), nw = sidebarVisible() ? D::navWidth() : 0;
     auto bar = content.getLocalBounds().removeFromTop(top).reduced(12, 0); bar.removeFromLeft(130);
+    setupBtn.setBounds(bar.removeFromRight(106).withSizeKeepingCentre(106, 30)); bar.removeFromRight(8);
     pauseBtn.setBounds(bar.removeFromRight(84).withSizeKeepingCentre(84, 30)); bar.removeFromRight(12);
     showModeBtn.setBounds(bar.removeFromRight(96).withSizeKeepingCentre(96, 30)); bar.removeFromRight(8);
     const bool wide = content.getWidth() >= 1100;
@@ -249,6 +258,7 @@ void MainComponent::layoutContent() {
         for (auto* b : nav) { b->setBounds(s.removeFromTop(40)); s.removeFromTop(4); }
         auto bot = s.removeFromBottom(80); appearance.setBounds(bot.removeFromTop(30).reduced(0, 2)); bot.removeFromTop(8); scaleBox.setBounds(bot.removeFromTop(28)); }
     view.setBounds(content.getLocalBounds().withTrimmedTop(top).withTrimmedLeft(nw));
+    setup.setBounds(content.getLocalBounds().withTrimmedTop(top).withTrimmedLeft(nw));
 }
 
 void MainComponent::changeListenerCallback(ChangeBroadcaster*) {

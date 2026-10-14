@@ -136,3 +136,34 @@ TEST_CASE("Delay snapshots carry the core two-spike warning", "[app][qa][delay]"
     REQUIRE(result.twoSimilarArrivals == foh::twoSpikeFlag(result.arrivals));
     analysis.stop();
 }
+
+TEST_CASE("Output chime is bounded, routed and stops at each sample rate", "[app][audio][chime]") {
+    for (double fs : {44100.0, 48000.0, 96000.0}) {
+        AudioEngine engine;
+        engine.sampleRate = fs;
+        engine.outA = 1; engine.outB = -1;
+        engine.captureEpoch = 1; // Playback must work even during an analysis restart.
+        constexpr int block = 256;
+        float unused[block], selected[block]; float* outputs[] {unused, selected};
+        engine.playChime();
+        float peak = 0;
+        const int blocks = static_cast<int>(fs * 0.7 / block) + 1;
+        for (int b = 0; b < blocks; ++b) {
+            engine.audioDeviceIOCallbackWithContext(nullptr, 0, outputs, 2, block, {});
+            for (int i = 0; i < block; ++i) {
+                REQUIRE(unused[i] == 0.f);
+                REQUIRE(std::isfinite(selected[i]));
+                peak = std::max(peak, std::abs(selected[i]));
+            }
+        }
+        const float expectedPeak = std::pow(10.f, -18.f / 20.f);
+        REQUIRE(peak <= expectedPeak + 1e-6f);
+        REQUIRE(peak > expectedPeak * 0.99f);
+        for (float s : selected) REQUIRE(s == 0.f);
+        engine.outB = 0; engine.playChime();
+        engine.audioDeviceIOCallbackWithContext(nullptr, 0, outputs, 2, block, {});
+        REQUIRE(selected[0] == 0.f); // Retrigger starts with the attack ramp.
+        REQUIRE(selected[100] != 0.f);
+        for (int i = 0; i < block; ++i) REQUIRE(unused[i] == selected[i]);
+    }
+}
