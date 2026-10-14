@@ -27,10 +27,12 @@ TEST_CASE("Questionnaire is optional in Setup and Skip preserves the default flo
     auto panel = makeGuidePanel(model); auto& box = guideBox(*panel);
     CHECK(box.getNumItems() == 5);
     button(page, "Rig questionnaire").onClick(); CHECK(questionnaire->isVisible());
+    for (auto* child : questionnaire->getChildren())
+        if (auto* e = dynamic_cast<juce::TextEditor*>(child)) e->setText("0");
     button(*questionnaire, "Skip").onClick(); CHECK_FALSE(questionnaire->isVisible());
     CHECK_FALSE(model.rigProfile); CHECK(box.getNumItems() == 5);
 }
-TEST_CASE("Questionnaire applies drafts, filters guides and preserves saved profiles on Skip", "[app][rig]") {
+TEST_CASE("Questionnaire applies drafts, filters guides and restores default guides on Skip", "[app][rig]") {
     juce::ScopedJuceInitialiser_GUI initialise;
     AppModel model; EasySetup questionnaire(model); questionnaire.setSize(260, 520);
     for (auto* child : questionnaire.getChildren()) CHECK(questionnaire.getLocalBounds().contains(child->getBounds()));
@@ -50,7 +52,7 @@ TEST_CASE("Questionnaire applies drafts, filters guides and preserves saved prof
     }
     CHECK_FALSE(model.rigProfile->subs); CHECK(box.getNumItems() == 3);
     button(questionnaire, "Skip").onClick(); CHECK(closed == 2);
-    CHECK_FALSE(model.rigProfile->subs); CHECK(box.getNumItems() == 3);
+    CHECK_FALSE(model.rigProfile); CHECK(box.getNumItems() == 5);
     button(questionnaire, "Use these answers").onClick(); CHECK(closed == 3);
     CHECK(model.rigProfile->subs); CHECK(model.rigProfile->frontFills);
     CHECK(model.rigProfile->clusters == 3); CHECK(model.rigProfile->cabinetsPerCluster == 3);

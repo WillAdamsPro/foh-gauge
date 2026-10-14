@@ -96,7 +96,6 @@ TEST_CASE("Session asset corruption leaves the entire prior session intact", "[s
         std::ifstream f(bundle.path / file); std::string text{std::istreambuf_iterator<char>(f), {}};
         auto j = foh::Json::parse(text); mutate(j); std::ofstream(bundle.path / file) << j.dump();
     };
-    SECTION("invalid rig profile") { rewrite("session.json", [](auto& j) { auto r = j["rigProfile"]; r.set("clusters", -1); j.set("rigProfile", r); }); }
     SECTION("missing manifest") { std::filesystem::remove(bundle.path / "session.json"); }
     SECTION("empty manifest") { std::ofstream(bundle.path / "session.json"); }
     SECTION("huge manifest") { std::filesystem::resize_file(bundle.path / "session.json", 17 * 1024 * 1024); }
@@ -127,4 +126,80 @@ TEST_CASE("Session preserves disabled channel selections", "[session][files]") {
     std::string error; REQUIRE(foh::saveSession(bundle.path, s, error)); foh::Session loaded;
     REQUIRE(foh::loadSession(bundle.path, loaded, error));
     REQUIRE(loaded.mic == -1); REQUIRE(loaded.reference == -1); REQUIRE(loaded.outputA == -1); REQUIRE(loaded.outputB == -1);
+}
+
+TEST_CASE("Missing or damaged optional rig answers load with default guides and a notice", "[session][rig][regression]") {
+    Bundle bundle; auto s = synthetic(); std::string error, notice;
+    REQUIRE(foh::saveSession(bundle.path, s, error));
+    std::ifstream file(bundle.path / "session.json");
+    const std::string text{std::istreambuf_iterator<char>(file), {}};
+    auto manifest = foh::Json::parse(text);
+    std::vector<foh::Json> bad{foh::Json(), foh::Json::object(), foh::Json::array(), foh::Json(""), foh::Json("{\"clusters\":")};
+    for (const char* key : {"clusters", "cabinetsPerCluster", "control", "frontFills", "subs", "subArrangement"}) {
+        auto partial = foh::Json::object();
+        for (const auto& m : manifest["rigProfile"].members()) if (m.first != key) partial.set(m.first, m.second);
+        bad.push_back(partial);
+    }
+    for (const char* key : {"clusters", "cabinetsPerCluster", "frontFills", "subs"}) {
+        for (auto value : {foh::Json(0), foh::Json(-1), foh::Json(257), foh::Json(1e100), foh::Json(1.5), foh::Json("2")}) {
+            auto rig = manifest["rigProfile"]; rig.set(key, value); bad.push_back(rig);
+        }
+    }
+    for (const char* key : {"control", "subArrangement"}) {
+        auto rig = manifest["rigProfile"]; rig.set(key, "unknown"); bad.push_back(rig);
+    }
+    // The first iteration models older sessions and a saved Skip (no rig key).
+    for (size_t i = 0; i <= bad.size(); ++i) {
+        auto j = foh::Json::object();
+        for (const auto& m : manifest.members()) if (m.first != "rigProfile") j.set(m.first, m.second);
+        if (i) j.set("rigProfile", bad[i - 1]);
+        INFO(j.dump());
+        std::ofstream(bundle.path / "session.json") << j.dump();
+        auto loaded = s; notice = "stale"; error = "stale";
+        REQUIRE(foh::loadSession(bundle.path, loaded, error, &notice));
+        CHECK(error.empty()); CHECK_FALSE(notice.empty()); CHECK(notice != "stale");
+        CHECK_FALSE(loaded.rigProfile); CHECK(foh::rigSteps(loaded.rigProfile) == foh::rigSteps(std::nullopt));
+        CHECK(loaded.workspace == s.workspace); CHECK(loaded.measurement == s.measurement);
+        CHECK(loaded.captures.size() == s.captures.size()); CHECK(loaded.micCalText == s.micCalText);
+        REQUIRE(foh::saveSession(bundle.path, loaded, error));
+        auto reloaded = s;
+        REQUIRE(foh::loadSession(bundle.path, reloaded, error, &notice));
+        CHECK_FALSE(reloaded.rigProfile); CHECK_FALSE(notice.empty());
+    }
+}
+
+TEST_CASE("Rig answers round trip session boundaries flags and arrangements", "[session][rig]") {
+    Bundle bundle; auto s = synthetic(); std::string error, notice;
+    for (int count : {1, 256}) for (bool subs : {false, true}) for (bool fills : {false, true})
+        for (auto control : {foh::RigProfile::Control::Grouped, foh::RigProfile::Control::Individual})
+            for (auto arrangement : {foh::RigProfile::SubArrangement::Centre, foh::RigProfile::SubArrangement::LeftRight,
+                                     foh::RigProfile::SubArrangement::Distributed, foh::RigProfile::SubArrangement::Other}) {
+                auto& rig = *s.rigProfile; rig.clusters = rig.cabinetsPerCluster = count;
+                rig.subs = subs; rig.frontFills = fills; rig.control = control; rig.subArrangement = arrangement;
+                REQUIRE(foh::saveSession(bundle.path, s, error));
+                std::ifstream f(bundle.path / "session.json"); std::string text{std::istreambuf_iterator<char>(f), {}};
+                auto j = foh::Json::parse(text), extra = j["rigProfile"];
+                extra.set("futureAnswer", foh::Json::object()); j.set("rigProfile", extra); j.set("futureSessionKey", true);
+                std::ofstream(bundle.path / "session.json") << j.dump();
+                foh::Session loaded; notice = "stale";
+                REQUIRE(foh::loadSession(bundle.path, loaded, error, &notice));
+                CHECK(notice.empty()); REQUIRE(loaded.rigProfile);
+                CHECK(loaded.rigProfile->toJson() == rig.toJson());
+                CHECK(foh::rigSteps(loaded.rigProfile) == foh::rigSteps(s.rigProfile));
+            }
+}
+
+TEST_CASE("Syntactically damaged rig manifests fail safely without partial restoration", "[session][rig]") {
+    Bundle bundle; auto s = synthetic(); std::string error, notice;
+    REQUIRE(foh::saveSession(bundle.path, s, error));
+    std::ifstream f(bundle.path / "session.json"); const std::string text{std::istreambuf_iterator<char>(f), {}};
+    const auto start = text.find("\"rigProfile\""); REQUIRE(start != std::string::npos);
+    for (const auto& ending : {std::string("\"rigProfile\": {\"clusters\":"), std::string("\"rigProfile\": {broken}}")}) {
+        std::ofstream(bundle.path / "session.json") << text.substr(0, start) << ending;
+        auto loaded = s; notice = "stale";
+        REQUIRE_FALSE(foh::loadSession(bundle.path, loaded, error, &notice));
+        CHECK_FALSE(error.empty()); CHECK(notice.empty());
+        REQUIRE(loaded.rigProfile); CHECK(loaded.rigProfile->toJson() == s.rigProfile->toJson());
+        CHECK(loaded.workspace == s.workspace); CHECK(loaded.captures.size() == s.captures.size());
+    }
 }
