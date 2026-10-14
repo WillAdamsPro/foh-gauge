@@ -40,6 +40,10 @@ public:
     bool delayLocked() const { return delay.ok(); }
     void requestDelay(bool sub, std::function<void()> then = {});
     void lockDelayFromLast();
+    void cancelSessionOperations() {
+        capture.active = false; capture.then = {}; pendingDelay = {};
+        delayPending = false; delay = {}; overlay = {};
+    }
     double lockedDelayMs = 0; bool delayPending = false;
 
     // ---- traces
@@ -54,7 +58,7 @@ public:
     void beginCapture(const juce::String& name, std::function<void(bool)> then);
 
     // ---- mic cal
-    foh::MicCal cal; juce::String calFile; bool calOn = false;
+    foh::MicCal cal; juce::String calFile; std::string calText; bool calOn = false;
     void loadCalFile(const juce::File& f);
     void setCalEnabled(bool on);
 
