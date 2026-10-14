@@ -540,7 +540,13 @@ TEST_CASE("D-SUBGD: sub delay from XO-band phase = 12.5 ms; alternatives +-1 per
     REQUIRE(e.hasHint); REQUIRE(e.hintMs==Approx(raw.arrivals[0].delayMs)); REQUIRE(std::fabs(e.hintMs - e.primaryMs) > 2.0);
     // auto XO (band centre) and a different XO change only the spacing of the alternatives
     auto e2 = subDelayFromPhase(A, B, 60, 100); REQUIRE(e2.primaryMs==Approx(12.5).margin(0.25)); REQUIRE(e2.xoHz > 60); REQUIRE(e2.xoHz < 100);
-    auto e3 = subDelayFromPhase(A, B, 60, 100, 100); REQUIRE(e3.primaryMs==Approx(12.5).margin(0.25)); REQUIRE(e3.alternativesMs[1]==Approx(22.5).margin(0.25));
+    auto e3 = subDelayFromPhase(A, B, 60, 100, 100, &raw);
+    REQUIRE(e3.valid); REQUIRE(e3.xoHz == 100); REQUIRE(e3.periodMs == Approx(10.0));
+    REQUIRE(e3.primaryMs==Approx(12.5).margin(0.25));
+    REQUIRE(e3.alternativesMs[0]==Approx(2.5).margin(0.25));
+    REQUIRE(e3.alternativesMs[1]==Approx(22.5).margin(0.25));
+    REQUIRE(e3.hasHint); REQUIRE(e3.hintMs == Approx(raw.arrivals[0].delayMs));
+    REQUIRE(e3.primaryMs - e3.periodMs / 2 == Approx(7.5).margin(0.25));
     // sign: swapping roles gives -12.5 (mains later than sub)
     REQUIRE(subDelayFromPhase(B, A, 60, 100, 80).primaryMs==Approx(-12.5).margin(0.25));
     // invalid inputs
