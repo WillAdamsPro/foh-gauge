@@ -200,7 +200,22 @@ private:
         form.setBounds(getLocalBounds());
         const int width = form.layoutWidth(260);
         const bool verifying = st.act == 22 || st.act == 26;
-        const String bodyText = u8(st.body) + (verifying && guide == 1 ? "\nThe sum should rise in the crossover band rather than dip. Walk a few seats and listen." : String())
+        const bool mainArray = model.rigProfile && std::any_of(model.rigProfile->clusterCabinets.begin(),
+            model.rigProfile->clusterCabinets.end(), [](int n) { return n > 1; });
+        String stepBody = u8(st.body);
+        if (mainArray && guide == 0 && step == 1)
+            stepBody = "Start pink noise at a comfortable level. Both inputs should sit near -20 dBFS, never clipping. Place the mic on-axis in ONE main cluster's coverage, where its cabinets combine, away from walls. Mute the other clusters.";
+        if (model.rigProfile && guide == 3 && step == 1)
+            stepBody = String("Complete W1 reference delay") + (model.rigProfile->subCount ? ", W2 sub-to-mains" : "")
+                + (model.rigProfile->frontFillCount ? ", W3 fills" : "")
+                + ", including each Verify. Fix routing, polarity and coverage first. Establish reference delay at each new mic position and keep it fixed for before/after comparisons. Trust settled, coherent measurements.";
+        if (model.rigProfile && guide == 3 && step == 2)
+            stepBody = "Fix aiming and relative levels before broad EQ. Compare with your target; avoid boosting deep cancellations or chasing low-coherence bins. Choose one change, then Store, Apply in DSP and Verify. Repeat W4 for further changes.";
+        if (model.rigProfile && guide == 4 && step == 1 && !model.rigProfile->frontFillCount)
+            stepBody = "Return to the tuning mic position and speaker configuration. Use brief pink noise, check reference delay, then compare the live TF with the stored tuning trace. Check settled response and coherence"
+                + String(model.rigProfile->subCount ? ", and sub/main crossover summation." : ".")
+                + " Stop noise after measuring. Investigate changes before adding EQ.";
+        const String bodyText = stepBody + (model.rigProfile ? "\n" + String(model.rigProfile->guideGuidance(guide)) : String()) + (verifying && guide == 1 ? "\nThe sum should rise in the crossover band rather than dip. Walk a few seats and listen." : String())
             + (verifying && guide == 2 ? "\nCheck phase overlap through the seam and listen from mains-only to fill-only positions." : String())
             + (st.act == 21 && suggestedChange.isNotEmpty() ? "\n" + suggestedChange : String());
         auto textHeight = [width](const Label& label, const String& text) {
@@ -240,7 +255,7 @@ private:
         updateVerdictButtons();
         // W4/W5 currently contain only the shared frame and prescribe no mic move.
         // Retain the W1-W3 placement through Store / Apply / Verify.
-        micDiagram.setPlacement(placement);
+        micDiagram.setPlacement(placement, mainArray);
         if (placement != Placement::None) {
             micDiagram.setBounds(c.removeFromTop(104)); c.removeFromTop(6);
         }
@@ -375,8 +390,12 @@ private:
         String out; SafePointer<GuidePanel> safe(this);
         switch (a) {
             case 1: if (model.requestWorkspace) model.requestWorkspace("setup"); return;
-            case 2: model.engine.gen = AudioEngine::Pink; model.notify(AppModel::Settings);
-                    out = "Pink noise on at " + String(model.engine.genGainDb.load(), 1) + " dBFS. Watch the signal meters."; next(); break;
+            case 2: model.confirmGeneratorStart("Pink noise", [safe] {
+                        if (!safe) return;
+                        safe->model.engine.gen = AudioEngine::Pink; safe->model.notify(AppModel::Settings);
+                        safe->say("Pink noise on at " + String(safe->model.engine.genGainDb.load(), 1) + " dBFS. Watch the signal meters.");
+                        safe->next(); safe->refresh();
+                    }); return;
             case 3: say("Finding the delay...");
                     guidedDelay(false, [safe] { if (!safe) return; auto& p = *safe; String o;
                         if (p.model.delayLocked()) { p.model.lockDelayFromLast(); o = "Locked reference delay " + String(consoleMs(p.model.lockedDelayMs), 2) + " ms. " + p.delayText(); p.next(); }
@@ -420,7 +439,9 @@ private:
                     p.suggestedChange = o; p.next(); p.say(o); p.refresh(); });
                 return;
 
-            case 24: case 26: startBoxSweep(a == 26); return;
+            case 24: case 26: model.confirmGeneratorStart("Log sweep", [safe, a] {
+                if (safe) safe->startBoxSweep(a == 26);
+            }); return;
             case 25: if (boxBaseline != foh::ImpulsePolarity::Unknown) { verified = false; note.clear(); next(); } break;
             case 27: step = 0; resetVerification(); out = "Select and isolate the next box."; break;
             case 23: next(); break; // Manual checklist acknowledgement; no engine or DSP changes.

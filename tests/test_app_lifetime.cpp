@@ -1,3 +1,4 @@
+#include "ui_form_helpers.h"
 #include <functional>
 #include <catch2/catch_test_macros.hpp>
 #include "MainComponent.h"
@@ -30,6 +31,8 @@ public:
     }
     bool inShowMode() const { return showMode; }
     AppModel& appModel() { return model; }
+    juce::TextButton& outputControl() { return outputOn; }
+    void refreshStatus() { timerCallback(); }
     juce::TextButton& expertToggle() { return expertBtn; }
     AppModel& state() { return model; }
     void showWorkspace() { setup.setVisible(false); view.setVisible(true); openFloatingWindows(); }
@@ -451,7 +454,7 @@ TEST_CASE("Session replacement destroys windows before replacing their borrowed 
     SECTION("Invalid optional rig answers still restore the session") {
         auto manifestFile = session.getChildFile("session.json");
         auto manifest = foh::Json::parse(manifestFile.loadFileAsString().toStdString());
-        auto rig = foh::RigProfile{}.toJson(); rig.set("clusters", -1);
+        auto rig = foh::RigProfile{}.toJson(); rig.set("clusterCabinets", foh::Json::array());
         manifest.set("rigProfile", rig);
         REQUIRE(manifestFile.replaceWithText(juce::String(manifest.dump())));
     }
@@ -487,7 +490,7 @@ TEST_CASE("Setup unsubscribes device changes and wizard cancels timers on destru
         RoutingWizard wizard(model.engine);
         wizard.setChannels({"Synthetic mic", "Synthetic reference"}, {"Synthetic output", "Synthetic loopback"});
         bool started = false;
-        for (auto* child : wizard.getChildren())
+        for (auto* child : formCanvas(wizard).getChildren())
             if (auto* button = dynamic_cast<juce::TextButton*>(child))
                 if (button->getButtonText() == "Test connection") { button->onClick(); started = true; }
         REQUIRE(started);
@@ -657,6 +660,10 @@ TEST_CASE("Expert exposes selectable charts and settings and keeps guide navigat
                 }
             };
             press(*panel);
+            drainMessages();
+            if (auto* alert = dynamic_cast<juce::AlertWindow*>(juce::ModalComponentManager::getInstance()->getModalComponent(0))) {
+                alert->triggerButtonClick("Start noise"); drainMessages();
+            }
             CHECK(advanced);
             CHECK(panel->saveState()["step"].asInt() == before + 1);
         }
@@ -695,7 +702,7 @@ TEST_CASE("Bad session opens leave the running app state intact and show a notic
     auto& model = main.state();
     model.lockedDelayMs = 4.25;
     model.rigProfile = foh::RigProfile{};
-    model.rigProfile->clusters = 3;
+    model.rigProfile->clusterCabinets = {2, 3, 3};
     const auto folder = temporary.folder.getChildFile("Synthetic.fohsession");
     REQUIRE(main.writeSession(folder));
     const auto priorWorkspace = fohws::toJson(main.workspace());
@@ -718,7 +725,7 @@ TEST_CASE("Bad session opens leave the running app state intact and show a notic
     REQUIRE_FALSE(main.readSession(folder));
     CHECK(fohws::toJson(main.workspace()) == priorWorkspace);
     CHECK(model.lockedDelayMs == 4.25); CHECK(model.engine.gen.load() == AudioEngine::Pink);
-    REQUIRE(model.rigProfile); CHECK(model.rigProfile->clusters == 3);
+    REQUIRE(model.rigProfile); CHECK(model.rigProfile->clusterCabinets == std::vector<int>{2, 3, 3});
     drainMessages();
     CHECK(juce::ModalComponentManager::getInstance()->getNumModalComponents() > 0);
     drainMessages(); // Allow the asynchronous notice to enter modal state before dismissing it.
@@ -919,5 +926,118 @@ TEST_CASE("Window geometry clamps both size extremes after display resolution ch
             CHECK(shrunk == small);
             CHECK(fohui::clampWindowBounds(shrunk, {}, 640, 400) == shrunk);
         }
+    }
+}
+
+TEST_CASE("Generator safety persists across panels and expires with the app session", "[app][generator][regression]") {
+    juce::ScopedJuceInitialiser_GUI initialise;
+    AppModel model; model.analysis.stop(); model.dm.removeAudioCallback(&model.engine);
+    REQUIRE(model.engine.gen.load() == AudioEngine::Off);
+    REQUIRE(model.engine.genGainDb.load() == -20.f);
+    auto panel = PanelRegistry::standard().create("Generator", model);
+    REQUIRE(panel);
+    auto controls = [&] {
+        juce::Slider* slider = nullptr; juce::ToggleButton* full = nullptr;
+        for (auto* child : panel->getChildren()) {
+            if (auto* s = dynamic_cast<juce::Slider*>(child)) slider = s;
+            if (auto* t = dynamic_cast<juce::ToggleButton*>(child)) full = t;
+        }
+        return std::make_pair(slider, full);
+    };
+    auto [gain, full] = controls(); REQUIRE(gain); REQUIRE(full);
+    CHECK(gain->getMaximum() == -6);
+    gain->setValue(0, juce::sendNotificationSync);
+    CHECK(model.engine.genGainDb.load() == -6.f);
+    full->setToggleState(true, juce::dontSendNotification); full->onClick();
+    gain->setValue(0, juce::sendNotificationSync);
+    CHECK(model.engine.genGainDb.load() == 0.f);
+    panel.reset(); panel = PanelRegistry::standard().create("Generator", model);
+    auto [newGain, newFull] = controls(); REQUIRE(newGain); REQUIRE(newFull);
+    CHECK(newFull->getToggleState()); CHECK(newGain->getValue() == 0);
+    newFull->setToggleState(false, juce::dontSendNotification); newFull->onClick();
+    CHECK(model.engine.genGainDb.load() == -6.f);
+    CHECK(newGain->getMaximum() == -6);
+    AppModel fresh; CHECK_FALSE(fresh.allowsFullGeneratorLevel());
+    CHECK(fresh.engine.gen.load() == AudioEngine::Off); CHECK(fresh.engine.genGainDb.load() == -20.f);
+}
+
+TEST_CASE("Generator confirmation cancels safely and is accepted once per app session", "[app][generator][regression]") {
+    juce::ScopedJuceInitialiser_GUI initialise;
+    AppModel model; model.analysis.stop(); model.dm.removeAudioCallback(&model.engine);
+    auto start = [&] { model.engine.gen = AudioEngine::Pink; model.notify(AppModel::Settings); };
+    auto answer = [&](bool accept) {
+        drainMessages();
+        auto* modals = juce::ModalComponentManager::getInstance();
+        REQUIRE(modals->getNumModalComponents() == 1);
+        auto* alert = dynamic_cast<juce::AlertWindow*>(modals->getModalComponent(0)); REQUIRE(alert);
+        auto* button = alert->getButton(accept ? "Start noise" : "Cancel"); REQUIRE(button);
+        button->triggerClick(); drainMessages();
+    };
+    model.confirmGeneratorStart("Pink noise", start);
+    CHECK(model.engine.gen.load() == AudioEngine::Off);
+    answer(false); CHECK(model.engine.gen.load() == AudioEngine::Off);
+    model.confirmGeneratorStart("Pink noise", start); answer(true);
+    CHECK(model.engine.gen.load() == AudioEngine::Pink);
+    model.setPaused(true); CHECK(model.engine.gen.load() == AudioEngine::Pink);
+    model.stopGenerator(); CHECK(model.engine.gen.load() == AudioEngine::Off);
+    model.confirmGeneratorStart("Pink noise", start);
+    CHECK(model.engine.gen.load() == AudioEngine::Pink);
+    CHECK(juce::ModalComponentManager::getInstance()->getNumModalComponents() == 0);
+}
+
+TEST_CASE("Generator controls and output stop remain visible in both themes and scales", "[app][generator][layout]") {
+    juce::ScopedJuceInitialiser_GUI initialise;
+    TemporaryWorkspaces temporary;
+    TestMain main(temporary.folder);
+    for (bool sunlight : {false, true}) for (int scale : {100, 200}) {
+        main.setSunlightTheme(sunlight); drainMessages();
+        main.setUiScale(scale); main.setSize(1000 * scale / 100, 600 * scale / 100);
+        main.appModel().engine.gen = AudioEngine::Pink;
+        main.appModel().setPaused(true); main.refreshStatus();
+        auto& output = main.outputControl(); REQUIRE(output.isVisible());
+        CHECK(output.getTooltip().contains("Measuring paused. Noise output is still on."));
+        CHECK(main.logicalContent().getLocalBounds().contains(output.getBounds()));
+        for (auto* control : main.toolbarControls()) CHECK_FALSE(control->getBounds().intersects(output.getBounds()));
+        auto panel = PanelRegistry::standard().create("Generator", main.appModel());
+        REQUIRE(panel); panel->setLookAndFeel(&main.getLookAndFeel()); panel->setSize(360, 112);
+        for (auto* child : panel->getChildren()) {
+            CHECK(panel->getLocalBounds().contains(child->getBounds()));
+            if (auto* toggle = dynamic_cast<juce::ToggleButton*>(child))
+                CHECK(toggle->findColour(juce::ToggleButton::tickDisabledColourId) == foh::ui::col::textSecondary());
+        }
+        if (auto* folder = std::getenv("FOH_GENERATOR_QA_DIR")) {
+            juce::File dir(folder); dir.createDirectory();
+            auto suffix = juce::String(sunlight ? "sunlight-" : "dark-") + juce::String(scale) + ".png";
+            main.appModel().engine.gen = AudioEngine::Sweep; main.appModel().notify(AppModel::Settings);
+            auto save = [&](juce::Component& c, const juce::String& name) {
+                auto snapshot = c.createComponentSnapshot(c.getLocalBounds(), true, scale / 100.f);
+                juce::Image image(juce::Image::RGB, snapshot.getWidth(), snapshot.getHeight(), true);
+                juce::Graphics graphics(image); graphics.fillAll(foh::ui::col::cardBackground());
+                graphics.drawImageAt(snapshot, 0, 0);
+                auto stream = dir.getChildFile(name + suffix).createOutputStream(); REQUIRE(stream);
+                stream->setPosition(0);
+                juce::PNGImageFormat png; REQUIRE(png.writeImageToStream(image, *stream)); stream->truncate();
+            };
+            save(main.logicalContent(), "toolbar-"); save(*panel, "generator-");
+        }
+        panel->setLookAndFeel(nullptr);
+        output.onClick(); CHECK(main.appModel().engine.gen.load() == AudioEngine::Off);
+        CHECK_FALSE(output.isVisible());
+    }
+}
+
+TEST_CASE("Stopping or destroying a pending generator confirmation cannot start output", "[app][generator][lifetime]") {
+    juce::ScopedJuceInitialiser_GUI initialise;
+    bool started = false;
+    for (bool display : {false, true}) {
+        auto model = std::make_unique<AppModel>();
+        model->confirmGeneratorStart("Pink noise", [&] { started = true; });
+        if (display) drainMessages();
+        model->stopGenerator(); drainMessages(); CHECK_FALSE(started);
+        CHECK(juce::ModalComponentManager::getInstance()->getNumModalComponents() == 0);
+        model->confirmGeneratorStart("Pink noise", [&] { started = true; });
+        if (display) drainMessages();
+        model.reset(); drainMessages(); CHECK_FALSE(started);
+        CHECK(juce::ModalComponentManager::getInstance()->getNumModalComponents() == 0);
     }
 }

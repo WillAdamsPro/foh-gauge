@@ -18,7 +18,7 @@ private:
             wizard.cancel(); questionnaire.cancel();
             wizard.setVisible(false); questionnaire.setVisible(false);
         }
-        if (what & (AppModel::Settings | AppModel::Cal)) refresh();
+        if (what & (AppModel::Settings | AppModel::Cal | AppModel::Rig | AppModel::Session)) refresh();
     }
     void refresh();
     void applyDevice(bool inputChanged = false);

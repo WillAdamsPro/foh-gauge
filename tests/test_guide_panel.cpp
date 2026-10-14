@@ -45,6 +45,16 @@ const foh::Trace* AppModel::findTrace(const char* name) const {
 }
 
 namespace {
+void acceptGeneratorConfirmation() {
+    juce::MessageManager::getInstance()->runDispatchLoopUntil(10);
+    auto* modals = juce::ModalComponentManager::getInstance();
+    if (auto* alert = dynamic_cast<juce::AlertWindow*>(modals->getModalComponent(0))) {
+        if (auto* start = alert->getButton("Start noise")) {
+            start->triggerClick();
+            juce::MessageManager::getInstance()->runDispatchLoopUntil(20);
+        }
+    }
+}
 fohws::Json findDelayStep() {
     auto state = fohws::Json::object(); state.set("guide", 1); state.set("step", 2); return state;
 }
@@ -425,7 +435,7 @@ TEST_CASE("W6 checks each isolated box with fresh sweep impulse direction", "[ap
     model.sweep.response.impulse = {0, 1, 0};
     model.sweep.response.arrivals.push_back({});
     auto measure = [&](const char* action, double sign) {
-        button(*panel, action).onClick();
+        button(*panel, action).onClick(); acceptGeneratorConfirmation();
         CHECK_FALSE(button(*panel, action).isEnabled());
         model.notify(AppModel::Snapshot);
         CHECK_FALSE(button(*panel, action).isEnabled());
@@ -459,7 +469,7 @@ TEST_CASE("W6 checks each isolated box with fresh sweep impulse direction", "[ap
     CHECK(labelContains(*panel, "This box: NORMAL (positive)"));
     button(*panel, "Polarity state confirmed").onClick();
     model.engine.captureEpoch.fetch_add(1);
-    button(*panel, "Verify box sweep").onClick();
+    button(*panel, "Verify box sweep").onClick(); acceptGeneratorConfirmation();
     CHECK(panel->saveState()["step"].asInt() == 1);
     CHECK(labelContains(*panel, "Audio routing changed"));
     // Restoring Apply/Verify cannot reuse a non-persisted baseline.
@@ -854,7 +864,7 @@ TEST_CASE("W6 Back hiding session reload and rig edits discard in-flight box swe
         AppModel model; auto panel = makeGuidePanel(model); panel->setSize(260, 780);
         panel->setVisible(true);
         auto state = fohws::Json::object(); state.set("guide", 5); state.set("step", 1); panel->loadState(state);
-        button(*panel, "Measure box sweep").onClick();
+        button(*panel, "Measure box sweep").onClick(); acceptGeneratorConfirmation();
         model.sweepSeq = model.nextGuideSweepId;
         model.sweepCapturing = true; model.notify(AppModel::Snapshot);
         if (navigation == 0) button(*panel, "Back").onClick();
@@ -876,7 +886,7 @@ TEST_CASE("W6 verdict requires current unpaused audio and is consumed before nex
         AppModel model; auto panel = makeGuidePanel(model); panel->setSize(260, 780);
         auto state = fohws::Json::object(); state.set("guide", 5); state.set("step", 1); panel->loadState(state);
         auto sweep = [&](const char* action) {
-            button(*panel, action).onClick();
+            button(*panel, action).onClick(); acceptGeneratorConfirmation();
             model.sweepSeq = model.nextGuideSweepId;
             model.sweepCapturing = true; model.notify(AppModel::Snapshot);
             model.sweepCapturing = false; model.sweep.response.impulse = {0, 1, 0};
@@ -905,9 +915,9 @@ TEST_CASE("W6 rapid re-entry cannot claim the previous queued sweep", "[app][gui
     juce::ScopedJuceInitialiser_GUI gui;
     AppModel model; auto panel = makeGuidePanel(model); panel->setSize(260, 780);
     auto state = fohws::Json::object(); state.set("guide", 5); state.set("step", 1); panel->loadState(state);
-    button(*panel, "Measure box sweep").onClick(); const auto retired = model.nextGuideSweepId;
+    button(*panel, "Measure box sweep").onClick(); acceptGeneratorConfirmation(); const auto retired = model.nextGuideSweepId;
     button(*panel, "Back").onClick(); button(*panel, "Box isolated").onClick();
-    button(*panel, "Measure box sweep").onClick(); REQUIRE(model.nextGuideSweepId != retired);
+    button(*panel, "Measure box sweep").onClick(); acceptGeneratorConfirmation(); REQUIRE(model.nextGuideSweepId != retired);
     model.sweepSeq = retired; model.sweepCapturing = true; model.notify(AppModel::Snapshot);
     model.sweepCapturing = false; model.sweep.response.impulse = {0, 1, 0};
     model.sweep.response.arrivals = {{}}; model.notify(AppModel::Snapshot);
@@ -952,7 +962,7 @@ TEST_CASE("W6 ambiguous impulse releases pending sweep and permits retry", "[app
     AppModel model; auto panel = makeGuidePanel(model); panel->setSize(260, 780);
     auto state = fohws::Json::object(); state.set("guide", 5); state.set("step", 1); panel->loadState(state);
     auto complete = [&](std::vector<double> impulse) {
-        button(*panel, "Measure box sweep").onClick();
+        button(*panel, "Measure box sweep").onClick(); acceptGeneratorConfirmation();
         model.sweepSeq = model.nextGuideSweepId;
         model.sweepCapturing = true; model.notify(AppModel::Snapshot);
         model.sweepCapturing = false; model.sweep.response.impulse = std::move(impulse);
@@ -977,7 +987,7 @@ TEST_CASE("Rig edits and Skip retire measurements even when the selected W guide
             CAPTURE(change, guide);
             AppModel model; CaptureStub capture;
             model.rigProfile = foh::RigProfile{};
-            model.rigProfile->subs = model.rigProfile->frontFills = true;
+            model.rigProfile->subCount = model.rigProfile->frontFillCount = 1;
             if (change == 1) model.rigProfile->control = foh::RigProfile::Control::Individual;
             auto panel = makeGuidePanel(model); panel->setSize(260, 780);
             auto state = fohws::Json::object(); state.set("guide", guide); state.set("step", 100);

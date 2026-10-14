@@ -16,7 +16,7 @@ void AppModel::finishLoopback(const foh::TFResult* raw) {
         && activeLoopbackEpoch == engine.captureEpoch.load() && !engine.deviceFailed.load();
     if (sameRouting)
         analysis.send(foh::Command::referenceDelay(savedReferenceDelay), activeLoopbackEpoch);
-    loopbackMeasuring = false; engine.gen = sameRouting ? savedGenerator : AudioEngine::Off; engine.genGainDb = savedGeneratorGain; setPaused(savedPaused);
+    loopbackMeasuring = false; engine.gen = sameRouting ? savedGenerator : AudioEngine::Off; setGeneratorLevel(savedGeneratorGain); setPaused(savedPaused);
     auto c = raw ? foh::LoopbackCorrection::measure(*raw) : foh::LoopbackCorrection{};
     if (c.valid() && sameRouting) {
         loopbackCals[measuringLoopbackKey] = c;

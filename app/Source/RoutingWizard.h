@@ -1,11 +1,14 @@
 #pragma once
 #include "Widgets.h"
+#include "ScrollableForm.h"
+#include <fohcore/rig_profile.h>
 
 // Optional message-thread walkthrough. Draft choices are applied only on Finish.
 class RoutingWizard : public juce::Component, private juce::Timer {
 public:
     explicit RoutingWizard(AudioEngine&);
     void setChannels(const juce::StringArray& inputs, const juce::StringArray& outputs);
+    void setRigProfile(const std::optional<foh::RigProfile>&);
     void begin();
     void cancel();
     void visibilityChanged() override;
@@ -16,6 +19,7 @@ public:
     void paint(juce::Graphics&) override;
     std::function<void()> onApplied, onClose;
 private:
+    void paintDiagram(juce::Graphics&);
     void refresh();
     void timerCallback() override;
     void cancelTest();
@@ -30,6 +34,8 @@ private:
     std::array<juce::String, 4> results;
     double testStartedMs = 0;
     bool refreshing = false, active = false, channelsKnown = false;
+    ScrollableForm form;
+    juce::String rigGuidance;
     juce::Label title, explanation, presetNotice, testStatus;
     juce::ComboBox channel;
     juce::TextButton back { "Back" }, next { "Next" }, skip { "Skip" };

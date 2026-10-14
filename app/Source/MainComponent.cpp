@@ -25,6 +25,10 @@ MainComponent::MainComponent(juce::File workspaceFolder) : mgr(std::move(workspa
     content.addAndMakeVisible(toolbarTitle); toolbarTitle.setFont(FohLookAndFeel::font(T::small + 1, true));
     content.addAndMakeVisible(switcher); switcher.onChange = [this](int i) { selectWorkspace(i); };
     content.addAndMakeVisible(status);
+    content.addChildComponent(outputOn);
+    outputOn.setButtonText(u8("\xe2\x96\xb2 Output on"));
+    outputOn.setTitle("Stop generator output");
+    outputOn.onClick = [this] { model.stopGenerator(); timerCallback(); };
     content.addChildComponent(audioNotice); audioNotice.setFont(FohLookAndFeel::font(T::small));
     content.addAndMakeVisible(expertBtn); expertBtn.setButtonText("Expert"); expertBtn.setClickingTogglesState(true);
     expertBtn.setToggleState(model.expertMode(), dontSendNotification);
@@ -336,6 +340,11 @@ void MainComponent::layoutContent() {
     pauseBtn.setBounds(bar.removeFromRight(84).withSizeKeepingCentre(84, 30)); bar.removeFromRight(12);
     showModeBtn.setBounds(bar.removeFromRight(96).withSizeKeepingCentre(96, 30)); bar.removeFromRight(8);
     expertBtn.setBounds(bar.removeFromRight(70).withSizeKeepingCentre(70, 30)); bar.removeFromRight(8);
+    // Reserve the output stop control before optional status text at every width.
+    if (outputOn.isVisible()) {
+        outputOn.setBounds(bar.removeFromRight(124).withSizeKeepingCentre(124, 30));
+        bar.removeFromRight(8);
+    }
     const bool wide = content.getWidth() >= 1200;
     toolbarTitle.setVisible(wide); status.setVisible(wide);
     toolbarTitle.setBounds(wide ? bar.removeFromLeft(110) : Rectangle<int>());
@@ -359,6 +368,7 @@ void MainComponent::changeListenerCallback(ChangeBroadcaster*) {
     if (auto* w = getTopLevelComponent()) if (auto* dw = dynamic_cast<DocumentWindow*>(w)) dw->setBackgroundColour(C::background());
 }
 void MainComponent::modelChanged(int what) {
+    if (what & (AppModel::Settings | AppModel::Levels)) timerCallback();
     if (what & AppModel::Expert) {
         expertBtn.setToggleState(model.expertMode(), dontSendNotification);
         view.refreshPresentation();
@@ -366,6 +376,12 @@ void MainComponent::modelChanged(int what) {
 }
 
 void MainComponent::timerCallback() {
+    const bool outputActive = model.engine.gen.load() != AudioEngine::Off;
+    if (outputOn.isVisible() != outputActive) { outputOn.setVisible(outputActive); layoutContent(); }
+    outputOn.setColour(TextButton::textColourOffId, C::warning());
+    outputOn.setColour(TextButton::textColourOnId, C::warning());
+    outputOn.setColour(TextButton::buttonColourId, C::pillBackground());
+    outputOn.setTooltip(model.paused ? "Measuring paused. Noise output is still on. Click to stop output." : "Noise output is on. Click to stop output.");
     toolbarTitle.setColour(Label::textColourId, C::textPrimary());
     const bool needsNotice = model.engine.deviceFailed.load() || model.engine.state.load() != AudioEngine::Ready
         || model.engine.captureEpoch.load() != model.engine.analysisEpoch.load();
