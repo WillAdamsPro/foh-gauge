@@ -12,7 +12,7 @@
 
 class AppModel : private juce::Timer {
 public:
-    enum What { Snapshot = 1, Delay = 2, Traces = 4, Cal = 8, Levels = 16, Capture = 32, Overlay = 64, Settings = 128, Theme = 256, Rig = 512 };
+    enum What { Snapshot = 1, Delay = 2, Traces = 4, Cal = 8, Levels = 16, Capture = 32, Overlay = 64, Settings = 128, Theme = 256, Rig = 512, Expert = 1024 };
     struct Listener { virtual ~Listener() = default; virtual void modelChanged(int what) = 0; };
 
     AppModel();
@@ -24,6 +24,13 @@ public:
     // ---- audio / analysis
     juce::AudioDeviceManager dm; AudioEngine engine; AnalysisEngine analysis { engine };
     juce::ApplicationProperties settings;
+    // Global presentation preference; message thread only, never an audio command.
+    bool expertMode() { auto* pf = settings.getUserSettings(); return pf && pf->getBoolValue("expertMode", false); }
+    void setExpertMode(bool enabled) {
+        if (enabled == expertMode()) return;
+        if (auto* pf = settings.getUserSettings()) { pf->setValue("expertMode", enabled); pf->saveIfNeeded(); }
+        notify(Expert);
+    }
     void send(const foh::Command& c) { analysis.send(c); }
     void setPaused(bool p) { paused = p; analysis.paused = p; notify(Levels); }
     bool paused = false;
@@ -50,6 +57,18 @@ public:
     void cancelSessionOperations() {
         capture.active = false; capture.then = {}; pendingDelay = {};
         delayPending = false; delay = {}; overlay = {};
+    }
+    // Device setup has already changed synchronously during session Open.
+    // Acknowledge its epoch before restoring delay so the next UI timer does not
+    // mistake the restored state for measurements from the previous device.
+    void restoreSessionDelay(double ms) {
+        lastInputEpoch = engine.captureEpoch.load(std::memory_order_acquire);
+        lastDeviceFailed = engine.deviceFailed.load();
+        tf = {}; rtaDb.clear(); rtaBands.clear(); conv = {}; micLevelValid = false;
+        sweep = {}; sweepCapturing = false;
+        refDelaySamples = 0; refDelayMs = 0;
+        lockedDelayMs = ms;
+        send(foh::Command::referenceDelay(ms * engine.sampleRate.load() / 1000.0));
     }
     double lockedDelayMs = 0; bool delayPending = false;
 
@@ -109,6 +128,14 @@ public:
     foh::Json splCalJson() const;
     void loadSplCalJson(const foh::Json&);
 
+    // Interface correction is stored per device/rate/routing, message thread only.
+    std::map<std::string, foh::LoopbackCorrection> loopbackCals;
+    std::string loopbackKey() const;
+    bool beginLoopback();
+    void clearLoopback();
+    bool loopbackMeasuring = false;
+    juce::String loopbackStatus;
+
     // ---- mic cal
     foh::MicCal cal; juce::String calFile; std::string calText; bool calOn = false;
     void loadCalFile(const juce::File& f);
@@ -128,6 +155,13 @@ public:
 
 private:
     std::array<std::optional<juce::Colour>, foh::TraceStore::kMax> traceColours;
+    void syncLoopback();
+    void finishLoopback(const foh::TFResult* raw = nullptr);
+    std::string activeLoopbackKey, measuringLoopbackKey;
+    uint64_t activeLoopbackEpoch = 0, loopbackResetId = 0;
+    double loopbackStart = 0, savedReferenceDelay = 0;
+    int savedGenerator = 0; float savedGeneratorGain = -20;
+    bool savedPaused = false;
     std::string levelInputKey; uint64_t levelInputEpoch = 0; double levelTimeMs = 0;
     void timerCallback() override;
     juce::ListenerList<Listener> listeners;

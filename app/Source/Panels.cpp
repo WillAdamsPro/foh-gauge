@@ -3,6 +3,7 @@
 #include "BinaryData.h"
 #include "SetupPage.h"
 #include "SettleStatus.h"
+#include "ShowMonitoring.h"
 using namespace juce;
 namespace C = foh::ui::col;
 namespace D = foh::ui::dim;
@@ -286,6 +287,79 @@ private:
     TargetControls target {-40}; PlotComponent plot; ComboBox frac;
 };
 
+// ===================== W7 show-time monitoring =====================
+class ShowMonitoringPanel : public Panel, private Timer {
+public:
+    explicit ShowMonitoringPanel(AppModel& m) : Panel(m, "ShowMonitoring", "W7 Show Monitoring") {
+        helpText = "Feed the console programme into the reference input and leave the mic in its reference position. Select a stored TF, then Monitor. No generated output is allowed while monitoring. TF drift is RMS over 100 Hz-10 kHz, using coherence >=0.6 and at least 25% coverage. A 3 dB change for three one-second updates raises an alert. RTA shows live programme level; programme changes are not system drift.";
+        reference.setTextWhenNothingSelected("Select stored reference");
+        monitor.setTooltip(helpText);
+        reference.onChange = [this] { stopMonitoring(); };
+        monitor.onClick = [this] {
+            if (active) { stopMonitoring(); return; }
+            int index = reference.getSelectedId() - 1;
+            if (index < 0 || index >= model.traces.count()) return;
+            baseline = model.traces.at(index); // stable even if the trace store changes
+            active = true; alert = {}; model.engine.gen = AudioEngine::Off;
+            model.engine.monitoringSilent = true; model.engine.cancelConnectionTest();
+            model.notify(AppModel::Settings); monitor.setButtonText("Stop monitoring");
+            reference.setEnabled(false); status.setText("Monitoring: waiting for coherent programme", dontSendNotification);
+            startTimerHz(1);
+        };
+        for (auto* c : std::initializer_list<Component*>{&reference, &monitor, &status, &tfPlot, &rtaPlot}) addAndMakeVisible(c);
+        tfPlot.yLabel = "TF DB"; tfPlot.yMin = -18; tfPlot.yMax = 18; tfPlot.yStep = 6; tfPlot.showLegend = true;
+        rtaPlot.yLabel = "RTA dBFS"; rtaPlot.yMin = -100; rtaPlot.yMax = 0; rtaPlot.yStep = 20; rtaPlot.showLegend = true;
+        styleLabel(status, T::small, C::textPrimary()); refreshReferences(); stopMonitoring();
+    }
+    ~ShowMonitoringPanel() override { stopTimer(); if (active) { model.engine.gen = AudioEngine::Off; model.engine.monitoringSilent = false; } }
+    int priority() const override { return 100; }
+    void resized() override {
+        auto r = getLocalBounds().reduced(pad, 6); auto row = controlRow(r);
+        monitor.setBounds(row.removeFromRight(140)); row.removeFromRight(6); reference.setBounds(row);
+        status.setBounds(controlRow(r, 44)); tfPlot.setBounds(r.removeFromTop(r.getHeight() / 2)); rtaPlot.setBounds(r);
+    }
+    void modelChanged(int w) override {
+        if ((w & AppModel::Traces) && !active) refreshReferences();
+    }
+private:
+    void refreshReferences() {
+        auto id = reference.getSelectedId(); reference.clear(dontSendNotification);
+        for (int i = 0; i < model.traces.count(); ++i) reference.addItem(String(model.traces.at(i).name), i + 1);
+        if (id <= model.traces.count()) reference.setSelectedId(id, dontSendNotification);
+        monitor.setEnabled(active || reference.getSelectedId() > 0);
+    }
+    void stopMonitoring() {
+        stopTimer(); if (active) { model.engine.gen = AudioEngine::Off; model.engine.monitoringSilent = false; }
+        active = false; alert = {}; monitor.setButtonText("Monitor"); reference.setEnabled(true); refreshReferences();
+        status.setColour(Label::textColourId, C::textPrimary());
+        status.setText("W7: select a stored TF and Monitor. Use console programme as reference.", dontSendNotification);
+    }
+    void timerCallback() override {
+        const bool signal = !model.paused && model.micLevelValid && model.refPeak > 0.00001f
+            && !model.engine.deviceFailed.load() && model.engine.state.load() == AudioEngine::Ready;
+        const auto drift = signal ? fohui::showDrift(model.tf, baseline.tf) : fohui::ShowDrift{};
+        const bool warning = alert.update(drift);
+        status.setText(!drift.valid ? "Waiting: insufficient coherent programme, paused, or input changed"
+            : (warning ? "DRIFT ALERT: " : alert.consecutive > 0 ? "Checking drift: " : "Monitoring: ")
+              + String(drift.rmsDb, 1) + " dB RMS vs " + String(baseline.name), dontSendNotification);
+        status.setColour(Label::textColourId, warning ? Colours::orange : C::textPrimary());
+        if (!isShowing()) return; // keep alert state, avoid hidden rendering
+        tfPlot.series.clear();
+        PlotComponent::Series stored; stored.c = C::storedTrace(0); stored.label = String(baseline.name); stored.dash = foh::theme::stroke::dashStored;
+        logDecimate(baseline.tf, baseline.tf.magDb, stored.f, stored.v, &stored.gap); tfPlot.series.push_back(std::move(stored));
+        if (signal) { PlotComponent::Series live; live.c = C::traceLive(); live.label = "Live TF";
+            logDecimate(model.tf, model.tf.magDb, live.f, live.v, &live.gap); tfPlot.series.push_back(std::move(live)); }
+        tfPlot.repaint(); rtaPlot.series.clear();
+        PlotComponent::Series rta; rta.c = C::accent(); rta.label = "Live programme";
+        if (signal) for (size_t i = 0; i < model.rtaDb.size() && i < model.rtaBands.size(); ++i) {
+            rta.f.push_back(model.rtaBands[i].fCenter); rta.v.push_back(model.rtaDb[i]);
+        }
+        rtaPlot.series.push_back(std::move(rta)); rtaPlot.repaint();
+    }
+    ComboBox reference; TextButton monitor {"Monitor"}; Label status;
+    PlotComponent tfPlot, rtaPlot; foh::Trace baseline; fohui::ShowDriftAlert alert; bool active = false;
+};
+
 // ===================== Delay finder =====================
 class DelayFinderPanel : public Panel {
 public:
@@ -563,7 +637,7 @@ public:
         auto line=[&](const String& text) { g.drawText(text,r.removeFromTop(24),Justification::centredLeft); };
         const auto c=model.splCal();
         if (!c.calibrated) { line("Calibrate SPL in Setup"); return; }
-        if (!model.micLevelReady() || model.leqRevision != model.analysis.leqRevision.load() || model.leq.seconds<=0) { line("-- SPL / Leq (no live signal)"); return; }
+        if (!model.micLevelReady() || model.leqRevision != model.analysis.leqRevision.load() || !model.leq.valid) { line("-- SPL / Leq (invalid or no live signal)"); return; }
         size_t w=static_cast<size_t>(weighting.getSelectedId()-1);
         auto level=[&](double db) { return c.level(db-(model.calOn ? model.cal.dbAt(1000) : 0), model.splSensitivity()); };
         auto value=[&](const char* label, double db) { line(String(label)+String(level(db),1)+" dB"+weighting.getText()); };
@@ -615,6 +689,7 @@ PanelRegistry& PanelRegistry::standard() {
         add("TransferFunction", "Transfer Function", [](AppModel& m) { return std::make_unique<TransferFunctionPanel>(m); });
         add("Phase", "Phase", [](AppModel& m) { return std::make_unique<PhasePanel>(m); });
         add("Coherence", "Coherence", [](AppModel& m) { return std::make_unique<CoherencePanel>(m); });
+        add("ShowMonitoring", "W7 Show Monitoring", [](AppModel& m) { return std::make_unique<ShowMonitoringPanel>(m); });
         add("RTA", "RTA", [](AppModel& m) { return std::make_unique<RtaPanel>(m); });
         add("DelayFinder", "Delay Finder", [](AppModel& m) { return std::make_unique<DelayFinderPanel>(m); });
         add("Impulse", "Impulse", [](AppModel& m) { return std::make_unique<ImpulsePanel>(m); });

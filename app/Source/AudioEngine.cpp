@@ -1,4 +1,5 @@
 #include "Widgets.h"
+#include <cstring>
 using foh::RingBuffer;
 using namespace juce;
 
@@ -118,10 +119,11 @@ void AudioEngine::audioDeviceIOCallbackWithContext(const float* const* in, int n
     }
     lastMicChannel = mc; lastRefChannel = rc; lastInputCount = nIn; lastInputsValid = inputsValid;
     const float g = genGainDb.load(); if (g != lastGain) { pink.setGainDb(g + 20.f); sweep.setGainDb(g + 12.f); lastGain = g; }
+    const bool silent = monitoringSilent.load(std::memory_order_acquire);
     if (sweepRequest.exchange(false, std::memory_order_acquire)) {
         sweepRestart = true; sweepOneShot = true;
     }
-    const int mode = gen.load(), oa = outA.load(), ob = outB.load();
+    const int mode = silent ? Off : gen.load(), oa = outA.load(), ob = outB.load();
     if (mode == Sweep && previousGen != Sweep) sweepRestart = true;
     previousGen = mode;
     const auto request = chimeRequest.load(std::memory_order_acquire);
@@ -133,6 +135,7 @@ void AudioEngine::audioDeviceIOCallbackWithContext(const float* const* in, int n
         connectionDetector.reset(expected);
         testSamplesRemaining = expected >= 0 ? int(sampleRate.load()) : 0;
     }
+    if (silent) { chimePosition = 28800; testSamplesRemaining = 0; }
     const double rate = sampleRate.load(std::memory_order_relaxed);
     if (!std::isfinite(rate) || rate <= 0) return;
     const double chimeStep = 48000.0 / rate;
@@ -141,7 +144,7 @@ void AudioEngine::audioDeviceIOCallbackWithContext(const float* const* in, int n
         && (chimePosition >= 28800 || outputValid(chimeOutput));
     state.store(!inputsValid ? InvalidInputs : !outputsValid ? InvalidOutputs : Ready, std::memory_order_release);
     const double rampStep = 1.0 / std::max(1.0, rate * 0.01);
-    for (int i = 0; i < n; ++i) {
+    for (int i = 0; !silent && i < n; ++i) {
         const bool wantsSweep = mode == Sweep && gen.load() == Sweep;
         sweepLevel = wantsSweep && !sweepRestart ? std::min(1.0, sweepLevel + rampStep)
             : std::max(0.0, sweepLevel - rampStep);
@@ -201,15 +204,25 @@ void AudioEngine::audioDeviceIOCallbackWithContext(const float* const* in, int n
         int m = std::min(4096, n - off);
         const float* mp = in[mc] + off;
         const float* rp = in[rc] + off;
-        micRing.push(mp, m); refRing.push(rp, m);
-        auto peakOf = [m](const float* data) {
+        bool faulty = false;
+        auto peakOf = [m, &faulty](const float* data) {
             float peak = 0;
-            for (int i = 0; i < m; ++i)
+            for (int i = 0; i < m; ++i) {
+                uint32_t bits;
+                std::memcpy(&bits, data + i, sizeof(bits));
+                const auto magnitude = bits & 0x7fffffffU;
+                // Inspect bits because the callback flushes subnormals to zero.
+                faulty |= magnitude >= 0x7f800000U || (magnitude > 0 && magnitude < 0x00800000U);
                 if (std::isfinite(data[i])) peak = std::max(peak, std::abs(data[i]));
+            }
+            faulty |= peak <= 1.0e-12f || peak >= 0.99f;
             return peak;
         };
         fetch_max(micPeak, peakOf(mp));
         fetch_max(refPeak, peakOf(rp));
+        if (faulty) signalFaults.fetch_add(1, std::memory_order_release);
+        // Publish quality before samples can produce a settled analysis snapshot.
+        micRing.push(mp, m); refRing.push(rp, m);
     }
 }
 

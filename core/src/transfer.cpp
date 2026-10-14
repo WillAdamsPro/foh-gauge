@@ -82,10 +82,19 @@ void TransferFunction::frame() {
     }
     updateConvergence();
 }
-TFResult TransferFunction::result(int frac) const {
+TFResult TransferFunction::result(int frac, const LoopbackCorrection* loopback) const {
     TFResult r; r.sampleRate = fs; r.fftSize = N; r.averages = frameCount;
     size_t M = (size_t) N / 2 + 1; double bin = fs / N;
-    auto sxx = smoothPower(Sxx, bin, frac), syy = smoothPower(Syy, bin, frac); auto sxy = smoothComplex(Sxy, bin, frac);
+    auto correctedXY = Sxy;
+    auto correctedYY = Syy;
+    if (loopback && loopback->valid() && loopback->sampleRate == fs && loopback->fftSize == N) {
+        for (size_t k = 0; k < M; ++k) {
+            correctedXY[k] /= loopback->H[k];
+            correctedYY[k] /= std::norm(loopback->H[k]);
+        }
+    }
+    auto sxx = smoothPower(Sxx, bin, frac), syy = smoothPower(correctedYY, bin, frac);
+    auto sxy = smoothComplex(correctedXY, bin, frac);
     r.freq.resize(M); r.H.resize(M); r.magDb.resize(M); r.phaseDeg.resize(M); r.coherence.resize(M); r.blanked.assign(M, 0); r.blankThreshold = blankThr;
     for (size_t k = 0; k < M; ++k) {
         r.freq[k] = k * bin;

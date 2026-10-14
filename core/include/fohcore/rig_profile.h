@@ -16,7 +16,8 @@ struct RigProfile {
     SubArrangement subArrangement = SubArrangement::Centre;
     bool valid() const;
     Json toJson() const;
-    // Throws on malformed data; callers can preserve their prior session on failure.
+    // Throws on malformed data; session loading discards invalid optional answers.
+    // Unknown keys are ignored for compatibility with later questionnaire versions.
     static RigProfile fromJson(const Json&);
 };
 enum class RigStep { ReferenceDelay = 1, SubToMains = 2, FillAlignment = 3 };
