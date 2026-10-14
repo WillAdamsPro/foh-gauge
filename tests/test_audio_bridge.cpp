@@ -268,6 +268,20 @@ TEST_CASE("SPL level snapshots measure the selected input and reset on routing c
     REQUIRE(first.micLevelDbfs == Catch::Approx(-20).margin(0.01));
     foh::SplCal cal; REQUIRE(cal.calibrate(first.micLevelDbfs, 94));
     REQUIRE(cal.level(first.micLevelDbfs) == Catch::Approx(94).margin(0.1));
+    REQUIRE(first.leq.seconds == Catch::Approx(0.1));
+    for (int w : {0, 1, 2}) {
+        REQUIRE(cal.level(first.leq.level[w]) == Catch::Approx(94).margin(0.1));
+        REQUIRE(cal.level(first.leq.session[w]) == Catch::Approx(94).margin(0.1));
+    }
+    analysis.paused = true;
+    capture(engine, mic.data(), ref.data(), int(mic.size()));
+    REQUIRE(waitFor([&] { return engine.micRing.available() == 0; }));
+    REQUIRE(waitFor([&] { return !analysis.latest().micLevelValid; }));
+    REQUIRE(analysis.latest().leq.seconds == Catch::Approx(0.1));
+    ++analysis.leqRevision;
+    REQUIRE(waitFor([&] { return analysis.latest().leqRevision == 1; }));
+    REQUIRE(analysis.latest().leq.seconds == 0);
+    analysis.paused = false;
     engine.micCh = 1;
     capture(engine, mic.data(), ref.data(), int(mic.size())); // Discard while routing restart is acknowledged.
     REQUIRE(waitFor([&] { return engine.analysisEpoch.load() == engine.captureEpoch.load(); }));
@@ -275,6 +289,8 @@ TEST_CASE("SPL level snapshots measure the selected input and reset on routing c
     REQUIRE(waitFor([&] { const auto& s = analysis.latest(); return s.micLevelValid && s.micChannel == 1; }));
     const auto second = analysis.latest();
     REQUIRE(second.inputEpoch != first.inputEpoch);
+    REQUIRE(second.leq.seconds == Catch::Approx(0.1));
+    REQUIRE(second.leq.session[2] == Catch::Approx(-26.0206).margin(0.01));
     REQUIRE(second.micLevelDbfs == Catch::Approx(-26.0206).margin(0.01));
     REQUIRE(waitFor([&] { return !analysis.latest().micLevelValid; })); // Never calibrate a stale snapshot.
     analysis.stop();

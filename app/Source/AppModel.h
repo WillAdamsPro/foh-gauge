@@ -62,6 +62,8 @@ public:
 
     // SPL calibration is message-thread state, keyed by audio system/device/channel.
     std::map<std::string, foh::SplCal> splCals;
+    foh::LeqReading leq;
+    uint64_t leqRevision = 0;
     double micLevelDbfs = -120; bool micLevelValid = false;
     bool micLevelReady() const;
     std::string splInputKey() const;

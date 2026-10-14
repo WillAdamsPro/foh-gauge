@@ -1,4 +1,4 @@
-add_executable(fohcore_tests test_rig_profile.cpp test_routing.cpp test_core.cpp test_bad_input.cpp test_dsp_edges.cpp test_format.cpp test_target.cpp test_session.cpp test_splcal.cpp test_room_sim.cpp)
+add_executable(fohcore_tests test_rig_profile.cpp test_routing.cpp test_core.cpp test_bad_input.cpp test_dsp_edges.cpp test_format.cpp test_target.cpp test_session.cpp test_splcal.cpp test_room_sim.cpp test_leq.cpp)
 find_package(Threads REQUIRED)
 target_link_libraries(fohcore_tests PRIVATE fohcore foh_sanitizers Catch2::Catch2WithMain Threads::Threads)
 target_compile_definitions(fohcore_tests PRIVATE FOH_TARGET_DATA="${CMAKE_SOURCE_DIR}/resources/targets" FOH_TEST_DATA="${CMAKE_CURRENT_SOURCE_DIR}/data")
