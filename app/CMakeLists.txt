@@ -42,7 +42,13 @@ if(APPLE)
     target_link_libraries(FOHGauge PRIVATE "-framework AVFoundation")
 endif()
 juce_add_binary_data(FOHGaugeData SOURCES Resources/Fonts/Inter-Regular.ttf Resources/Fonts/Inter-SemiBold.ttf Resources/Fonts/Inter-Bold.ttf
-    ../resources/targets/target-plus6.txt ../resources/targets/target-plus9.txt ../resources/targets/target-plus12.txt)
+    ../resources/targets/target-plus6.txt ../resources/targets/target-plus9.txt ../resources/targets/target-plus12.txt
+    ../THIRD_PARTY_NOTICES.md Resources/Fonts/Inter-OFL-LICENSE.txt)
+# Also ship human-readable files in Contents/Resources, outside the executable.
+set(foh_notices "${CMAKE_CURRENT_SOURCE_DIR}/../THIRD_PARTY_NOTICES.md"
+    "${CMAKE_CURRENT_SOURCE_DIR}/Resources/Fonts/Inter-OFL-LICENSE.txt")
+target_sources(FOHGauge PRIVATE ${foh_notices})
+set_source_files_properties(${foh_notices} PROPERTIES MACOSX_PACKAGE_LOCATION Resources)
 set_target_properties(FOHGaugeData PROPERTIES POSITION_INDEPENDENT_CODE ON)
 target_compile_definitions(FOHGauge PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JUCE_APPLICATION_NAME_STRING="$<TARGET_PROPERTY:FOHGauge,JUCE_PRODUCT_NAME>" JUCE_APPLICATION_VERSION_STRING="$<TARGET_PROPERTY:FOHGauge,JUCE_VERSION>")
 target_link_libraries(FOHGauge PRIVATE fohcore fohconsole foh_sanitizers foh_audio_backends FOHGaugeData juce::juce_audio_utils juce::juce_audio_devices juce::juce_gui_extra
@@ -52,7 +58,7 @@ if(FOH_TSAN)
 endif()
 
 if(FOH_BUILD_TESTS)
-    add_executable(fohapp_tests ../tests/test_console_window.cpp ../tests/test_audio_bridge.cpp ../tests/test_workspace_presets.cpp ../tests/test_workspace_restore.cpp ../tests/test_guide_panel.cpp ../tests/test_routing_wizard.cpp ../tests/test_app_lifetime.cpp ../tests/test_easy_setup.cpp ../tests/test_stored_traces.cpp ../tests/test_show_monitoring.cpp ../tests/test_signal_views.cpp ../tests/test_long_session.cpp ../tests/test_target_overlays.cpp
+    add_executable(fohapp_tests ../tests/test_acknowledgements.cpp ../tests/test_console_window.cpp ../tests/test_audio_bridge.cpp ../tests/test_workspace_presets.cpp ../tests/test_workspace_restore.cpp ../tests/test_guide_panel.cpp ../tests/test_routing_wizard.cpp ../tests/test_app_lifetime.cpp ../tests/test_easy_setup.cpp ../tests/test_stored_traces.cpp ../tests/test_show_monitoring.cpp ../tests/test_signal_views.cpp ../tests/test_long_session.cpp ../tests/test_target_overlays.cpp
         Source/console/ConsoleWindow.cpp Source/AudioEngine.cpp Source/AnalysisEngine.cpp Source/AppModelMeasurement.cpp Source/LayoutModel.cpp Source/WorkspaceManager.cpp Source/WorkspaceView.cpp Source/FloatingPanels.cpp Source/Widgets.cpp Source/GuidePanel.cpp Source/RoutingWizard.cpp Source/EasySetup.cpp Source/SetupPage.cpp Source/Panels.cpp Source/MainComponent.cpp Source/SessionFiles.cpp Source/Diagrams.cpp Source/SessionFiles.cpp)
     target_include_directories(fohapp_tests PRIVATE Source)
     target_compile_definitions(fohapp_tests PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JUCE_MODAL_LOOPS_PERMITTED=1)
