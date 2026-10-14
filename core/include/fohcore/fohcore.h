@@ -233,8 +233,27 @@ private:
 };
 
 // ---------- Delay finder ----------
-struct Arrival { double delaySamples; double delayMs; double distanceM; double relLevelDb; bool inverted = false; }; // inverted: correlation peak negative (polarity flip)
-struct DelayResult { std::vector<Arrival> arrivals; double confidence = 0; std::vector<double> impulse; };
+// Sign convention: positive delay = mic (meas) later than reference.
+// Timing comes from the chosen weighting (GCC-PHAT by default), refined to sub-sample
+// precision on the band-limited correlation. relLevelDb is measured on a NON-PHAT
+// correlation envelope (|analytic signal|) at each arrival's lag, relative to arrival #1
+// (DelayOptions::levelMode), so levels are not distorted by PHAT whitening. Arrivals more
+// than 26 dB below #1 on that envelope are dropped (PHAT artefacts).
+struct Arrival { double delaySamples; double delayMs; double distanceM; double relLevelDb; bool inverted = false; // inverted: correlation peak negative (polarity flip)
+                 double weightedRelLevelDb = 0; }; // level on the timing (PHAT) correlation, for diagnostics
+// Two-spike rule (QA D4): flag <=> (#1 dB - #2 dB) <= 3 dB AND |t2 - t1| > 0.5 ms.
+constexpr double kTwoSpikeWithinDb = 3.0, kTwoSpikeMinSeparationMs = 0.5;
+constexpr bool twoSpikeFlag(double level1Db, double level2Db, double dtMs) {
+    return (level1Db - level2Db) <= kTwoSpikeWithinDb && (dtMs < 0 ? -dtMs : dtMs) > kTwoSpikeMinSeparationMs;
+}
+struct DelayResult {
+    std::vector<Arrival> arrivals; double confidence = 0; std::vector<double> impulse;
+    bool twoSimilarArrivals = false;          // "Two similar spikes: is only one speaker on?" (confidence x0.75)
+    int nonFiniteSamples = 0;       // NaN/Inf input samples, replaced by 0
+    std::string error;              // empty on success; set for unusable input (too short, bad rate, silent, all-NaN)
+    bool ok() const { return error.empty() && !arrivals.empty(); }
+};
+bool twoSpikeFlag(const std::vector<Arrival>& arrivals); // applies the rule to arrivals[0] vs arrivals[1]
 // Cross-correlation of meas vs ref (meas = ref delayed). Returns top 3 peaks with
 // sub-sample (parabolic) interpolation. phat = GCC-PHAT weighting.
 DelayResult findDelay(const std::vector<float>& ref, const std::vector<float>& meas, double sampleRate,
@@ -246,6 +265,11 @@ DelayResult findDelay(const std::vector<float>& ref, const std::vector<float>& m
 struct DelayOptions {
     bool phat = true; int maxArrivals = 3; double minSeparationMs = 0.5;
     double speedOfSound = 343.0; double hpHz = 0, lpHz = 0; double maxDelayMs = 0;
+    // Level measurement for relLevelDb / two-spike: Unweighted = envelope of the plain
+    // cross-correlation (Vega spec); RefWhitened = envelope of Y X* / |X|^2 (impulse-response
+    // estimate; immune to the source spectrum, e.g. pink noise's broad autocorrelation).
+    enum class LevelMode : uint8_t { Unweighted, RefWhitened };
+    LevelMode levelMode = LevelMode::RefWhitened; // see PR notes: Unweighted mis-reads pink-noise spikes by ~2 dB
     static DelayOptions forSubs() { DelayOptions o; o.hpHz = 20; o.lpHz = 150; o.minSeparationMs = 10; o.maxDelayMs = 500; return o; }
 };
 DelayResult findDelay(const std::vector<float>& ref, const std::vector<float>& meas, double sampleRate,
@@ -257,7 +281,7 @@ inline int recommendedDelayWindowSamples(double sampleRate, bool sub, double sec
     if (sub) s = s < 2.0 ? 2.0 : (s > 4.0 ? 4.0 : s);
     return (int) (s * sampleRate);
 }
-// Impulse response from an averaged TF (IFFT of H).
+// Impulse response from an averaged TF (IFFT of H). Empty if fftSize is not a power of two.
 std::vector<double> impulseFromTF(const TFResult& tf);
 
 // ---------- RTA (FFT-banded) ----------

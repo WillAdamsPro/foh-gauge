@@ -1,61 +1,118 @@
 #include "fohcore/fohcore.h"
 #include <algorithm>
 #include <cmath>
+#include <limits>
 namespace foh {
 static int nextPow2(int n) { int p = 1; while (p < n) p <<= 1; return p; }
+// float -> int samples, saturating (no UB for huge/NaN values)
+static int toSamples(double v, int lo, int hi) {
+    if (!(v == v)) return lo; if (v <= lo) return lo; if (v >= hi) return hi; return (int) v; }
+static constexpr int kMaxWindow = 1 << 23; // ~175 s @ 48k; keeps FFT size within int
+
+bool twoSpikeFlag(const std::vector<Arrival>& a) {
+    return a.size() >= 2 && twoSpikeFlag(0.0, a[1].relLevelDb - a[0].relLevelDb, a[1].delayMs - a[0].delayMs);
+}
 DelayResult findDelay(const std::vector<float>& ref, const std::vector<float>& meas, double fs,
                       bool phat, int maxArr, double minSepMs, double c) {
     DelayOptions o; o.phat = phat; o.maxArrivals = maxArr; o.minSeparationMs = minSepMs; o.speedOfSound = c;
     return findDelay(ref, meas, fs, o);
 }
+// value of a sampled curve at fractional index x (linear)
+static double at(const std::vector<double>& v, double x) {
+    if (v.empty()) return 0; if (x <= 0) return v[0]; size_t i = (size_t) x; if (i + 1 >= v.size()) return v.back();
+    double t = x - (double) i; return v[i] * (1 - t) + v[i + 1] * t; }
+
 DelayResult findDelay(const std::vector<float>& ref, const std::vector<float>& meas, double fs, const DelayOptions& opt) {
-    const bool phat = opt.phat; const int maxArr = opt.maxArrivals; const double minSepMs = opt.minSeparationMs, c = opt.speedOfSound;
-    DelayResult res; int L = (int) std::min(ref.size(), meas.size()); if (L < 64) return res;
+    DelayResult res;
+    if (!(fs > 0) || !std::isfinite(fs)) { res.error = "invalid sample rate"; return res; }
+    size_t Ls = std::min(ref.size(), meas.size());
+    if (Ls < 64) { res.error = "window too short (< 64 samples)"; return res; }
+    int L = (int) std::min(Ls, (size_t) kMaxWindow);
+    const int maxArr = std::clamp(opt.maxArrivals, 0, 16); const double c = opt.speedOfSound;
     int N = nextPow2(2 * L); FFT fft(N);
-    std::vector<cpx> X((size_t) N), Y((size_t) N);
-    for (int i = 0; i < L; ++i) { X[(size_t) i] = ref[(size_t) i]; Y[(size_t) i] = meas[(size_t) i]; }
+    std::vector<cpx> X((size_t) N), Y((size_t) N), Tspec((size_t) N);
+    bool anyX = false, anyY = false;
+    for (int i = 0; i < L; ++i) {
+        float x = ref[(size_t) i], y = meas[(size_t) i];
+        if (!std::isfinite(x)) { x = 0; ++res.nonFiniteSamples; } if (!std::isfinite(y)) { y = 0; ++res.nonFiniteSamples; }
+        anyX |= x != 0; anyY |= y != 0; X[(size_t) i] = x; Y[(size_t) i] = y; }
+    if (!anyX || !anyY) { res.error = !anyX ? "reference is silent" : "measurement is silent"; return res; }
     fft.forward(X); fft.forward(Y);
+    // Y <- unweighted (band-weighted only) cross spectrum, X <- timing (PHAT) cross spectrum
+    double meanPx = 0; if (opt.levelMode == DelayOptions::LevelMode::RefWhitened) { for (auto& v : X) meanPx += std::norm(v); meanPx /= N; }
     for (int k = 0; k < N; ++k) { cpx g = Y[(size_t) k] * std::conj(X[(size_t) k]);
-        if (phat) { double m = std::abs(g); g = m > 1e-20 ? g / m : cpx{}; }
-        if (opt.lpHz > 0 || opt.hpHz > 0) { double f = (k <= N / 2 ? k : N - k) * fs / N, w = 1.0;
+        cpx gl = opt.levelMode == DelayOptions::LevelMode::RefWhitened ? g / (std::norm(X[(size_t) k]) + 1e-3 * meanPx + 1e-30) : g;
+        double w = 1.0;
+        if (opt.lpHz > 0 || opt.hpHz > 0) { double f = (k <= N / 2 ? k : N - k) * fs / N;
             if (opt.lpHz > 0) w *= 1.0 / std::sqrt(1.0 + std::pow(f / opt.lpHz, 8.0));
-            if (opt.hpHz > 0) w *= f > 0 ? 1.0 / std::sqrt(1.0 + std::pow(opt.hpHz / f, 8.0)) : 0.0;
-            g *= w; }
-        X[(size_t) k] = g; }
-    fft.inverse(X);
-    // positive lags only (meas lags ref); limit to L-1
-    if (opt.maxDelayMs > 0) L = std::min(L, std::max(2, (int) (opt.maxDelayMs * 1e-3 * fs) + 2));
-    std::vector<double> r((size_t) L); for (int i = 0; i < L; ++i) r[(size_t) i] = X[(size_t) i].real();
+            if (opt.hpHz > 0) w *= f > 0 ? 1.0 / std::sqrt(1.0 + std::pow(opt.hpHz / f, 8.0)) : 0.0; }
+        cpx t = g;
+        if (opt.phat) { double m = std::abs(g); t = m > 1e-20 ? g / m : cpx{}; }
+        X[(size_t) k] = t * w; Tspec[(size_t) k] = t * w;
+        // analytic signal of the unweighted correlation: keep DC/Nyquist, double positive, zero negative
+        double h = (k == 0 || k == N / 2) ? 1.0 : (k < N / 2 ? 2.0 : 0.0);
+        Y[(size_t) k] = gl * (w * h); }
+    fft.inverse(X); fft.inverse(Y);
+    // positive lags only (meas later than ref); bounded by maxDelayMs
+    if (opt.maxDelayMs > 0) L = std::min(L, std::max(2, toSamples(opt.maxDelayMs * 1e-3 * fs, 0, kMaxWindow) + 2));
+    std::vector<double> r((size_t) L), env((size_t) L);
+    for (int i = 0; i < L; ++i) { r[(size_t) i] = X[(size_t) i].real(); env[(size_t) i] = std::abs(Y[(size_t) i]); }
     res.impulse = r;
     std::vector<double> a(r.size()); for (size_t i = 0; i < r.size(); ++i) a[i] = std::fabs(r[i]);
-    int sep = std::max(1, (int) (minSepMs * 1e-3 * fs));
+    int sep = std::max(1, toSamples(opt.minSeparationMs * 1e-3 * fs, 1, L));
     std::vector<char> used(a.size(), 0); double peak0 = 0;
     for (int m = 0; m < maxArr; ++m) {
         int best = -1; double bv = 0;
         for (size_t i = 0; i < a.size(); ++i) if (!used[i] && a[i] > bv) { bv = a[i]; best = (int) i; }
-        if (best < 0 || bv <= 0) break;
+        if (best < 0 || !(bv > 0)) break;
         if (m == 0) peak0 = bv; else if (bv < peak0 * 0.05) break; // < -26 dB: ignore
         double off = 0;
         if (best > 0 && best + 1 < (int) a.size()) { double y0 = a[(size_t) best-1], y1 = a[(size_t) best], y2 = a[(size_t) best+1];
-            double d = y0 - 2*y1 + y2; if (std::fabs(d) > 1e-30) off = 0.5 * (y0 - y2) / d; }
+            double d = y0 - 2*y1 + y2; if (std::fabs(d) > 1e-30) off = std::clamp(0.5 * (y0 - y2) / d, -0.5, 0.5); }
         double ds = best + off;
-        res.arrivals.push_back({ds, ds / fs * 1000.0, ds / fs * c, 20.0 * std::log10(bv / peak0), r[(size_t) best] < 0});
+        Arrival ar{ds, ds / fs * 1000.0, ds / fs * c, 0.0, r[(size_t) best] < 0, 20.0 * std::log10(bv / peak0)};
+        res.arrivals.push_back(ar);
         for (int i = std::max(0, best - sep); i <= std::min((int) a.size() - 1, best + sep); ++i) used[(size_t) i] = 1;
     }
-    // confidence: peak vs RMS of correlation (peak-to-noise), mapped 0..1
-    // noise floor excludes the main lobe of the first arrival (wide when band-limited)
-    int excl = std::max(sep, opt.lpHz > 0 ? (int) (fs / opt.lpHz) : sep);
-    int b0 = res.arrivals.empty() ? -1 : (int) std::lround(res.arrivals[0].delaySamples);
+    if (res.arrivals.empty()) { res.error = "no correlation peak"; return res; }
+    // sub-sample refinement: maximise |r(tau)| of the band-limited timing correlation,
+    // evaluated exactly as (1/N) sum_k T_k e^{+j 2 pi k' tau / N} (k' signed), golden section in +-1 sample
+    auto rAt = [&](double tau) {
+        cpx acc{}; const double w0 = 2.0 * M_PI * tau / N;
+        cpx rot = std::polar(1.0, w0), ph{1.0, 0.0};
+        for (int k = 0; k <= N / 2; ++k) { acc += Tspec[(size_t) k] * ph; ph *= rot; }
+        ph = std::polar(1.0, -w0); rot = std::conj(rot); cpx p2 = ph;
+        for (int k = N - 1; k > N / 2; --k) { acc += Tspec[(size_t) k] * p2; p2 *= rot; }
+        return acc.real() / N; };
+    for (auto& ar : res.arrivals) {
+        double lo = std::floor(ar.delaySamples + 0.5) - 1.0, hi = lo + 2.0; const double gr = 0.6180339887498949;
+        double x1 = hi - gr * (hi - lo), x2 = lo + gr * (hi - lo), f1 = std::fabs(rAt(x1)), f2 = std::fabs(rAt(x2));
+        for (int it = 0; it < 30; ++it) {
+            if (f1 > f2) { hi = x2; x2 = x1; f2 = f1; x1 = hi - gr * (hi - lo); f1 = std::fabs(rAt(x1)); }
+            else { lo = x1; x1 = x2; f1 = f2; x2 = lo + gr * (hi - lo); f2 = std::fabs(rAt(x2)); } }
+        double ds = std::max(0.0, 0.5 * (lo + hi));
+        ar.delaySamples = ds; ar.delayMs = ds / fs * 1000.0; ar.distanceM = ds / fs * c; ar.inverted = rAt(ds) < 0;
+    }
+    double e0 = at(env, res.arrivals[0].delaySamples);
+    for (auto& ar : res.arrivals) { double e = at(env, ar.delaySamples); ar.relLevelDb = (e0 > 0 && e > 0) ? 20.0 * std::log10(e / e0) : -120.0; }
+    res.arrivals.erase(std::remove_if(res.arrivals.begin() + 1, res.arrivals.end(), [](const Arrival& a) { return a.relLevelDb < -26.0; }), res.arrivals.end());
+    // confidence: peak vs RMS of the timing correlation outside the main lobe, mapped 0..1
+    int excl = std::max(sep, opt.lpHz > 0 ? toSamples(fs / opt.lpHz, 1, L) : sep);
+    int b0 = (int) std::lround(res.arrivals[0].delaySamples);
     double s = 0; size_t cnt = 0;
-    for (size_t i = 0; i < a.size(); ++i) if (b0 < 0 || std::abs((int) i - b0) > excl) { s += a[i] * a[i]; ++cnt; }
+    for (size_t i = 0; i < a.size(); ++i) if (std::abs((int) i - b0) > excl) { s += a[i] * a[i]; ++cnt; }
     double rms = cnt ? std::sqrt(s / cnt) : 0;
-    double pnr = rms > 0 ? peak0 / rms : (peak0 > 0 ? 1e9 : 0);
-    res.confidence = std::clamp((pnr - 5.0) / 25.0, 0.0, 1.0);
-    if (res.arrivals.size() > 1 && res.arrivals[1].relLevelDb > -2.0) res.confidence *= 0.5; // ambiguous
+    double pnr = rms > 0 ? peak0 / rms : 1e9;
+    // log map: 14 dB peak-to-noise -> 0, 54 dB -> 1 (does not saturate for moderate SNR,
+    // so a -10 dB SNR capture ranks below a clean one even with GCC-PHAT)
+    res.confidence = std::clamp((20.0 * std::log10(std::max(pnr, 1e-9)) - 14.0) / 40.0, 0.0, 1.0);
+    res.twoSimilarArrivals = twoSpikeFlag(res.arrivals);
+    if (res.twoSimilarArrivals) res.confidence *= 0.75; // ambiguous: penalise, but a clean two-spike still beats a -10 dB SNR capture
     return res;
 }
 std::vector<double> impulseFromTF(const TFResult& tf) {
-    int N = tf.fftSize; std::vector<cpx> d((size_t) N);
+    int N = tf.fftSize; if (!isPowerOfTwo(N)) return {};
+    std::vector<cpx> d((size_t) N);
     for (int k = 0; k <= N / 2 && k < (int) tf.H.size(); ++k) { d[(size_t) k] = tf.H[(size_t) k]; if (k > 0 && k < N / 2) d[(size_t) (N - k)] = std::conj(tf.H[(size_t) k]); }
     FFT(N).inverse(d); std::vector<double> out((size_t) N); for (int i = 0; i < N; ++i) out[(size_t) i] = d[(size_t) i].real();
     return out;
