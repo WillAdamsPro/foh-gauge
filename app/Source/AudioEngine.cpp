@@ -12,6 +12,19 @@ void fetch_max(std::atomic<float>& peak, float value) noexcept {
 }
 }
 
+AudioEngine::AudioEngine() {
+    float peak = 0;
+    for (size_t i = 0; i < chime.size() - 1; ++i) {
+        const double t = static_cast<double>(i) / 48000.0;
+        const double envelope = std::min(1.0, t / 0.008) * std::min(1.0, (0.6 - t) / 0.04);
+        chime[i] = static_cast<float>(envelope * (std::sin(juce::MathConstants<double>::twoPi * 523.25 * t) * std::exp(-7 * t)
+            + 0.45 * std::sin(juce::MathConstants<double>::twoPi * 659.25 * t) * std::exp(-9 * t)
+            + 0.25 * std::sin(juce::MathConstants<double>::twoPi * 783.99 * t) * std::exp(-11 * t)));
+        peak = std::max(peak, std::abs(chime[i]));
+    }
+    for (auto& sample : chime) sample *= std::pow(10.f, -18.f / 20.f) / peak;
+}
+
 // ===================== Audio engine (real-time thread) =====================
 void AudioEngine::audioDeviceAboutToStart(AudioIODevice* d) {
     sampleRate = d->getCurrentSampleRate();
@@ -24,9 +37,19 @@ void AudioEngine::audioDeviceIOCallbackWithContext(const float* const* in, int n
                                                    const AudioIODeviceCallbackContext&) {
     const float g = genGainDb.load(); if (g != lastGain) { pink.setGainDb(g + 20.f); sweep.setGainDb(g + 12.f); lastGain = g; }
     const int mode = gen.load(), oa = outA.load(), ob = outB.load();
+    const auto request = chimeRequest.load(std::memory_order_relaxed);
+    if (request != lastChimeRequest) { lastChimeRequest = request; chimePosition = 0; }
+    const double chimeStep = 48000.0 / sampleRate.load(std::memory_order_relaxed);
     for (int c = 0; c < nOut; ++c) if (out[c]) FloatVectorOperations::clear(out[c], n);
     for (int i = 0; i < n; ++i) {
         float s = mode == Pink ? pink.next() : mode == Sweep ? sweep.next() : 0.f;
+        if (chimePosition < 28800) {
+            const auto index = static_cast<size_t>(chimePosition);
+            const float fraction = static_cast<float>(chimePosition - static_cast<double>(index));
+            // Temporarily replace generator output so the chime keeps its -18 dBFS peak.
+            s = chime[index] + fraction * (chime[index + 1] - chime[index]);
+            chimePosition += chimeStep;
+        }
         if (oa >= 0 && oa < nOut && out[oa]) out[oa][i] = s;
         if (ob >= 0 && ob < nOut && ob != oa && out[ob]) out[ob][i] = s;
     }

@@ -4,8 +4,14 @@ using namespace juce;
 AppModel::AppModel() {
     PropertiesFile::Options o; o.applicationName = "FOH Gauge"; o.filenameSuffix = ".settings"; o.folderName = "FOH Gauge"; o.osxLibrarySubFolder = "Application Support";
     settings.setStorageParameters(o);
-    dm.initialiseWithDefaultDevices(4, 4);
-    { auto s = dm.getAudioDeviceSetup(); s.sampleRate = 48000; dm.setAudioDeviceSetup(s, true); }
+    auto* prefs = settings.getUserSettings();
+    auto savedDevice = prefs ? prefs->getXmlValue("audioDeviceState") : nullptr;
+    dm.initialise(4, 4, savedDevice.get(), true);
+    if (!savedDevice) { auto s = dm.getAudioDeviceSetup(); s.sampleRate = 48000; dm.setAudioDeviceSetup(s, true); }
+    if (prefs) {
+        engine.micCh = prefs->getIntValue("micChannel", 0); engine.refCh = prefs->getIntValue("refChannel", 1);
+        engine.outA = prefs->getIntValue("generatorChannel", 0); engine.outB = prefs->getIntValue("loopbackChannel", 1);
+    }
     dm.addAudioCallback(&engine); analysis.start();
     send(foh::Command::averages(averages)); send(foh::Command::smoothing(smoothingFraction)); send(foh::Command::blankThreshold(blankThreshold)); send(foh::Command::rtaFraction(rtaFraction));
     startTimerHz(15);
@@ -59,7 +65,8 @@ void AppModel::beginCapture(const String& name, std::function<void(bool)> then) 
     capture.active = true; capture.unsettled = false; capture.name = name; capture.startMs = Time::getMillisecondCounterHiRes(); capture.then = std::move(then); conv = {}; notify(Capture);
 }
 void AppModel::loadCalFile(const File& f) {
-    cal = foh::loadMicCal(f.getFullPathName().toStdString()); calFile = f.getFileName(); calOn = cal.ok();
+    calText = f.loadFileAsString().toStdString();
+    cal = foh::parseMicCal(calText); calFile = f.getFileName(); calOn = cal.ok();
     analysis.setCal(cal.ok() ? std::make_shared<foh::MicCal>(cal) : nullptr, calFile); notify(Cal);
 }
 void AppModel::setCalEnabled(bool on) {
