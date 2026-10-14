@@ -31,7 +31,9 @@ private:
 namespace {
 void capture(AudioEngine& engine, const float* mic, const float* ref, int n) {
     const float* inputs[] { mic, ref };
-    engine.audioDeviceIOCallbackWithContext(inputs, 2, nullptr, 0, n, {});
+    std::vector<float> a(size_t(n), 0.f), b(size_t(n), 0.f);
+    float* outputs[] {a.data(), b.data()};
+    engine.audioDeviceIOCallbackWithContext(inputs, 2, outputs, 2, n, {});
 }
 template <typename Predicate>
 bool waitFor(Predicate predicate, std::chrono::milliseconds timeout = std::chrono::seconds(3)) {
@@ -238,6 +240,7 @@ TEST_CASE("Output chime is bounded, routed and stops at each sample rate", "[app
         engine.captureEpoch = 1; // Playback must work even during an analysis restart.
         constexpr int block = 256;
         float unused[block], selected[block]; float* outputs[] {unused, selected};
+        engine.audioDeviceIOCallbackWithContext(nullptr, 0, outputs, 2, block, {});
         engine.playChime();
         float peak = 0;
         const int blocks = static_cast<int>(fs * 0.7 / block) + 1;
@@ -379,7 +382,7 @@ TEST_CASE("Connection tests isolate output and report synthetic input routing", 
     CHECK(engine.connectionResult() == foh::ConnectionResult::swapInputs);
     engine.testConnection(1, 1); engine.cancelConnectionTest();
     engine.audioDeviceIOCallbackWithContext(nullptr, 0, outputs, 2, block, {});
-    CHECK(engine.connectionResult() == foh::ConnectionResult::pending);
+    CHECK(engine.connectionResult() == foh::ConnectionResult::invalid);
     engine.testConnection(-1, 1);
     CHECK(engine.connectionResult() == foh::ConnectionResult::invalid);
 }
@@ -439,6 +442,26 @@ TEST_CASE("Interrupted connection tests fail and fresh tests recover", "[app][au
         for (int i = 0; i < 400; ++i) feed();
         CHECK(engine.connectionResult() == foh::ConnectionResult::pass);
     }
+}
+
+TEST_CASE("Routing tests reject an unavailable expected input before playing", "[app][audio][routing][hotswap]") {
+    AudioEngine engine;
+    float signal[256], silence[256] {}, a[256], b[256];
+    std::fill_n(signal, 256, 0.1f);
+    const float* inputs[] {silence, silence, nullptr}; float* outputs[] {a, b};
+    engine.audioDeviceIOCallbackWithContext(inputs, 3, outputs, 2, 256, {});
+    engine.gen = AudioEngine::Pink;
+    engine.testConnection(0, 2);
+    engine.audioDeviceIOCallbackWithContext(inputs, 3, outputs, 2, 256, {});
+    CHECK(engine.connectionResult() == foh::ConnectionResult::invalid);
+    CHECK(engine.gen.load() == AudioEngine::Off);
+    for (float x : a) CHECK(x == 0);
+    for (float x : b) CHECK(x == 0);
+    inputs[2] = signal;
+    engine.testConnection(0, 2);
+    for (int i = 0; i < 188; ++i)
+        engine.audioDeviceIOCallbackWithContext(inputs, 3, outputs, 2, 256, {});
+    CHECK(engine.connectionResult() == foh::ConnectionResult::pass);
 }
 
 namespace {
@@ -609,7 +632,8 @@ TEST_CASE("Device rebuild rejects queued capture commands but preserves settings
 
 TEST_CASE("Reference rerouting and unavailable channels invalidate capture", "[app][audio]") {
     AudioEngine engine;
-    float signal[64] {}; const float* inputs[] {signal, signal};
+    float signal[64] {}, a[64], b[64]; const float* inputs[] {signal, signal};
+    float* outputs[] {a, b};
     capture(engine, signal, signal, 64);
     engine.refCh = 0;
     capture(engine, signal, signal, 64);
@@ -617,11 +641,11 @@ TEST_CASE("Reference rerouting and unavailable channels invalidate capture", "[a
     CHECK(engine.micRing.available() == 64); // no mixed-routing samples queued
     engine.analysisEpoch = engine.captureEpoch.load();
     engine.micCh = 3;
-    engine.audioDeviceIOCallbackWithContext(inputs, 2, nullptr, 0, 64, {});
+    engine.audioDeviceIOCallbackWithContext(inputs, 2, outputs, 2, 64, {});
     CHECK(engine.state.load() == AudioEngine::InvalidInputs);
     CHECK(engine.captureEpoch.load() == 2);
     engine.analysisEpoch = 2;
-    engine.audioDeviceIOCallbackWithContext(nullptr, 0, nullptr, 0, 64, {});
+    engine.audioDeviceIOCallbackWithContext(nullptr, 0, outputs, 2, 64, {});
     CHECK(engine.micRing.available() == 64); // no fabricated silence measurement
     engine.micCh = 0; engine.refCh = 1;
     capture(engine, signal, signal, 64);
@@ -629,6 +653,81 @@ TEST_CASE("Reference rerouting and unavailable channels invalidate capture", "[a
     engine.gen = AudioEngine::Pink; engine.outA = 10;
     capture(engine, signal, signal, 64);
     CHECK(engine.state.load() == AudioEngine::InvalidOutputs);
+}
+
+TEST_CASE("Channel-map hot swaps stop stimuli and restart TF and RTA history", "[app][audio][routing][hotswap]") {
+    const int activity = GENERATE(0, 1, 2, 3); // RTA, TF with pink, sweep, routing test
+    const int change = GENERATE(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14);
+    CAPTURE(activity, change);
+    AudioEngine engine; SyntheticDevice device;
+    engine.audioDeviceAboutToStart(&device);
+    AnalysisEngine analysis(engine); AnalysisEngineTestAccess consumer(analysis);
+    consumer.step();
+    constexpr int block = 4096;
+    std::vector<float> mic(block), ref(block), a(block), b(block);
+    foh::PinkNoise noise(99); noise.process(ref.data(), block);
+    for (int i = 0; i < block; ++i) mic[size_t(i)] = ref[size_t(i)] * 0.5f;
+    const float* inputs[] {mic.data(), ref.data()}; float* outputs[] {a.data(), b.data()};
+    int nIn = 2, nOut = 2;
+    auto feed = [&] { engine.audioDeviceIOCallbackWithContext(inputs, nIn, outputs, nOut, block, {}); };
+    for (int i = 0; i < 4; ++i) { feed(); consumer.step(); }
+    REQUIRE(analysis.latest().tf.averages > 0);
+    REQUIRE(analysis.latest().micLevelValid);
+    if (activity == 1) engine.gen = AudioEngine::Pink;
+    if (activity == 2) {
+        foh::Command sweep; sweep.type = foh::CommandType::MeasureSweep;
+        REQUIRE(analysis.send(sweep)); consumer.step();
+        REQUIRE(analysis.latest().sweepCapturing);
+    }
+    if (activity == 3) engine.testConnection(0, 0);
+    feed(); consumer.step();
+    const auto before = engine.captureEpoch.load();
+    switch (change) {
+        case 0: engine.micCh = 1; break;
+        case 1: engine.refCh = 0; break;
+        case 2: engine.outA = 1; break;
+        case 3: engine.outB = 0; break;
+        case 4: engine.micCh = 1000000; break;
+        case 5: engine.refCh = 1000000; break;
+        case 6: engine.outA = 1000000; break;
+        case 7: engine.outB = 1000000; break;
+        case 8: engine.micCh = -1; break;
+        case 9: engine.refCh = -1; break;
+        case 10: engine.outA = -1; break;
+        case 11: engine.outB = -1; break;
+        case 12: nIn = 1; break;
+        case 13: nOut = 1; break;
+        case 14: inputs[0] = nullptr; break;
+    }
+    feed();
+    REQUIRE(engine.captureEpoch.load() > before);
+    CHECK(engine.gen.load() == AudioEngine::Off);
+    CHECK(std::all_of(a.begin(), a.end(), [](float x) { return x == 0; }));
+    if (nOut == 2) CHECK(std::all_of(b.begin(), b.end(), [](float x) { return x == 0; }));
+    if (activity == 3) CHECK(engine.connectionResult() == foh::ConnectionResult::invalid);
+    consumer.step();
+    const auto cleared = analysis.latest();
+    CHECK(cleared.inputEpoch == engine.captureEpoch.load());
+    CHECK(cleared.tf.averages == 0);
+    CHECK_FALSE(cleared.micLevelValid);
+    CHECK_FALSE(cleared.sweepCapturing);
+    CHECK(cleared.sweep.response.impulse.empty());
+    for (auto db : cleared.rtaDb) CHECK(db <= -100);
+    // Restore stereo and recover exclusively from the new input map.
+    engine.micCh = 1; engine.refCh = 0; engine.outA = 0; engine.outB = 1;
+    inputs[0] = mic.data(); nIn = nOut = 2; feed(); consumer.step();
+    for (int i = 0; i < 4; ++i) { feed(); consumer.step(); }
+    CHECK(engine.state.load() == AudioEngine::Ready);
+    CHECK(analysis.latest().micChannel == 1);
+    REQUIRE(analysis.latest().tf.averages > 0);
+    CHECK(analysis.latest().micLevelValid);
+    CHECK(analysis.latest().tf.magDb[100] == Catch::Approx(6.0206).margin(0.05));
+    if (activity == 3) {
+        std::fill(ref.begin(), ref.end(), 0.f);
+        engine.testConnection(0, 0);
+        for (int i = 0; i < 12; ++i) { feed(); consumer.step(); }
+        CHECK(engine.connectionResult() == foh::ConnectionResult::pass);
+    }
 }
 
 TEST_CASE("Stereo overflow drops both channels and requests a history reset", "[app][audio]") {
@@ -1232,7 +1331,50 @@ TEST_CASE("Analysis engines join pending sweep and meter work on repeated destru
 
 struct AppModelMeasurementTestAccess {
     static void poll(AppModel& model) { model.timerCallback(); }
+    static void prepareLoopback(AppModel& model) {
+        model.syncLoopback();
+        model.measuringLoopbackKey = model.loopbackKey();
+        model.savedGenerator = AudioEngine::Pink;
+        model.loopbackStart = juce::Time::getMillisecondCounterHiRes();
+        model.loopbackMeasuring = true;
+    }
 };
+
+TEST_CASE("Routing changes cancel UI captures and never restore the old loopback generator", "[app][audio][routing][hotswap]") {
+    juce::ScopedJuceInitialiser_GUI gui;
+    const int change = GENERATE(0, 1, 2, 3, 4, 5, 6);
+    AppModel model; SyntheticDevice device;
+    model.engine.audioDeviceAboutToStart(&device);
+    float signal[64], a[64], b[64]; std::fill_n(signal, 64, 0.1f);
+    const float* inputs[] {signal, signal}; float* outputs[] {a, b};
+    model.engine.audioDeviceIOCallbackWithContext(inputs, 2, outputs, 2, 64, {});
+    AppModelMeasurementTestAccess::poll(model);
+    AppModelMeasurementTestAccess::prepareLoopback(model);
+    model.engine.gen = AudioEngine::Pink;
+    model.tf.magDb = {3}; model.rtaDb = {3}; model.micLevelValid = true;
+    model.sweepCapturing = true; model.positionCount = 1;
+    bool completed = false;
+    model.capture.active = true;
+    model.capture.then = [&](bool settled) { completed = true; CHECK_FALSE(settled); };
+    int nOut = 2;
+    switch (change) {
+        case 0: model.engine.micCh = 1; break;
+        case 1: model.engine.refCh = 0; break;
+        case 2: model.engine.outA = 1; break;
+        case 3: model.engine.outB = 0; break;
+        case 4: model.engine.outA = -1; break;
+        case 5: model.engine.outB = 1000000; break;
+        case 6: nOut = 1; break;
+    }
+    model.engine.audioDeviceIOCallbackWithContext(inputs, 2, outputs, nOut, 64, {});
+    AppModelMeasurementTestAccess::poll(model);
+    CHECK(completed); CHECK_FALSE(model.capture.active); CHECK_FALSE(model.loopbackMeasuring);
+    CHECK(model.engine.gen.load() == AudioEngine::Off);
+    CHECK(model.traces.count() == 0);
+    CHECK(model.tf.magDb.empty()); CHECK(model.rtaDb.empty());
+    CHECK_FALSE(model.micLevelValid); CHECK_FALSE(model.sweepCapturing);
+    CHECK(model.positionCount == 0);
+}
 
 TEST_CASE("Hotplug and device errors discard TF RTA SPL and delay history", "[app][audio][hotplug]") {
     AudioEngine engine; AnalysisEngine analysis(engine); SyntheticDevice device;

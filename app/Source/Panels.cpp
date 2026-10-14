@@ -101,10 +101,17 @@ public:
         if (id == 4) {
             auto text = j["targetText"].asString(); auto parsed = foh::parseTarget(text);
             if (parsed.ok()) { source = std::move(text); target = std::move(parsed);
-                if (choice.getNumItems() == 3) choice.addItem(String(j["targetName"].asString("Imported target")), 4);
+                auto name = String(j["targetName"].asString("Imported target"));
+                if (name.isEmpty()) name = "Imported target";
+                if (choice.getNumItems() == 3) choice.addItem(name, 4);
+                else choice.changeItemText(4, name);
                 choice.setSelectedId(4, dontSendNotification); }
             else {
                 source.clear();
+                // Remove the rejected import as well as its visible overlay.
+                // It must not remain selectable with empty source text.
+                choice.clear(dontSendNotification);
+                choice.addItem("Target +6", 1); choice.addItem("Target +9", 2); choice.addItem("Target +12", 3);
                 choice.setSelectedId(1, dontSendNotification); selectBuiltin();
                 shown.setToggleState(false, dontSendNotification);
                 band.setToggleState(false, dontSendNotification);
@@ -171,6 +178,10 @@ public:
     fohws::Size minSize() const override { return { WS::plotPanelMinWidth, WS::plotPanelMinHeight + 64 }; }
     int priority() const override { return 100; }
     Json saveState() const override { Json j = Json::object(); j.set("yMin", plot.yMin); j.set("yMax", plot.yMax); target.save(j); return j; }
+    // State loads while detached/hidden defer plot work. Refresh on reattachment
+    // even when the measurement is paused and no new snapshots arrive.
+    void visibilityChanged() override { modelChanged(AppModel::Overlay); }
+    void parentHierarchyChanged() override { visibilityChanged(); }
     void loadState(const Json& j) override { if (j.has("yMin")) { plot.yMin = j["yMin"].asNumber(-12); plot.yMax = j["yMax"].asNumber(12); plot.yStep = (plot.yMax - plot.yMin) / 4; } target.load(j); }
     void resized() override {
         auto r = getLocalBounds().reduced(pad, 6); auto row = controlRow(r);
@@ -285,6 +296,8 @@ public:
     fohws::Size minSize() const override { return { WS::plotPanelMinWidth, WS::plotPanelMinHeight }; }
     int priority() const override { return 90; }
     Json saveState() const override { Json j = Json::object(); j.set("fraction", model.rtaFraction); target.save(j); return j; }
+    void visibilityChanged() override { modelChanged(AppModel::Overlay); }
+    void parentHierarchyChanged() override { visibilityChanged(); }
     void loadState(const Json& j) override { if (j.has("fraction")) { int f = j["fraction"].asInt(3); if (f != model.rtaFraction) model.setRtaFraction(f); } target.load(j); }
     void resized() override { auto r = getLocalBounds().reduced(pad, 6); auto row = controlRow(r); frac.setBounds(row.removeFromRight(120)); target.setBounds(controlRow(r)); plot.setBounds(r); }
     void modelChanged(int w) override {
@@ -600,7 +613,7 @@ public:
         sourceA.setSelectedId(model.sumA + 1, dontSendNotification); sourceB.setSelectedId(model.sumB + 1, dontSendNotification);
         auto sum = model.sumPreview(); preview.series.clear();
         preview.centreNote = sum.freq.empty() ? (model.validTrace(model.sumA) && model.validTrace(model.sumB)
-            ? "Sources need matching frequency grids and complete TF data" : "Choose two stored traces to preview their sum") : String{};
+            ? "Sources need matching sample rates and frequency grids, and valid TF data" : "Choose two stored traces to preview their sum") : String{};
         preview.note = {};
         if (!sum.freq.empty()) {
             PlotComponent::Series s; s.c = C::accent(); s.label = "Virtual sum";

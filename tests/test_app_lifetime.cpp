@@ -189,12 +189,13 @@ TEST_CASE("Workspace switching and presentation changes preserve live analysis a
             std::atomic<int> blocks {0};
             std::thread worker;
             explicit Producer(AudioEngine& e) : engine(e), worker([this] {
-                float signal[1024];
+                float signal[1024], a[1024], b[1024];
+                float* outputs[] {a, b};
                 foh::PinkNoise noise(70); noise.process(signal, 1024);
                 const float* inputs[] {signal, signal};
                 while (!done.load()) {
                     if (engine.micRing.available() < 4096 && engine.refRing.available() < 4096) {
-                        engine.audioDeviceIOCallbackWithContext(inputs, 2, nullptr, 0, 1024, {});
+                        engine.audioDeviceIOCallbackWithContext(inputs, 2, outputs, 2, 1024, {});
                         ++blocks;
                     }
                     // Test pacing only; the production callback remains RT-safe.
@@ -477,7 +478,8 @@ TEST_CASE("Setup unsubscribes device changes and wizard cancels timers on destru
     }
     model.notify(AppModel::Settings);
     drainMessages();
-    float output[64] {}, loopback[64] {};
+    float output[64] {}, loopback[64] {}, input[64] {};
+    const float* inputs[] {input, input};
     float* outputs[] { output, loopback };
     {
         RoutingWizard wizard(model.engine);
@@ -487,14 +489,14 @@ TEST_CASE("Setup unsubscribes device changes and wizard cancels timers on destru
             if (auto* button = dynamic_cast<juce::TextButton*>(child))
                 if (button->getButtonText() == "Test connection") { button->onClick(); started = true; }
         REQUIRE(started);
-        model.engine.audioDeviceIOCallbackWithContext(nullptr, 0, outputs, 2, 64, {});
+        model.engine.audioDeviceIOCallbackWithContext(inputs, 2, outputs, 2, 64, {});
         CHECK(output[16] != 0);
     }
     // A pending timer must never call back into the destroyed wizard.
     juce::Thread::sleep(60);
     juce::Timer::callPendingTimersSynchronously();
     drainMessages();
-    model.engine.audioDeviceIOCallbackWithContext(nullptr, 0, outputs, 2, 64, {});
+    model.engine.audioDeviceIOCallbackWithContext(inputs, 2, outputs, 2, 64, {});
     for (const auto sample : output) CHECK(sample == 0);
     for (const auto sample : loopback) CHECK(sample == 0);
     CHECK(model.engine.connectionResult() == foh::ConnectionResult::pending);

@@ -703,14 +703,15 @@ TEST_CASE("Verify rejects silence clipping and invalid raw samples even with a c
         auto panel = makeGuidePanel(model); panel->setSize(260, 780);
         prepareVerify(*panel, model, capture);
         button(*panel, "Re-measure to verify").onClick();
-        float mic[32], ref[32];
+        float mic[32], ref[32], a[32], b[32];
+        float* outputs[] {a, b};
         std::fill_n(mic, 32, 0.1f); std::fill_n(ref, 32, 0.1f);
         std::fill_n(channel == 0 ? mic : ref, 32, sample);
         const float* inputs[] {mic, ref};
-        model.engine.audioDeviceIOCallbackWithContext(inputs, 2, nullptr, 0, 32, {});
+        model.engine.audioDeviceIOCallbackWithContext(inputs, 2, outputs, 2, 32, {});
         // Later healthy input and meter resets must not erase the fault.
         std::fill_n(mic, 32, 0.1f); std::fill_n(ref, 32, 0.1f);
-        model.engine.audioDeviceIOCallbackWithContext(inputs, 2, nullptr, 0, 32, {});
+        model.engine.audioDeviceIOCallbackWithContext(inputs, 2, outputs, 2, 32, {});
         model.engine.micPeak.exchange(0); model.engine.refPeak.exchange(0);
         capture.finish(model);
         CHECK(labelContains(*panel, "Silence, clipping or invalid input"));
