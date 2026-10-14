@@ -35,6 +35,8 @@ void AudioEngine::audioDeviceAboutToStart(AudioIODevice* d) {
 }
 void AudioEngine::audioDeviceIOCallbackWithContext(const float* const* in, int nIn, float* const* out, int nOut, int n,
                                                    const AudioIODeviceCallbackContext&) {
+    const int selectedMic = micCh.load();
+    if (selectedMic != lastMicChannel) { lastMicChannel = selectedMic; captureEpoch.fetch_add(1, std::memory_order_release); }
     const float g = genGainDb.load(); if (g != lastGain) { pink.setGainDb(g + 20.f); sweep.setGainDb(g + 12.f); lastGain = g; }
     const int mode = gen.load(), oa = outA.load(), ob = outB.load();
     const auto request = chimeRequest.load(std::memory_order_relaxed);

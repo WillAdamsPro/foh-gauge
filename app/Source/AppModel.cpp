@@ -12,6 +12,7 @@ AppModel::AppModel() {
         engine.micCh = prefs->getIntValue("micChannel", 0); engine.refCh = prefs->getIntValue("refChannel", 1);
         engine.outA = prefs->getIntValue("generatorChannel", 0); engine.outB = prefs->getIntValue("loopbackChannel", 1);
     }
+    if (prefs) loadSplCalJson(foh::Json::parse(prefs->getValue("splCalibration").toStdString()));
     dm.addAudioCallback(&engine); analysis.start();
     send(foh::Command::averages(averages)); send(foh::Command::smoothing(smoothingFraction)); send(foh::Command::blankThreshold(blankThreshold)); send(foh::Command::rtaFraction(rtaFraction));
     startTimerHz(15);
@@ -22,6 +23,11 @@ void AppModel::timerCallback() {
     int what = Levels; sampleRate = engine.sampleRate.load();
     { const auto& snap = analysis.latest(); // single reader thread (this timer); copy out what we keep
       if (snap.seq != lastSeq) { lastSeq = snap.seq; what |= Snapshot;
+          micLevelDbfs = snap.micLevelDbfs;
+          levelInputKey = splInputKey(); levelInputEpoch = snap.inputEpoch;
+          levelTimeMs = Time::getMillisecondCounterHiRes();
+          micLevelValid = snap.micLevelValid && snap.inputEpoch == engine.captureEpoch.load()
+              && snap.micChannel == engine.micCh.load() && engine.micCh.load() >= 0;
           tf = snap.tf; rtaDb = snap.rtaDb; rtaBands = snap.rtaBands; conv = snap.convergence;
           if (capture.active) {
               capture.resetAcknowledged = snap.resetSeq == capture.resetId;
@@ -71,4 +77,43 @@ void AppModel::loadCalFile(const File& f) {
 }
 void AppModel::setCalEnabled(bool on) {
     calOn = on && cal.ok(); analysis.setCal(calOn ? std::make_shared<foh::MicCal>(cal) : nullptr, calFile); notify(Cal);
+}
+
+std::string AppModel::splInputKey() const {
+    auto setup = dm.getAudioDeviceSetup();
+    return (dm.getCurrentAudioDeviceType() + "\n" + setup.inputDeviceName + "\n" + juce::String(engine.micCh.load())).toStdString();
+}
+foh::SplCal AppModel::splCal() const {
+    auto it = splCals.find(splInputKey()); return it == splCals.end() ? foh::SplCal{} : it->second;
+}
+bool AppModel::calibrateSpl(double known) {
+    if (!micLevelReady() || micPeak >= 0.99f || micLevelDbfs <= -100 || micLevelDbfs >= 0) return false;
+    foh::SplCal c;
+    if (!c.calibrate(micLevelDbfs - (calOn ? cal.dbAt(1000) : 0), known, splSensitivity())) return false;
+    splCals[splInputKey()] = c;
+    if (auto* p = settings.getUserSettings()) { p->setValue("splCalibration", juce::String(splCalJson().dump())); p->saveIfNeeded(); }
+    notify(Cal | Settings); return true;
+}
+void AppModel::clearSpl() {
+    splCals.erase(splInputKey());
+    if (auto* p = settings.getUserSettings()) { p->setValue("splCalibration", juce::String(splCalJson().dump())); p->saveIfNeeded(); }
+    notify(Cal | Settings);
+}
+foh::Json AppModel::splCalJson() const {
+    auto j = foh::Json::object();
+    for (const auto& entry : splCals) j.set(entry.first, entry.second.toJson());
+    return j;
+}
+void AppModel::loadSplCalJson(const foh::Json& j) {
+    splCals.clear();
+    for (const auto& entry : j.members()) {
+        auto c = foh::SplCal::fromJson(entry.second);
+        if (c.calibrated) splCals[entry.first] = c;
+    }
+    notify(Cal | Settings);
+}
+
+bool AppModel::micLevelReady() const {
+    return micLevelValid && !paused && dm.getCurrentAudioDevice() && levelInputKey == splInputKey()
+        && levelInputEpoch == engine.captureEpoch.load() && Time::getMillisecondCounterHiRes() - levelTimeMs < 250;
 }

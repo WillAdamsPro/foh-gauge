@@ -226,3 +226,31 @@ TEST_CASE("Output chime is bounded, routed and stops at each sample rate", "[app
         for (int i = 0; i < block; ++i) REQUIRE(unused[i] == selected[i]);
     }
 }
+
+TEST_CASE("SPL level snapshots measure the selected input and reset on routing changes", "[app][audio][splcal]") {
+    AudioEngine engine; AnalysisEngine analysis(engine); analysis.start();
+    REQUIRE(analysis.send(foh::Command::resetAverages(1)));
+    REQUIRE(waitFor([&] { return analysis.latest().resetSeq == 1; }));
+    std::vector<float> mic(4800), ref(4800);
+    for (size_t i = 0; i < mic.size(); ++i) {
+        mic[i] = float(0.1 * std::sin(2 * juce::MathConstants<double>::pi * 1000 * double(i) / 48000));
+        ref[i] = mic[i] * 0.5f;
+    }
+    capture(engine, mic.data(), ref.data(), int(mic.size()));
+    REQUIRE(waitFor([&] { return analysis.latest().micLevelValid; }));
+    auto first = analysis.latest();
+    REQUIRE(first.micChannel == 0);
+    REQUIRE(first.micLevelDbfs == Catch::Approx(-20).margin(0.01));
+    foh::SplCal cal; REQUIRE(cal.calibrate(first.micLevelDbfs, 94));
+    REQUIRE(cal.level(first.micLevelDbfs) == Catch::Approx(94).margin(0.1));
+    engine.micCh = 1;
+    capture(engine, mic.data(), ref.data(), int(mic.size())); // Discard while routing restart is acknowledged.
+    REQUIRE(waitFor([&] { return engine.analysisEpoch.load() == engine.captureEpoch.load(); }));
+    capture(engine, mic.data(), ref.data(), int(mic.size()));
+    REQUIRE(waitFor([&] { const auto& s = analysis.latest(); return s.micLevelValid && s.micChannel == 1; }));
+    const auto second = analysis.latest();
+    REQUIRE(second.inputEpoch != first.inputEpoch);
+    REQUIRE(second.micLevelDbfs == Catch::Approx(-26.0206).margin(0.01));
+    REQUIRE(waitFor([&] { return !analysis.latest().micLevelValid; })); // Never calibrate a stale snapshot.
+    analysis.stop();
+}
