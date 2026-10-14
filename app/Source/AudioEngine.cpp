@@ -117,7 +117,8 @@ void AudioEngine::audioDeviceIOCallbackWithContext(const float* const* in, int n
     }
     lastMicChannel = mc; lastRefChannel = rc; lastInputCount = nIn; lastInputsValid = inputsValid;
     const float g = genGainDb.load(); if (g != lastGain) { pink.setGainDb(g + 20.f); sweep.setGainDb(g + 12.f); lastGain = g; }
-    const int mode = gen.load(), oa = outA.load(), ob = outB.load();
+    const bool silent = monitoringSilent.load(std::memory_order_acquire);
+    const int mode = silent ? Off : gen.load(), oa = outA.load(), ob = outB.load();
     const auto request = chimeRequest.load(std::memory_order_acquire);
     if (request != lastChimeRequest) {
         lastChimeRequest = request;
@@ -127,6 +128,7 @@ void AudioEngine::audioDeviceIOCallbackWithContext(const float* const* in, int n
         connectionDetector.reset(expected);
         testSamplesRemaining = expected >= 0 ? int(sampleRate.load()) : 0;
     }
+    if (silent) { chimePosition = 28800; testSamplesRemaining = 0; }
     const double rate = sampleRate.load(std::memory_order_relaxed);
     if (!std::isfinite(rate) || rate <= 0) return;
     const double chimeStep = 48000.0 / rate;
@@ -134,7 +136,7 @@ void AudioEngine::audioDeviceIOCallbackWithContext(const float* const* in, int n
     const bool outputsValid = (mode == Off || (outputValid(oa) && (ob < 0 || outputValid(ob))))
         && (chimePosition >= 28800 || outputValid(chimeOutput));
     state.store(!inputsValid ? InvalidInputs : !outputsValid ? InvalidOutputs : Ready, std::memory_order_release);
-    for (int i = 0; i < n; ++i) {
+    for (int i = 0; !silent && i < n; ++i) {
         float s = mode == Pink ? pink.next() : mode == Sweep ? sweep.next() : 0.f;
         const bool testing = testSamplesRemaining > 0;
         const bool playingChime = chimePosition < 28800;

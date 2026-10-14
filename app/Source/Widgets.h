@@ -32,6 +32,7 @@ public:
     enum Gen { Off = 0, Pink = 1, Sweep = 2 };
     std::atomic<int> gen{Off}, micCh{0}, refCh{1}, outA{0}, outB{1};
     std::atomic<float> genGainDb{-20.f};
+    std::atomic<bool> monitoringSilent{false}; // W7: suppress all generated playback
     static_assert(std::atomic<int>::is_always_lock_free);
     static_assert(std::atomic<float>::is_always_lock_free);
     static_assert(std::atomic<bool>::is_always_lock_free);

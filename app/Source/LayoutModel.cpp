@@ -249,7 +249,7 @@ std::vector<Workspace> builtInPresets() {
                    {0.26, V({ {0.55, L("TraceList")}, {0.45, L("Inspector")} })} });
       v.push_back(w); }
     { Workspace w; w.id = "rta-show"; w.name = "RTA/Show"; w.builtIn = true;
-      w.root = H({ {0.70, V({ {0.65, L("RTA")}, {0.35, L("SPLHistory")} })},
+      w.root = H({ {0.70, V({ {0.65, T({"ShowMonitoring", "RTA"})}, {0.35, L("SPLHistory")} })},
                    {0.30, V({ {0.45, L("SPLNumbers")}, {0.25, L("Dose")}, {0.30, T({"Inspector", "Events"})} })} });
       v.push_back(w); }
     return v;
