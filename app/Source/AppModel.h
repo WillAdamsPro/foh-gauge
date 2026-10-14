@@ -51,6 +51,18 @@ public:
         capture.active = false; capture.then = {}; pendingDelay = {};
         delayPending = false; delay = {}; overlay = {};
     }
+    // Device setup has already changed synchronously during session Open.
+    // Acknowledge its epoch before restoring delay so the next UI timer does not
+    // mistake the restored state for measurements from the previous device.
+    void restoreSessionDelay(double ms) {
+        lastInputEpoch = engine.captureEpoch.load(std::memory_order_acquire);
+        lastDeviceFailed = engine.deviceFailed.load();
+        tf = {}; rtaDb.clear(); rtaBands.clear(); conv = {}; micLevelValid = false;
+        sweep = {}; sweepCapturing = false;
+        refDelaySamples = 0; refDelayMs = 0;
+        lockedDelayMs = ms;
+        send(foh::Command::referenceDelay(ms * engine.sampleRate.load() / 1000.0));
+    }
     double lockedDelayMs = 0; bool delayPending = false;
 
     // ---- traces
@@ -109,6 +121,14 @@ public:
     foh::Json splCalJson() const;
     void loadSplCalJson(const foh::Json&);
 
+    // Interface correction is stored per device/rate/routing, message thread only.
+    std::map<std::string, foh::LoopbackCorrection> loopbackCals;
+    std::string loopbackKey() const;
+    bool beginLoopback();
+    void clearLoopback();
+    bool loopbackMeasuring = false;
+    juce::String loopbackStatus;
+
     // ---- mic cal
     foh::MicCal cal; juce::String calFile; std::string calText; bool calOn = false;
     void loadCalFile(const juce::File& f);
@@ -128,6 +148,13 @@ public:
 
 private:
     std::array<std::optional<juce::Colour>, foh::TraceStore::kMax> traceColours;
+    void syncLoopback();
+    void finishLoopback(const foh::TFResult* raw = nullptr);
+    std::string activeLoopbackKey, measuringLoopbackKey;
+    uint64_t activeLoopbackEpoch = 0, loopbackResetId = 0;
+    double loopbackStart = 0, savedReferenceDelay = 0;
+    int savedGenerator = 0; float savedGeneratorGain = -20;
+    bool savedPaused = false;
     std::string levelInputKey; uint64_t levelInputEpoch = 0; double levelTimeMs = 0;
     void timerCallback() override;
     juce::ListenerList<Listener> listeners;
