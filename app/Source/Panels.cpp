@@ -1,5 +1,6 @@
 #include "Panels.h"
 #include "BinaryData.h"
+#include "SetupPage.h"
 using namespace juce;
 namespace C = foh::ui::col;
 namespace D = foh::ui::dim;
@@ -350,32 +351,14 @@ private:
 // ===================== Inputs & devices (mic / channel list) =====================
 class InputsAndDevicesPanel : public Panel {
 public:
-    explicit InputsAndDevicesPanel(AppModel& m) : Panel(m, "InputsAndDevices", "Inputs & Devices"),
-        selector(m.dm, 1, 4, 1, 4, false, false, false, false) {
-        helpText = "Pick your interface (UMC404HD) at 48 kHz.\n\nMic = In 1 (ECM8000, +48 V).\n\nReference = In 2: a 1/4\" TRS loopback from Out 2, so it carries exactly what goes to the system.\n\nOut 1 goes to the console.";
-        addAndMakeVisible(selector);
-        auto items = [](ComboBox& b, const char* pre) { for (int i = 1; i <= 4; ++i) b.addItem(String(pre) + String(i), i); };
-        items(mic, "Mic: In "); items(ref, "Ref: In "); items(outA, "To console: Out "); items(outB, "Loopback: Out ");
-        mic.onChange = [this] { model.engine.micCh = mic.getSelectedId() - 1; }; ref.onChange = [this] { model.engine.refCh = ref.getSelectedId() - 1; };
-        outA.onChange = [this] { model.engine.outA = outA.getSelectedId() - 1; }; outB.onChange = [this] { model.engine.outB = outB.getSelectedId() - 1; };
-        for (auto* b : {&mic, &ref, &outA, &outB}) addAndMakeVisible(b);
-        styleLabel(routing, T::label, C::textSecondary()); routing.setText("ROUTING (UMC404HD defaults)", dontSendNotification); addAndMakeVisible(routing);
-        sync();
+    explicit InputsAndDevicesPanel(AppModel& m) : Panel(m, "InputsAndDevices", "Inputs & Devices"), setup(m, false) {
+        helpText = "Select your input and output devices, sample rate, microphone and reference inputs, and generator outputs. Play a short chime to check the outputs. Use Audio Setup in the toolbar and Done to save these settings.";
+        addAndMakeVisible(setup);
     }
-    fohws::Size minSize() const override { return { 360, 220 }; }
-    void sync() { mic.setSelectedId(model.engine.micCh + 1, dontSendNotification); ref.setSelectedId(model.engine.refCh + 1, dontSendNotification);
-                  outA.setSelectedId(model.engine.outA + 1, dontSendNotification); outB.setSelectedId(model.engine.outB + 1, dontSendNotification); }
-    Json saveState() const override { Json j = Json::object(); j.set("mic", model.engine.micCh.load()); j.set("ref", model.engine.refCh.load()); j.set("outA", model.engine.outA.load()); j.set("outB", model.engine.outB.load()); return j; }
-    void loadState(const Json& j) override { if (!j.isObject()) return; model.engine.micCh = j["mic"].asInt(0); model.engine.refCh = j["ref"].asInt(1); model.engine.outA = j["outA"].asInt(0); model.engine.outB = j["outB"].asInt(1); sync(); }
-    void resized() override {
-        auto r = getLocalBounds().reduced(pad, 6); auto bottom = r.removeFromBottom(56);
-        routing.setBounds(bottom.removeFromTop(20)); auto row = bottom.removeFromTop(28); int w = row.getWidth() / 4;
-        for (auto* b : {&mic, &ref, &outA, &outB}) b->setBounds(row.removeFromLeft(w).reduced(3, 0));
-        selector.setBounds(r);
-    }
-    void modelChanged(int w) override { if (w & AppModel::Theme) routing.setColour(Label::textColourId, C::textSecondary()); }
+    fohws::Size minSize() const override { return { 360, 420 }; }
+    void resized() override { setup.setBounds(getLocalBounds()); }
 private:
-    AudioDeviceSelectorComponent selector; ComboBox mic, ref, outA, outB; Label routing;
+    SetupPage setup;
 };
 
 // ===================== Calibration =====================

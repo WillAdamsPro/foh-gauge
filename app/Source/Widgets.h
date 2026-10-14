@@ -3,6 +3,7 @@
 #include <juce_gui_extra/juce_gui_extra.h>
 #include "fohcore/fohcore.h"
 #include "ThemeBridge.h"
+#include <array>
 #include <cmath>
 
 namespace th = foh::theme;
@@ -17,6 +18,8 @@ inline double consoleMs(double ms) { return std::round(ms * 100.0) / 100.0; }
 // Audio engine: generator out + capture of mic/ref into lock-free rings. RT-safe callback.
 class AudioEngine : public juce::AudioIODeviceCallback {
 public:
+    AudioEngine(); // Synthesizes the immutable chime before the audio callback is registered.
+    void playChime() noexcept { chimeRequest.fetch_add(1, std::memory_order_relaxed); }
     enum Gen { Off = 0, Pink = 1, Sweep = 2 };
     std::atomic<int> gen{Off}, micCh{0}, refCh{1}, outA{0}, outB{1};
     std::atomic<float> genGainDb{-20.f};
@@ -33,6 +36,10 @@ public:
     void audioDeviceAboutToStart(juce::AudioIODevice* d) override;
     void audioDeviceStopped() override {}
 private:
+    std::array<float, 28801> chime {}; // 0.6 seconds at 48 kHz, final sample is zero
+    std::atomic<uint64_t> chimeRequest {0};
+    uint64_t lastChimeRequest = 0;
+    double chimePosition = 28800;
     foh::PinkNoise pink; foh::LogSweep sweep; float lastGain = -999;
     float scratch[4096] {};
 };

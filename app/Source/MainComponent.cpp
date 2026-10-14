@@ -10,31 +10,32 @@ MainComponent::MainComponent() {
     setLookAndFeel(&lnf); LookAndFeel::setDefaultLookAndFeel(&lnf); lnf.applyTheme(); // default too, so floating panel windows get the ws chrome
     foh::theme::ThemeManager::get().addChangeListener(this); model.addListener(this);
 
-    addAndMakeVisible(toolbarTitle); toolbarTitle.setFont(FohLookAndFeel::font(T::small + 1, true));
-    addAndMakeVisible(switcher); switcher.onChange = [this](int i) { selectWorkspace(i); };
-    addAndMakeVisible(status);
-    addAndMakeVisible(showModeBtn); showModeBtn.setButtonText("Show mode"); showModeBtn.setClickingTogglesState(true);
+    addAndMakeVisible(content);
+    content.addAndMakeVisible(toolbarTitle); toolbarTitle.setFont(FohLookAndFeel::font(T::small + 1, true));
+    content.addAndMakeVisible(switcher); switcher.onChange = [this](int i) { selectWorkspace(i); };
+    content.addAndMakeVisible(status);
+    content.addAndMakeVisible(showModeBtn); showModeBtn.setButtonText("Show mode"); showModeBtn.setClickingTogglesState(true);
     showModeBtn.setTooltip("Minimal live RTA view; toggle off to restore the workspace layout");
     showModeBtn.onClick = [this] { setShowMode(showModeBtn.getToggleState()); };
-    addAndMakeVisible(pauseBtn); pauseBtn.setClickingTogglesState(true); makePrimary(pauseBtn); pauseBtn.setButtonText(u8("\xe2\x96\xa0 Stop"));
+    content.addAndMakeVisible(pauseBtn); pauseBtn.setClickingTogglesState(true); makePrimary(pauseBtn); pauseBtn.setButtonText(u8("\xe2\x96\xa0 Stop"));
     pauseBtn.onClick = [this] { model.setPaused(pauseBtn.getToggleState()); pauseBtn.setButtonText(model.paused ? u8("\xe2\x96\xb6 Start") : u8("\xe2\x96\xa0 Stop")); };
 
-    const char* names[] = {"Setup", "Alignment", "Tuning", "RTA / Show"}; NavButton::Glyph glyphs[] = {NavButton::Home, NavButton::Guides, NavButton::Transfer, NavButton::Rta};
-    for (int i = 0; i < 4; ++i) { auto* b = nav.add(new NavButton(names[i], glyphs[i])); b->onClick = [this, i] { selectWorkspace(i); }; addAndMakeVisible(b); }
     appearance.setSelected(foh::theme::ThemeManager::get().current().isLight ? 1 : 0);
-    appearance.onChange = [this](int i) { foh::theme::ThemeManager::get().setTheme(i == 1 ? "apple-pro-sunlight" : "apple-pro-dark");
-        if (auto* pf = model.settings.getUserSettings()) { pf->setValue("appearance", i == 1 ? "sunlight" : "dark"); pf->saveIfNeeded(); } };
-    addAndMakeVisible(appearance);
+    appearance.onChange = [this](int i) { setSunlightTheme(i == 1); };
+    content.addAndMakeVisible(appearance);
     for (int pc : {100, 125, 150, 200}) scaleBox.addItem("UI scale " + String(pc) + "%", pc);
-    { int saved = model.settings.getUserSettings() ? model.settings.getUserSettings()->getIntValue("uiScale", 100) : 100; if (scaleBox.indexOfItemId(saved) < 0) saved = 100;
-      scaleBox.setSelectedId(saved, dontSendNotification); if (saved != 100) Desktop::getInstance().setGlobalScaleFactor((float) saved / 100.0f); }
-    scaleBox.onChange = [this] { int pc = scaleBox.getSelectedId(); Desktop::getInstance().setGlobalScaleFactor((float) pc / 100.0f);
-        if (auto* pf = model.settings.getUserSettings()) { pf->setValue("uiScale", pc); pf->saveIfNeeded(); } };
-    addAndMakeVisible(scaleBox);
+    uiScale = model.settings.getUserSettings() ? model.settings.getUserSettings()->getIntValue("uiScale", 100) : 100;
+    if (scaleBox.indexOfItemId(uiScale) < 0) uiScale = 100;
+    scaleBox.setSelectedId(uiScale, dontSendNotification);
+    scaleBox.onChange = [this] { setUiScale(scaleBox.getSelectedId()); };
+    content.addAndMakeVisible(scaleBox);
 
-    addAndMakeVisible(view);
+    content.addAndMakeVisible(view);
+    content.addChildComponent(setup);
+    setup.onDone = [this] { setup.setVisible(false); view.setVisible(true); openFloatingWindows(); };
+    content.addAndMakeVisible(setupBtn); setupBtn.onClick = [this] { openSetup(); };
     model.requestWorkspace = [this](const std::string& id) { selectWorkspace(id); };
-    addAndMakeVisible(wsMenuBtn); wsMenuBtn.setButtonText(u8("Workspace \xe2\x96\xbe")); wsMenuBtn.onClick = [this] { showWorkspaceMenu(); };
+    content.addAndMakeVisible(wsMenuBtn); wsMenuBtn.setButtonText(u8("Workspace \xe2\x96\xbe")); wsMenuBtn.onClick = [this] { showWorkspaceMenu(); };
     view.onLayoutEdited = [this] { updateSwitcher(); };
     view.onFloatRequested = [this](const std::string& id) { floatPanel(id); };
     view.isFloating = [this](const std::string& id) { if (auto* w = view.workspace()) for (auto& f : w->floating) if (f.panel == id) return true; return false; };
@@ -45,10 +46,15 @@ MainComponent::MainComponent() {
     selectWorkspace(start);
     if (auto* pf = model.settings.getUserSettings()) if (pf->getBoolValue("showMode", false)) setShowMode(true);
     if (auto* f = std::getenv("FOH_FLOAT")) { std::string id = f; Timer::callAfterDelay(800, [sp = SafePointer<MainComponent>(this), id] { if (sp) sp->floatPanel(id); }); } // dev/screenshot aid
+    if (!model.settings.getUserSettings() || !model.settings.getUserSettings()->getBoolValue("setupComplete", false)) openSetup();
     startTimerHz(15);
 }
 MainComponent::~MainComponent() { removeKeyListener(presetCommands.keyMappings()); stopTimer(); leaveWorkspace(); view.setWorkspace(nullptr); model.removeListener(this); foh::theme::ThemeManager::get().removeChangeListener(this); floats.clear(); LookAndFeel::setDefaultLookAndFeel(nullptr); setLookAndFeel(nullptr); }
 
+void MainComponent::openSetup() {
+    if (showMode) setShowMode(false);
+    closeFloatingWindows(); view.setVisible(false); setup.setVisible(true); setup.toFront(true); resized();
+}
 void MainComponent::selectWorkspace(const std::string& id) { int i = mgr.indexOf(id); if (i >= 0) selectWorkspace(i); }
 void MainComponent::leaveWorkspace() {
     if (current < 0) return; view.storePanelStates(); closeFloatingWindows(); mgr.saveCurrent(current);
@@ -60,7 +66,7 @@ void MainComponent::selectWorkspace(int i) {
     leaveWorkspace();
     current = i; view.setWorkspace(&mgr.at(i)); openFloatingWindows();
     { std::vector<std::string> ids; mgr.at(i).root.collectPanels(ids); for (auto& id : ids) if (id != "Inspector") { view.focus(id); break; } } // Inspector explains the first panel
-    switcher.setSelected(i < 4 ? i : -1); for (int k = 0; k < nav.size(); ++k) nav[k]->setToggleState(k == i, dontSendNotification);
+    switcher.setSelected(i < 4 ? i : -1);
     toolbarTitle.setText(String(mgr.at(i).name), dontSendNotification);
     if (auto* pf = model.settings.getUserSettings()) pf->setValue("workspace", String(mgr.at(i).id));
     updateSwitcher(); workspaceSelected(); repaint();
@@ -92,7 +98,7 @@ void MainComponent::updateSwitcher() { // "•" after a modified layout: a shape
 
 // ---- floating panels (spec §5)
 void MainComponent::openFloatingWindows() {
-    auto* w = view.workspace(); if (!w) return;
+    auto* w = view.workspace(); if (!w || setup.isVisible()) return;
     for (auto& f : w->floating) { auto* p = view.panel(f.panel); if (!p) continue; view.releasePanel(f.panel, p);
         auto* win = floats.add(new FloatingPanelWindow(*p, f)); std::string id = f.panel;
         win->addKeyListener(presetCommands.keyMappings());
@@ -172,6 +178,11 @@ void MainComponent::showWorkspaceMenu() {
 }
 bool MainComponent::keyPressed(const KeyPress& k) {
     auto m = k.getModifiers(); int code = k.getKeyCode();
+    if (m.isCommandDown() && !m.isAltDown() && !m.isCtrlDown()) {
+        if (code == '0') { setUiScale(100); return true; }
+        if (code == '=' || code == '+') { stepUiScale(1); return true; }
+        if (code == '-') { stepUiScale(-1); return true; }
+    }
     if (code == KeyPress::tabKey
         && m.withoutFlags(ModifierKeys::shiftModifier).getRawFlags() == ModifierKeys::ctrlModifier) {
         const int count = mgr.count();
@@ -185,37 +196,72 @@ bool MainComponent::keyPressed(const KeyPress& k) {
     return false;
 }
 
-void MainComponent::paint(Graphics& g) {
-    const int top = D::statusBarHeight(), nw = sidebarVisible() ? D::navWidth() : 0;
-    g.fillAll(C::background());
-    g.setColour(C::statusBarBackground()); g.fillRect(0, 0, getWidth(), top);
-    g.setColour(C::border()); g.fillRect(0.f, top - D::hairline(), (float) getWidth(), D::hairline());
-    if (nw) { g.setColour(C::navBackground()); g.fillRect(0, top, nw, getHeight() - top); g.setColour(C::border()); g.fillRect((float) nw - D::hairline(), (float) top, D::hairline(), (float) getHeight()); }
-    g.setFont(FohLookAndFeel::font(T::logo, true)); g.setColour(C::textPrimary()); g.drawText("FOH", 16, 0, 40, top, Justification::centredLeft);
-    g.setColour(C::accent()); g.drawText("Gauge", 52, 0, 80, top, Justification::centredLeft);
-    if (nw) { g.setColour(C::textAxis()); g.setFont(FohLookAndFeel::font(T::axisTick, true)); g.drawText("WORKSPACES", 16, top + 14, nw - 32, 16, Justification::centredLeft); }
+// These settings and transforms run exclusively on the message thread.
+void MainComponent::setSunlightTheme(bool enabled) {
+    foh::theme::ThemeManager::get().setTheme(enabled ? "apple-pro-sunlight" : "apple-pro-dark");
+    if (auto* pf = model.settings.getUserSettings()) { pf->setValue("appearance", enabled ? "sunlight" : "dark"); pf->saveIfNeeded(); }
+}
+void MainComponent::setUiScale(int percent) {
+    if (scaleBox.indexOfItemId(percent) < 0) return;
+    uiScale = percent;
+    scaleBox.setSelectedId(percent, dontSendNotification);
+    resized();
+    if (auto* pf = model.settings.getUserSettings()) { pf->setValue("uiScale", percent); pf->saveIfNeeded(); }
+}
+void MainComponent::stepUiScale(int direction) {
+    const int index = scaleBox.indexOfItemId(uiScale);
+    setUiScale(scaleBox.getItemId(jlimit(0, scaleBox.getNumItems() - 1, index + direction)));
+}
+void MainComponent::fitSavedScale() {
+    // At launch retain at least a compact 640 x 360 logical workspace.
+    // Explicit later choices may zoom further; View and Cmd+0 remain available.
+    int fit = 100;
+    for (int percent : {100, 125, 150, 200})
+        if (percent <= uiScale && getWidth() * 100 >= 640 * percent && getHeight() * 100 >= 360 * percent)
+            fit = percent;
+    setUiScale(fit);
 }
 void MainComponent::resized() {
+    const float scale = (float) uiScale / 100.0f;
+    content.setTransform(AffineTransform::scale(scale));
+    content.setBounds(0, 0, jmax(1, (int) std::ceil(getWidth() / scale)), jmax(1, (int) std::ceil(getHeight() / scale)));
+    layoutContent();
+    content.repaint();
+}
+
+void MainComponent::paintContent(Graphics& g) {
     const int top = D::statusBarHeight(), nw = sidebarVisible() ? D::navWidth() : 0;
-    auto bar = getLocalBounds().removeFromTop(top).reduced(12, 0); bar.removeFromLeft(130);
+    g.fillAll(C::background());
+    g.setColour(C::statusBarBackground()); g.fillRect(0, 0, content.getWidth(), top);
+    g.setColour(C::border()); g.fillRect(0.f, top - D::hairline(), (float) content.getWidth(), D::hairline());
+    if (nw) { g.setColour(C::navBackground()); g.fillRect(0, top, nw, content.getHeight() - top); g.setColour(C::border()); g.fillRect((float) nw - D::hairline(), (float) top, D::hairline(), (float) content.getHeight()); }
+    g.setFont(FohLookAndFeel::font(T::logo, true)); g.setColour(C::textPrimary()); g.drawText("FOH", 16, 0, 40, top, Justification::centredLeft);
+    g.setColour(C::accent()); g.drawText("Gauge", 52, 0, 80, top, Justification::centredLeft);
+}
+void MainComponent::layoutContent() {
+    const int top = D::statusBarHeight(), nw = sidebarVisible() ? D::navWidth() : 0;
+    auto bar = content.getLocalBounds().removeFromTop(top).reduced(12, 0); bar.removeFromLeft(130);
+    setupBtn.setBounds(bar.removeFromRight(106).withSizeKeepingCentre(106, 30)); bar.removeFromRight(8);
     pauseBtn.setBounds(bar.removeFromRight(84).withSizeKeepingCentre(84, 30)); bar.removeFromRight(12);
     showModeBtn.setBounds(bar.removeFromRight(96).withSizeKeepingCentre(96, 30)); bar.removeFromRight(8);
-    toolbarTitle.setBounds(bar.removeFromLeft(110));
-    int sw = 380; switcher.setBounds(bar.removeFromLeft(sw).withSizeKeepingCentre(sw, foh::theme::ws::switcherHeight - 6)); bar.removeFromLeft(8);
+    const bool wide = content.getWidth() >= 1100;
+    toolbarTitle.setVisible(wide); status.setVisible(wide);
+    toolbarTitle.setBounds(wide ? bar.removeFromLeft(110) : Rectangle<int>());
+    int sw = jlimit(100, 380, bar.getWidth() - 128); switcher.setBounds(bar.removeFromLeft(sw).withSizeKeepingCentre(sw, foh::theme::ws::switcherHeight - 6)); bar.removeFromLeft(8);
     wsMenuBtn.setBounds(bar.removeFromLeft(112).withSizeKeepingCentre(112, foh::theme::ws::switcherHeight - 6)); bar.removeFromLeft(16);
     status.setBounds(bar);
-    for (auto* b : nav) b->setVisible(nw > 0); appearance.setVisible(nw > 0); scaleBox.setVisible(nw > 0);
-    if (nw) { auto s = Rectangle<int>(0, top, nw, getHeight() - top).reduced(10, 0); s.removeFromTop(36);
-        for (auto* b : nav) { b->setBounds(s.removeFromTop(40)); s.removeFromTop(4); }
+    appearance.setVisible(nw > 0); scaleBox.setVisible(nw > 0);
+    if (nw) { auto s = Rectangle<int>(0, top, nw, content.getHeight() - top).reduced(10, 0);
         auto bot = s.removeFromBottom(80); appearance.setBounds(bot.removeFromTop(30).reduced(0, 2)); bot.removeFromTop(8); scaleBox.setBounds(bot.removeFromTop(28)); }
-    view.setBounds(getLocalBounds().withTrimmedTop(top).withTrimmedLeft(nw));
+    view.setBounds(content.getLocalBounds().withTrimmedTop(top).withTrimmedLeft(nw));
+    setup.setBounds(content.getLocalBounds().withTrimmedTop(top).withTrimmedLeft(nw));
 }
 
 void MainComponent::changeListenerCallback(ChangeBroadcaster*) {
     appearance.setSelected(foh::theme::ThemeManager::get().current().isLight ? 1 : 0); lnf.applyTheme(); makePrimary(pauseBtn);
     toolbarTitle.setColour(Label::textColourId, C::textPrimary());
     sendLookAndFeelChange(); model.notify(AppModel::Theme | AppModel::Snapshot | AppModel::Delay | AppModel::Traces);
-    resized(); repaint(); view.repaint(); for (auto* f : floats) f->restyle();
+    resized(); content.repaint(); view.repaint(); for (auto* f : floats) f->restyle();
     if (auto* w = getTopLevelComponent()) if (auto* dw = dynamic_cast<DocumentWindow*>(w)) dw->setBackgroundColour(C::background());
 }
 void MainComponent::modelChanged(int) {}
