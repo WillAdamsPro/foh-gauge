@@ -82,7 +82,7 @@ TEST_CASE("Impulse polarity is inconclusive for unusable measurements", "[polari
     CHECK(polarityFromImpulse({1e-13, -1e-13}) == ImpulsePolarity::Unknown);
     CHECK(polarityFromImpulse({1, std::numeric_limits<double>::quiet_NaN()}) == ImpulsePolarity::Unknown);
     CHECK(polarityFromImpulse({std::numeric_limits<double>::infinity(), -1}) == ImpulsePolarity::Unknown);
-    CHECK(polarityFromImpulse({-0.5, 0.5}) == ImpulsePolarity::Inverted);
+    CHECK(polarityFromImpulse({-0.5, 0.5}) == ImpulsePolarity::Unknown);
 }
 
 TEST_CASE("Sweep edge captures cannot report an arrival or polarity", "[sweep][edges]") {
@@ -165,4 +165,79 @@ TEST_CASE("Impulse view rejects incomplete or unusable stored spectra", "[sweep]
     }
     auto bad = tf; bad.blanked.assign(33, 1); CHECK(impulseFromTF(bad).empty());
     bad = tf; bad.H.assign(33, 0); bad.H[0] = 0.5; CHECK(impulseFromTF(bad).empty());
+}
+
+TEST_CASE("Delay rejects silence, DC and short or missing reference windows", "[delay][edges]") {
+    for (bool phat : {false, true}) {
+        for (size_t length : {0u, 1u, 2u, 63u, 64u, 65u, 2048u}) {
+            for (float dc : {0.f, 0.25f, -0.25f}) {
+                std::vector<float> ref(length, dc), mic(length, dc);
+                const auto result = findDelay(ref, mic, 48000, phat);
+                CHECK_FALSE(result.ok()); CHECK_FALSE(result.error.empty());
+                CHECK(result.arrivals.empty()); CHECK(result.confidence == 0);
+            }
+        }
+        std::vector<float> mic(2048); mic[200] = -0.5f;
+        CHECK_FALSE(findDelay({}, mic, 48000, phat).ok());
+        CHECK_FALSE(findDelay(std::vector<float>(mic.size()), mic, 48000, phat).ok());
+    }
+}
+
+TEST_CASE("DC offset preserves synthetic delay and inverted near-field direction", "[delay][polarity][edges]") {
+    for (bool phat : {false, true}) {
+        std::vector<float> ref(2048), mic(2048); ref[100] = 0.5f; mic[244] = -0.25f;
+        for (auto& x : ref) x += 0.2f;
+        for (auto& x : mic) x += 0.4f;
+        const auto result = findDelay(ref, mic, 48000, phat);
+        REQUIRE(result.ok()); CHECK(result.arrivals[0].delaySamples == Catch::Approx(144).margin(0.01));
+        CHECK(result.arrivals[0].inverted); CHECK(std::isfinite(result.confidence));
+    }
+    for (double sign : {-1.0, 1.0}) {
+        std::vector<double> impulse(512, 2.0);
+        impulse[48] += sign * 0.8; impulse[49] -= sign * 0.3;
+        CHECK(polarityFromImpulse(impulse) == (sign < 0 ? ImpulsePolarity::Inverted : ImpulsePolarity::Normal));
+    }
+    CHECK(polarityFromImpulse(std::vector<double>(64, 0.25)) == ImpulsePolarity::Unknown);
+    CHECK(polarityFromImpulse({1}) == ImpulsePolarity::Unknown);
+    std::vector<double> ambiguous(512); ambiguous[48] = 0.8; ambiguous[240] = -0.7;
+    CHECK(polarityFromImpulse(ambiguous) == ImpulsePolarity::Unknown);
+}
+
+TEST_CASE("Two-spike flag checks every secondary and rejects non-finite values", "[delay][edges]") {
+    std::vector<Arrival> arrivals{{48, 1, 0, 0}, {60, 1.25, 0, -0.1}, {144, 3, 0, -2.9}};
+    CHECK(twoSpikeFlag(arrivals));
+    arrivals[2].relLevelDb = -3.1; CHECK_FALSE(twoSpikeFlag(arrivals));
+    CHECK_FALSE(twoSpikeFlag(-6, 0, 2)); // absolute level difference
+    for (double bad : {double(NAN), double(INFINITY), double(-INFINITY)}) {
+        CHECK_FALSE(twoSpikeFlag(bad, 0, 2)); CHECK_FALSE(twoSpikeFlag(0, bad, 2));
+        CHECK_FALSE(twoSpikeFlag(0, 0, bad));
+    }
+    // Three physical peaks: a close lobe cannot mask the later comparable arrival.
+    std::vector<float> ref(2048), mic(2048); ref[100] = 0.5f;
+    mic[148] = 0.5f; mic[160] = 0.49f; mic[244] = -0.4f;
+    DelayOptions options; options.phat = false; options.minSeparationMs = 0.1;
+    const auto result = findDelay(ref, mic, 48000, options);
+    REQUIRE(result.ok()); REQUIRE(result.arrivals.size() == 3);
+    CHECK(result.twoSimilarArrivals); CHECK(result.confidence <= 0.75);
+}
+
+TEST_CASE("Delay cannot claim confidence when the window has no noise baseline", "[delay][edges]") {
+    std::vector<float> ref(64), mic(64); ref[10] = 0.5f; mic[20] = 0.25f;
+    DelayOptions options; options.minSeparationMs = 100;
+    const auto result = findDelay(ref, mic, 48000, options);
+    REQUIRE(result.ok()); CHECK(result.confidence == 0);
+}
+
+TEST_CASE("One corrupt complex TF bin invalidates the impulse including blanked bins", "[sweep][edges]") {
+    TFResult tf; tf.fftSize = 64; tf.H.assign(33, 0.5);
+    for (size_t bin : {0u, 1u, 32u}) {
+        for (double bad : {double(NAN), double(INFINITY), double(-INFINITY)}) {
+            for (bool imaginary : {false, true}) {
+                auto damaged = tf; damaged.H[bin] = imaginary ? cpx(0.5, bad) : cpx(bad, 0);
+                CHECK(impulseFromTF(damaged).empty());
+                damaged.blanked.assign(33, 0); damaged.blanked[bin] = 1;
+                CHECK(impulseFromTF(damaged).empty());
+            }
+        }
+    }
 }

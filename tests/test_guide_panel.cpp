@@ -944,3 +944,26 @@ TEST_CASE("W2 sub completion tolerates a mains capture losing its measurement", 
     CHECK(labelContains(*panel, "Capture mains and sub again"));
     button(*panel, "Use this delay").onClick(); CHECK(panel->saveState()["step"].asInt() == 2);
 }
+
+TEST_CASE("W6 ambiguous impulse releases pending sweep and permits retry", "[app][guide][edges][polarity]") {
+    juce::ScopedJuceInitialiser_GUI gui;
+    AppModel model; auto panel = makeGuidePanel(model); panel->setSize(260, 780);
+    auto state = fohws::Json::object(); state.set("guide", 5); state.set("step", 1); panel->loadState(state);
+    auto complete = [&](std::vector<double> impulse) {
+        button(*panel, "Measure box sweep").onClick();
+        model.sweepSeq = model.nextGuideSweepId;
+        model.sweepCapturing = true; model.notify(AppModel::Snapshot);
+        model.sweepCapturing = false; model.sweep.response.impulse = std::move(impulse);
+        model.sweep.response.arrivals = {{}}; model.notify(AppModel::Snapshot);
+    };
+    std::vector<double> ambiguous(512); ambiguous[48] = 0.8; ambiguous[240] = -0.7;
+    complete(ambiguous);
+    CHECK(panel->saveState()["step"].asInt() == 1);
+    CHECK(labelContains(*panel, "Inconclusive impulse"));
+    REQUIRE(button(*panel, "Measure box sweep").isEnabled());
+    cannotPass(*panel);
+    std::vector<double> inverted(512, 0.4); inverted[48] -= 0.8;
+    complete(inverted);
+    CHECK(panel->saveState()["step"].asInt() == 2);
+    CHECK(labelContains(*panel, "This box: INVERTED"));
+}
