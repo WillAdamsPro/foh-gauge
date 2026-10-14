@@ -16,6 +16,8 @@ jobs:
     runs-on: macos-26   # arm64, Xcode 26.x default (macos-14 is EOL Nov 2 2026)
     steps:
       - uses: actions/checkout@v4
+      - name: Block calibration files
+        run: bash scripts/check-cal-files.sh
       - name: Toolchain
         run: xcodebuild -version && xcrun --show-sdk-version
       - name: Configure
@@ -41,6 +43,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Block calibration files
+        run: bash scripts/check-cal-files.sh
       - name: Check public strings
         run: scripts/check-strings.sh
       - run: cmake -S . -B build -DFOH_BUILD_APP=OFF -DCMAKE_BUILD_TYPE=Release && cmake --build build --parallel && ctest --test-dir build --output-on-failure
