@@ -16,7 +16,7 @@ public:
         text.setScrollbarsShown(true);
         text.setCaretVisible(false);
         text.setFont(juce::Font(juce::FontOptions(14.0f)));
-        text.setText(juce::String("FOH Gauge — About / Acknowledgements\n\n")
+        text.setText(juce::String::fromUTF8("FOH Gauge \xe2\x80\x94 About / Acknowledgements\n\n")
             + juce::String::fromUTF8(BinaryData::THIRD_PARTY_NOTICES_md,
                                      BinaryData::THIRD_PARTY_NOTICES_mdSize)
             + "\n\nStandalone Inter OFL text\n\n"
