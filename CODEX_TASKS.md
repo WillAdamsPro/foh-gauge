@@ -53,7 +53,20 @@ Not in build #1 (superseded below where listed): export, live delay tracker, use
 31. Golden signals: salvage #39's generator (tools/gen_golden.py) but generate WAVs at build time instead of committing ~70 binaries; golden_tests ctest. Accept: T passes in CI.
 32. Venue/church string scan and cal-file guard also run in linux-tests (PR gate), not only build-macos. Files: .github/workflows/build-macos.yml. Accept: a PR with a planted term or `foo-cal.csv` fails linux-tests.
 
-## PHASED PLAN (not tasks yet)
-- P2 Multi-mic: 2-3 mic positions, per-position time alignment, spatial averaging of TF/RTA (power and complex options), per-position traces.
-- P2 Easy Setup wizard (optional): in-depth questionnaire (clusters, cabinets per cluster, individual vs grouped control, front fills, subs and their arrangement) that tailors the workflow; mic placement diagrams; hookup guide; then SPL cal -> time alignment -> tuning with automatic sweeps and pink noise.
-- Future: console control for Allen & Heath SQ (SQ-5, firmware 1.6.3) and Behringer X32: EQ and delay on mix buses and matrices.
+## Post-build #1 (numbered, priority order; checked against room-app concept v3)
+Already on master (skip): guided W1 reference delay, W2 sub-to-mains (phase delay + alternatives), W3 fill alignment in GuidePanel; stored traces (storeTrace/findTrace); core virtualSum(); core generators pink/sine/log sweep; core impulseFromTF; settle/coherence/two-spike core logic.
+33. Guided workflow frame + Apply-then-Verify: common step frame for W1-W5 (Apply = user enters change in DSP, Verify = re-measure and compare against the stored trace with a pass/fail note). Files: app/Source/GuidePanel.*. Accept: every W step ends in Verify; never auto-applies.
+34. Easy Setup questionnaire (optional, never forced): clusters, cabinets per cluster, individual vs grouped control, front fills, subs and arrangement; result tailors which W steps appear. Files: app/Source/EasySetup.* (new), core/src/rig_profile.cpp (pure data + JSON, saved in session). Accept: core test mapping 3 sample rigs to step lists; Skip leaves the default flow.
+35. Mic placement diagrams per step (simple vector drawings: on-axis, seam, sub/main crossover position). Files: app/Source/Diagrams.*. Accept: each W step that needs a mic move shows a diagram.
+36. W4 tuning + W5 pre-doors check in the guide (SPL cal -> time alignment -> tuning order; W5 5-minute check with symptom-to-cause list). Files: GuidePanel.cpp. Accept: manual walk-through on loopback.
+37. Expert toggle: one global toggle revealing all charts and settings; guides still work in Expert. Files: MainComponent.*, AppModel.*. Accept: persists; default off.
+38. Interface loopback correction: measure the interface's own loopback (Out->In) once, store it, and subtract it from TF (latency + response). Files: core/src/loopback.cpp, app Setup. Accept: core test: synthetic interface response removed to +/-0.1 dB.
+39. SPL/Leq meter (indicative): A/C/Z, Leq 1 min/15 min/session, WHO and NIOSH presets with warnings. Needs task 22 (SPL cal). Files: core/src/leq.cpp, app panel. Accept: core tests: 94 dB 1 kHz reads 94.0 (A and Z); Leq of constant signal = level.
+40. Stored-trace manager + virtual sum UI: name/colour/show/hide/delete, and a virtual sum preview of two stored traces (core virtualSum exists). Files: Panels.cpp, AppModel.*. Accept: sum of a trace with itself reads +6.02 dB.
+41. Multi-mic: 2-3 positions, per-position time alignment, coherence-weighted multi-position average against the target. Files: core/src/multipos.cpp, AnalysisEngine, app. Accept: core test: weighted average favours the high-coherence position; per-position delays applied.
+42. Log sweep + impulse view: sweep playback with safety ramp, deconvolution against the loopback reference, impulse/ETC plot. Files: core (sweep deconvolution), app panel. Accept: core test recovers a synthetic 4.80 ms delay +/-0.02 ms.
+43. W6 per-box polarity check (impulse direction near-field). Files: core (polarity from impulse), GuidePanel. Accept: core test on inverted/normal synthetic impulses.
+44. W7 show-time monitoring: low-overhead live TF/RTA against stored reference during the show with drift alerts (no generator). Files: app panel. Accept: manual; CPU < 10% on M1.
+45. Console control: Allen & Heath SQ (SQ-5, firmware 1.6.3) and Behringer X32 (OSC): read/write EQ and delay on mix buses and matrices, with confirm-before-write. Files: core-independent module app/Source/console/*. Accept: protocol unit tests against recorded messages; no writes without confirmation.
+46. Windows port: CMake/JUCE Windows build, ASIO/WASAPI device handling, Windows CI job. Accept: CI artifact launches; core tests pass on Windows.
+Superseded: the earlier PHASED PLAN items are now tasks 34-35 (Easy Setup), 41 (multi-mic) and 45 (console control).
