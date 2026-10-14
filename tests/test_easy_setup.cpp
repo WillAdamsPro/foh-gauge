@@ -54,6 +54,12 @@ TEST_CASE("Questionnaire applies drafts, filters guides and restores default gui
     CHECK_FALSE(model.rigProfile->subs); CHECK(box.getNumItems() == 4);
     button(questionnaire, "Skip").onClick(); CHECK(closed == 2);
     CHECK_FALSE(model.rigProfile); CHECK(box.getNumItems() == 6);
+    questionnaire.begin();
+    for (auto* child : formCanvas(questionnaire).getChildren()) {
+        if (auto* t = dynamic_cast<juce::ToggleButton*>(child)) t->setToggleState(true, juce::dontSendNotification);
+        if (auto* e = dynamic_cast<juce::TextEditor*>(child)) e->setText("3");
+        if (auto* c = dynamic_cast<juce::ComboBox*>(child)) c->setSelectedId(2, juce::dontSendNotification);
+    }
     button(questionnaire, "Use these answers").onClick(); CHECK(closed == 3);
     CHECK(model.rigProfile->subs); CHECK(model.rigProfile->frontFills);
     CHECK(model.rigProfile->clusters == 3); CHECK(model.rigProfile->cabinetsPerCluster == 3);
@@ -61,6 +67,7 @@ TEST_CASE("Questionnaire applies drafts, filters guides and restores default gui
     CHECK(model.rigProfile->subArrangement == foh::RigProfile::SubArrangement::LeftRight);
     CHECK(box.getNumItems() == 6); CHECK(box.getItemId(1) == 2); CHECK(box.getItemId(2) == 3);
     // Invalid drafts never change the applied profile or close the questionnaire.
+    questionnaire.begin();
     for (auto* child : formCanvas(questionnaire).getChildren())
         if (auto* e = dynamic_cast<juce::TextEditor*>(child)) e->setText("0");
     button(questionnaire, "Use these answers").onClick(); CHECK(closed == 3); CHECK(model.rigProfile->clusters == 3);
@@ -136,4 +143,52 @@ TEST_CASE("Applying questionnaire answers tolerates destruction during model not
     CHECK(questionnaire == nullptr);
     CHECK(model.rigProfile.has_value());
     CHECK(closed == 0);
+}
+
+TEST_CASE("Questionnaire completion is single use and Skip tolerates listener destruction", "[app][rig][edges]") {
+    juce::ScopedJuceInitialiser_GUI gui;
+    AppModel model; EasySetup questionnaire(model);
+    int closed = 0; questionnaire.onClose = [&] { ++closed; };
+    button(questionnaire, "Use these answers").onClick();
+    button(questionnaire, "Use these answers").onClick();
+    button(questionnaire, "Skip").onClick();
+    CHECK(closed == 1); CHECK(model.rigProfile.has_value());
+    questionnaire.begin(); button(questionnaire, "Skip").onClick();
+    button(questionnaire, "Use these answers").onClick();
+    CHECK(closed == 2); CHECK_FALSE(model.rigProfile);
+    auto owned = std::make_unique<EasySetup>(model);
+    struct Destroy : AppModel::Listener {
+        std::unique_ptr<EasySetup>& owned;
+        explicit Destroy(std::unique_ptr<EasySetup>& q) : owned(q) {}
+        void modelChanged(int w) override { if (w & AppModel::Rig) owned.reset(); }
+    } listener(owned);
+    model.addListener(&listener);
+    auto skip = button(*owned, "Skip").onClick; skip();
+    model.removeListener(&listener); CHECK_FALSE(owned);
+}
+
+TEST_CASE("Session reload closes Setup drafts before queued Apply or Finish", "[app][rig][routing][session][edges]") {
+    juce::ScopedJuceInitialiser_GUI gui;
+    AppModel model; SetupPage setup(model);
+    EasySetup* questionnaire = nullptr; RoutingWizard* wizard = nullptr;
+    for (auto* child : setup.getChildren()) {
+        if (auto* q = dynamic_cast<EasySetup*>(child)) questionnaire = q;
+        if (auto* w = dynamic_cast<RoutingWizard*>(child)) wizard = w;
+    }
+    REQUIRE(questionnaire); REQUIRE(wizard);
+    button(setup, "Rig questionnaire").onClick();
+    model.notify(AppModel::Session);
+    CHECK_FALSE(questionnaire->isVisible());
+    button(*questionnaire, "Use these answers").onClick(); CHECK_FALSE(model.rigProfile);
+    button(setup, "Easy Setup").onClick();
+    wizard->setChannels({"In 1", "In 2"}, {"Out 1", "Out 2"});
+    // Routing buttons live directly in the wizard, not in a ScrollableForm.
+    auto clickWizard = [&](const char* text) {
+        for (auto* child : wizard->getChildren())
+            if (auto* b = dynamic_cast<juce::TextButton*>(child); b && b->getButtonText() == text) { b->onClick(); return; }
+        FAIL("Missing routing button");
+    };
+    for (int i = 0; i < 3; ++i) clickWizard("Next");
+    model.notify(AppModel::Session); model.engine.micCh = 1;
+    clickWizard("Finish"); CHECK(model.engine.micCh.load() == 1); CHECK_FALSE(wizard->isVisible());
 }

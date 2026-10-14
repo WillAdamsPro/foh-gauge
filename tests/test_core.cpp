@@ -814,3 +814,41 @@ TEST_CASE("session rings and capture store remain bounded over three hours of sy
         REQUIRE(traces.count() == TraceStore::kMax);
     }
 }
+
+TEST_CASE("Sweep snapshots retain request identity across synthetic start and finish", "[guide][sweep]") {
+    SnapshotPublisher publisher;
+    auto& start = publisher.beginWrite(); start.sweepSeq = 42; start.sweepCapturing = true;
+    publisher.publish();
+    REQUIRE(publisher.latest().sweepSeq == 42);
+    REQUIRE(publisher.latest().sweepCapturing);
+    auto& finish = publisher.beginWrite(); finish.sweepSeq = 42; finish.sweepCapturing = false;
+    finish.sweep.response.impulse = {0, -1, 0}; finish.sweep.response.arrivals.push_back({});
+    publisher.publish();
+    REQUIRE(publisher.latest().sweepSeq == 42);
+    REQUIRE_FALSE(publisher.latest().sweepCapturing);
+    REQUIRE(polarityFromImpulse(publisher.latest().sweep.response.impulse) == ImpulsePolarity::Inverted);
+}
+
+TEST_CASE("Alignment estimators reject missing or partial synthetic captures", "[guide][edges]") {
+    TFResult complete;
+    complete.freq = {0, 80, 100, 120}; complete.magDb = {0, 0, 0, 0};
+    complete.H = {{1, 0}, {1, 0}, {1, 0}, {1, 0}}; complete.coherence = {1, 1, 1, 1};
+    for (int missing = 0; missing < 5; ++missing) {
+        auto partial = complete;
+        if (missing == 0) partial = {};
+        if (missing == 1) partial.magDb.clear();
+        if (missing == 2) partial.coherence.pop_back();
+        if (missing == 3) partial.H.pop_back();
+        if (missing == 4) partial.freq[2] = 105;
+        if (missing == 0 || missing == 1 || missing == 4) {
+            CHECK_FALSE(acousticCrossover(complete, partial).found);
+            CHECK_FALSE(acousticCrossover(partial, complete).found);
+        }
+        if (missing != 1) {
+            CHECK(phaseOffset(complete, partial, 80, 120).centerHz == 0);
+            CHECK(phaseOffset(partial, complete, 80, 120).centerHz == 0);
+            CHECK_FALSE(subDelayFromPhase(complete, partial, 80, 120).valid);
+            CHECK_FALSE(subDelayFromPhase(partial, complete, 80, 120).valid);
+        }
+    }
+}

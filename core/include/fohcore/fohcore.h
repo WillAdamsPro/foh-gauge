@@ -467,6 +467,7 @@ struct AnalysisSnapshot {
     uint64_t delaySeq = 0;      // id of the FindDelay command that produced `delay` (0 = none)
     bool delayWasSub = false;
     SweepResult sweep; bool sweepCapturing = false;
+    uint64_t sweepSeq = 0; // id of the accepted MeasureSweep command
     double refDelaySamples = 0, refDelayMs = 0; // compensation currently applied to the reference
     bool calApplied = false;
     char calName[64] = {};      // NUL-terminated, truncated; empty when no cal
@@ -496,7 +497,7 @@ private:
 };
 
 // ---------- Commands in (UI -> analysis thread), lock-free SPSC, fixed-size POD ----------
-enum class CommandType : uint8_t { SetSmoothing, SetRtaFraction, FindDelay, SetBlankThreshold, SetAverages, ResetAverages, SetReferenceDelay, MeasureSweep, StoreMicPosition, ClearMicPositions };
+enum class CommandType : uint8_t { SetSmoothing, SetRtaFraction, FindDelay, SetBlankThreshold, SetAverages, ResetAverages, SetReferenceDelay, MeasureSweep, CancelSweep, StoreMicPosition, ClearMicPositions };
 struct Command {
     CommandType type = CommandType::ResetAverages;
     bool sub = false;        // FindDelay: true = subs (LF-weighted, 3 s), false = mains

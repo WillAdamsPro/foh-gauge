@@ -58,6 +58,7 @@ private:
     foh::SweepResult sweepResult;
     std::vector<float> sweepRef, sweepMic;
     bool sweepCapturing = false; double sweepStartMs = 0;
+    uint64_t sweepSeq = 0;
     void cancelSweep(const char* reason);
     foh::DelayResult delay; uint64_t delaySeq = 0, resetSeq = 0; bool delayWasSub = false;
 };

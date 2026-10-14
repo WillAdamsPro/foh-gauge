@@ -36,6 +36,7 @@ void AnalysisEngine::handle(const foh::Command& c) {
                 cancelSweep("Open Audio Setup and resume measurement first"); break;
             }
             if (sweepCapturing) break;
+            sweepSeq = c.id;
             sweepResult = {}; sweepRef.clear(); sweepMic.clear();
             sweepRef.reserve(size_t(fs * 6.5)); sweepMic.reserve(size_t(fs * 6.5));
             // Discard queued pre-sweep samples on the sole consumer, never on I/O.
@@ -48,6 +49,9 @@ void AnalysisEngine::handle(const foh::Command& c) {
             sweepCapturing = true; sweepStartMs = juce::Time::getMillisecondCounterHiRes();
             engine.startSweepMeasurement(); break;
         }
+        case T::CancelSweep:
+            if (sweepCapturing && c.id == sweepSeq) cancelSweep("Guide sweep canceled");
+            break;
         case T::StoreMicPosition: {
             if (c.i < 0 || c.i >= 3 || !std::isfinite(c.d) || paused.load()
                 || engine.deviceFailed.load() || !lastLevelUsable || !lastTransferUsable || tf->convergence().frames == 0) break;
@@ -88,7 +92,7 @@ void AnalysisEngine::publish() {
     s.multiPosition = positionAverage;
     if (cal) cal->apply(s.tf);
     s.rtaDb = rta->bandsDb(); s.rtaBands = rta->bands(); s.rtaFraction = rtaFrac;
-    s.sweep = sweepResult; s.sweepCapturing = sweepCapturing;
+    s.sweep = sweepResult; s.sweepCapturing = sweepCapturing; s.sweepSeq = sweepSeq;
     s.delay = delay; s.delaySeq = delaySeq; s.delayWasSub = delayWasSub;
     s.refDelaySamples = tf->referenceDelaySamples(); s.refDelayMs = s.refDelaySamples / fs * 1000.0;
     s.calApplied = cal != nullptr; s.setCalName(cal ? calName.c_str() : "");

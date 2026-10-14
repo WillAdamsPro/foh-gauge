@@ -319,6 +319,7 @@ public:
         status.setBounds(controlRow(r, 44)); tfPlot.setBounds(r.removeFromTop(r.getHeight() / 2)); rtaPlot.setBounds(r);
     }
     void modelChanged(int w) override {
+        if (w & AppModel::Session) { stopMonitoring(); reference.setSelectedId(0, dontSendNotification); refreshReferences(); }
         if ((w & AppModel::Traces) && !active) refreshReferences();
     }
 private:
@@ -335,6 +336,7 @@ private:
         status.setText("W7: select a stored TF and Monitor. Use console programme as reference.", dontSendNotification);
     }
     void timerCallback() override {
+        if (!active) return;
         const bool signal = !model.paused && model.micLevelValid && model.refPeak > 0.00001f
             && !model.engine.deviceFailed.load() && model.engine.state.load() == AudioEngine::Ready;
         const auto drift = signal ? fohui::showDrift(model.tf, baseline.tf) : fohui::ShowDrift{};
