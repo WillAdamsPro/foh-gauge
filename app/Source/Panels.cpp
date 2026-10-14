@@ -61,7 +61,7 @@ public:
         else { addStoredTraces(model, plot, true);
                PlotComponent::Series s; s.c = C::traceLive(); s.label = "Live"; logDecimate(model.tf, model.tf.magDb, s.f, s.v, &s.gap); plot.series.push_back(s); }
         plot.lowCoh = blankedRegions(model.tf);
-        plot.note = "averages " + String(model.tf.averages) + (model.calApplied ? u8(" \xc2\xb7 cal applied") : "") + (qa::unsettled(model.conv) ? u8(" \xc2\xb7 \xe2\x96\xb2 unsettled") : "");
+        plot.note = "averages " + String(model.tf.averages) + (model.calApplied ? u8(" \xc2\xb7 cal applied") : "") + (!model.conv.settled ? u8(" \xc2\xb7 \xe2\x96\xb2 unsettled") : "");
         plot.repaint();
     }
 private:
@@ -95,13 +95,13 @@ private:
 class CoherencePanel : public Panel {
 public:
     explicit CoherencePanel(AppModel& m) : Panel(m, "Coherence", "Coherence") {
-        helpText = "Coherence: how much to trust the trace (0 to 1).\n\nGood: above 0.9. Fair: 0.6 to 0.9. Poor: below 0.6. Low coherence is usually a reflection or noise: don't EQ it.";
+        helpText = "Coherence: how much to trust the trace (0 to 1).\n\nGood: 0.9 or higher. Fair: 0.6 to 0.9. Poor: below 0.6. Low coherence is usually a reflection or noise: don't EQ it.";
         plot.yLabel = "COHERENCE"; plot.yMin = 0; plot.yMax = 1; plot.yStep = 0.5; addAndMakeVisible(plot);
     }
     fohws::Size minSize() const override { return { foh::theme::ws::panelMinWidth, 90 }; } // Alignment gives it a 0.15 strip: the traffic light alone is useful there
     void resized() override { auto r = getLocalBounds().reduced(pad, 6); light = r.removeFromTop(22); plot.setVisible(r.getHeight() > 60); plot.setBounds(r); }
     void paint(Graphics& g) override { // traffic light: shape + word, never colour only
-        auto cl = qa::coherenceLight(model.tf); double mean = cl.mean; int state = cl.state;
+        auto cl = foh::classifyCoherence(model.tf); double mean = cl.meanCoherence; int state = cl.state();
         const char* words[] = {"Good", "Fair", "Poor"}; Colour cols[] = {C::ok(), C::warning(), C::danger()};
         float x = (float) light.getX(); g.setFont(FohLookAndFeel::font(T::small, true));
         for (int i = 0; i < 3; ++i) { bool on = i == state; auto d = Rectangle<float>(x, light.getCentreY() - 6.f, 12, 12); g.setColour(on ? cols[i] : C::textAxis());
@@ -169,13 +169,13 @@ public:
         if (!(w & (AppModel::Delay | AppModel::Theme))) return;
         auto& d = model.delay;
         if (model.delayPending) { detail.setText(model.delayWasSub ? "Finding sub delay (3 s window)..." : "Finding delay...", dontSendNotification); return; }
-        if (!model.delayLocked()) { value.setText("--", dontSendNotification); detail.setText(d.arrivals.empty() ? "No signal: is pink noise playing?" : "No lock (confidence 0): check signal and that only one speaker is on", dontSendNotification); return; }
+        if (!model.delayLocked()) { value.setText("--", dontSendNotification); detail.setText(d.arrivals.empty() ? "No signal: is pink noise playing?" : "No valid delay result: check signal and that only one speaker is on", dontSendNotification); return; }
         auto& a0 = d.arrivals[0];
-        value.setText(String(qa::consoleMs(a0.delayMs), 2) + " ms", dontSendNotification);
+        value.setText(String(consoleMs(a0.delayMs), 2) + " ms", dontSendNotification);
         String t = String(d.confidence > 0.7 ? "High" : d.confidence > 0.35 ? "Medium" : "LOW") + u8(" confidence \xc2\xb7 polarity ") + (a0.inverted ? "INVERTED" : "normal")
                  + u8("\n\xe2\x89\x88 ") + String(a0.distanceM, 2) + " m" + (model.delayWasSub ? " (sub, LF-weighted)" : "");
-        for (size_t i = 1; i < d.arrivals.size(); ++i) t << u8("  \xc2\xb7  #") << (int) i + 1 << " " << String(qa::consoleMs(d.arrivals[i].delayMs), 2) << " ms (" << String(d.arrivals[i].relLevelDb, 1) << " dB)";
-        if (qa::twoSimilarArrivals(d)) t << u8("\n\xe2\x96\xb2 Two similar spikes: is only one speaker on?");
+        for (size_t i = 1; i < d.arrivals.size(); ++i) t << u8("  \xc2\xb7  #") << (int) i + 1 << " " << String(consoleMs(d.arrivals[i].delayMs), 2) << " ms (" << String(d.arrivals[i].relLevelDb, 1) << " dB)";
+        if (d.twoSimilarArrivals) t << u8("\n\xe2\x96\xb2 Two similar spikes: is only one speaker on?");
         detail.setText(t, dontSendNotification);
     }
 private:

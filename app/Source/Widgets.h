@@ -3,12 +3,16 @@
 #include <juce_gui_extra/juce_gui_extra.h>
 #include "fohcore/fohcore.h"
 #include "ThemeBridge.h"
+#include <cmath>
 
 namespace th = foh::theme;
 
 // All non-ASCII UI text is written as UTF-8 \x escapes and MUST go through u8():
 // juce::String(const char*) treats bytes as ASCII/Latin-1, so symbols like \u2713 render as junk.
 inline juce::String u8(const char* s) { return juce::String(juce::CharPointer_UTF8(s)); }
+
+// Console display rounding; message thread only.
+inline double consoleMs(double ms) { return std::round(ms * 100.0) / 100.0; }
 
 // Audio engine: generator out + capture of mic/ref into lock-free rings. RT-safe callback.
 class AudioEngine : public juce::AudioIODeviceCallback {
