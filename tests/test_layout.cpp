@@ -93,3 +93,26 @@ TEST_CASE("clamp: off-edge and oversized windows are pulled inside the work area
 TEST_CASE("clamp: no displays leaves bounds untouched") {
     FloatingPanel fp { "RTA", { 5, 6, 700, 400 }, "x" }; CHECK(clampToDisplays(fp, {}) == Rect { 5, 6, 700, 400 });
 }
+
+TEST_CASE("clamp: unplugging recovers every window onto the designated main display") {
+    std::vector<DisplayInfo> connected {
+        { "secondary", { -1920, 0, 1920, 1080 }, false },
+        { "main", { 0, 25, 1440, 875 }, true },
+        { "removed", { 1440, 0, 1920, 1080 }, false }
+    };
+    FloatingPanel a { "RTA", { 1600, 100, 500, 300 }, "removed" };
+    FloatingPanel b { "DelayFinder", { 2000, 500, 600, 400 }, "removed" };
+    FloatingPanel c { "Coherence", { -1500, 100, 500, 300 }, "secondary" };
+    connected.pop_back();
+    CHECK(clampToDisplays(a, connected) == Rect { 40, 65, 500, 300 });
+    CHECK(clampToDisplays(b, connected) == Rect { 40, 65, 600, 400 });
+    CHECK(a.displayId == "main"); CHECK(b.displayId == "main");
+    CHECK(clampToDisplays(c, connected) == Rect { -1500, 100, 500, 300 });
+    CHECK(c.displayId == "secondary");
+}
+
+TEST_CASE("clamp: changing a connected display work area keeps the title bar accessible") {
+    FloatingPanel fp { "RTA", { 1000, 700, 500, 300 }, "main" };
+    CHECK(clampToDisplays(fp, { { "main", { 0, 40, 1024, 700 }, true } }) == Rect { 524, 440, 500, 300 });
+    CHECK(fp.displayId == "main");
+}
