@@ -16,9 +16,6 @@ void AppModel::requestDelay(bool, std::function<void()>) { throw std::logic_erro
 void AppModel::lockDelayFromLast() { throw std::logic_error("Unexpected delay lock"); }
 void AppModel::beginCapture(const juce::String&, std::function<void(bool)>) { throw std::logic_error("Unexpected capture"); }
 bool AppModel::storeTrace(const juce::String&) { throw std::logic_error("Unexpected capture"); }
-foh::SplCal AppModel::splCal() const { return {}; }
-bool AppModel::calibrateSpl(double) { throw std::logic_error("Unexpected SPL calibration"); }
-void AppModel::clearSpl() {}
 const foh::Trace* AppModel::findTrace(const char* name) const {
     for (int i = traces.count() - 1; i >= 0; --i)
         if (traces.at(i).name == name) return &traces.at(i);
