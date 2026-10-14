@@ -1,3 +1,4 @@
+#include <functional>
 #include <catch2/catch_test_macros.hpp>
 #include "MainComponent.h"
 
@@ -204,11 +205,17 @@ TEST_CASE("Expert exposes selectable charts and settings and keeps guide navigat
             panel->loadState(state);
             const int before = panel->saveState()["step"].asInt();
             bool advanced = false;
-            for (auto* child : panel->getChildren())
-                if (auto* button = dynamic_cast<juce::TextButton*>(child))
-                    if (button->isVisible() && button->getButtonText() == "Start pink noise") {
-                        button->onClick(); advanced = true;
-                    }
+            // Guide controls live inside a scrolling form, so search the whole subtree.
+            std::function<void(juce::Component&)> press = [&](juce::Component& c) {
+                for (auto* child : c.getChildren()) {
+                    if (auto* button = dynamic_cast<juce::TextButton*>(child))
+                        if (!advanced && button->isVisible() && button->getButtonText() == "Start pink noise") {
+                            button->onClick(); advanced = true;
+                        }
+                    press(*child);
+                }
+            };
+            press(*panel);
             CHECK(advanced);
             CHECK(panel->saveState()["step"].asInt() == before + 1);
         }
