@@ -27,8 +27,7 @@ juce_add_gui_app(FOHGauge
     MICROPHONE_PERMISSION_TEXT "FOH Gauge needs audio input to measure your sound system."
     PLIST_TO_MERGE "<plist><dict><key>LSMinimumSystemVersion</key><string>26.0</string><key>CFBundleIconFile</key><string>AppIcon</string></dict></plist>")
 target_sources(FOHGauge PRIVATE Source/console/ConsoleWindow.cpp Source/Main.cpp Source/MainComponent.cpp Source/SetupPage.cpp Source/EasySetup.cpp Source/RoutingWizard.cpp Source/SessionFiles.cpp Source/AudioEngine.cpp Source/AnalysisEngine.cpp Source/GeneratorSafety.cpp Source/AppModelMeasurement.cpp Source/Widgets.cpp Source/AppModel.cpp Source/LayoutModel.cpp Source/Panels.cpp Source/GuidePanel.cpp Source/WorkspaceView.cpp Source/WorkspaceManager.cpp Source/FloatingPanels.cpp Source/Diagrams.cpp)
-# Console network control (X32 writes) is experimental: off by default, so release builds do not expose it.
-option(FOH_ENABLE_CONSOLE_CONTROL "Expose File > Console Control (experimental)" OFF)
+# Console network control is experimental and hidden in default release builds.
 target_compile_definitions(FOHGauge PRIVATE FOH_CONSOLE_CONTROL=$<BOOL:${FOH_ENABLE_CONSOLE_CONTROL}>)
 if(APPLE)
     enable_language(OBJCXX)
@@ -86,4 +85,17 @@ target_link_libraries(fohapp_tests PRIVATE fohcore fohconsole foh_sanitizers foh
     endif()
     include(Catch)
     catch_discover_tests(fohapp_tests)
+endif()
+
+if(FOH_ENABLE_CONSOLE_CONTROL)
+    target_sources(FOHGauge PRIVATE ../src/console/sq/SqConnection.cpp ../src/console/sq/SqConsoleWindow.cpp)
+    target_link_libraries(FOHGauge PRIVATE fohsq)
+    if(APPLE)
+        set_source_files_properties(../src/console/sq/SqConsoleWindow.cpp PROPERTIES LANGUAGE OBJCXX)
+    endif()
+    if(FOH_BUILD_TESTS)
+        target_sources(fohapp_tests PRIVATE ../src/console/sq/SqConnection.cpp ../src/console/sq/SqConsoleWindow.cpp ../tests/test_sq_panel.cpp)
+        target_link_libraries(fohapp_tests PRIVATE fohsq)
+        target_compile_definitions(fohapp_tests PRIVATE FOH_CONSOLE_CONTROL=1)
+    endif()
 endif()
