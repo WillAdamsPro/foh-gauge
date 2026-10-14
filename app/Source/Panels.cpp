@@ -1,4 +1,6 @@
 #include "Panels.h"
+#include "BinaryData.h"
+#include "SetupPage.h"
 using namespace juce;
 namespace C = foh::ui::col;
 namespace D = foh::ui::dim;
@@ -22,6 +24,103 @@ static std::vector<std::pair<double,double>> blankedRegions(const foh::TFResult&
     return lc;
 }
 
+// Each plot owns its target controls and saved state. Imports and parsing run only
+// on the message thread; targets never enter the audio/analysis pipeline.
+class TargetControls : public Component {
+public:
+    explicit TargetControls(double initialOffset = 0) {
+        choice.addItem("Target +6", 1); choice.addItem("Target +9", 2); choice.addItem("Target +12", 3);
+        choice.setSelectedId(1, dontSendNotification);
+        shown.setButtonText("Target"); band.setButtonText("Tolerance");
+        band.setTooltip("Show the imported tolerance, or +/-3 dB when the file has none.");
+        offset.setRange(-100, 100, 0.5); offset.setTextValueSuffix(" dB offset");
+        offset.setSliderStyle(Slider::IncDecButtons); offset.setTextBoxStyle(Slider::TextBoxLeft, false, 106, 24);
+        offset.setValue(initialOffset, dontSendNotification);
+        offset.setTooltip("Shift the relative target to the measured level; does not change measurement data.");
+        choice.onChange = [this] { selectBuiltin(); changed(); };
+        shown.onClick = band.onClick = [this] { changed(); };
+        offset.onValueChange = [this] { changed(); };
+        import.onClick = [this] {
+            chooser = std::make_unique<FileChooser>("Import Smaart target", File{}, "*.txt;*.asc;*.csv");
+            chooser->launchAsync(FileBrowserComponent::openMode | FileBrowserComponent::canSelectFiles,
+                [safe = Component::SafePointer<TargetControls>(this)](const FileChooser& fc) {
+                    if (!safe || fc.getResult() == File{}) return;
+                    auto text = fc.getResult().loadFileAsString().toStdString();
+                    auto parsed = foh::parseTarget(text);
+                    if (!parsed.ok()) {
+                        AlertWindow::showMessageBoxAsync(AlertWindow::WarningIcon, "Target import", String(parsed.error)); return;
+                    }
+                    safe->source = std::move(text); safe->target = std::move(parsed);
+                    safe->choice.clear(dontSendNotification);
+                    safe->choice.addItem("Target +6", 1); safe->choice.addItem("Target +9", 2); safe->choice.addItem("Target +12", 3);
+                    safe->choice.addItem(fc.getResult().getFileNameWithoutExtension(), 4);
+                    safe->choice.setSelectedId(4, dontSendNotification);
+                    safe->shown.setToggleState(true, dontSendNotification);
+                    safe->band.setToggleState(safe->target.useTolerance, dontSendNotification); safe->changed();
+                });
+        };
+        for (auto* c : std::initializer_list<Component*>{&choice, &import, &shown, &band, &offset}) addAndMakeVisible(c);
+        selectBuiltin();
+    }
+    std::function<void()> onChange;
+    void resized() override {
+        auto r = getLocalBounds();
+        choice.setBounds(r.removeFromLeft(jmin(150, getWidth() / 4))); r.removeFromLeft(4);
+        import.setBounds(r.removeFromLeft(66)); shown.setBounds(r.removeFromLeft(70));
+        band.setBounds(r.removeFromLeft(92)); offset.setBounds(r);
+    }
+    void appendTo(PlotComponent& plot) const {
+        plot.toleranceBands.clear();
+        if (!shown.getToggleState() || !target.ok()) return;
+        PlotComponent::Series s; s.f = target.hz; s.v = target.db;
+        for (auto& db : s.v) db += offset.getValue();
+        s.c = C::warning(); s.dash = foh::theme::stroke::dashStored;
+        s.label = choice.getText();
+        if (band.getToggleState()) {
+            PlotComponent::ToleranceBand b; b.f = s.f; b.lower = b.upper = s.v; b.colour = s.c;
+            for (auto& db : b.lower) db -= target.toleranceDb > 0 ? target.toleranceDb : 3.0;
+            for (auto& db : b.upper) db += target.toleranceDb > 0 ? target.toleranceDb : 3.0;
+            plot.toleranceBands.push_back(std::move(b));
+        }
+        plot.series.push_back(std::move(s));
+    }
+    void save(Json& j) const {
+        j.set("targetChoice", choice.getSelectedId()); j.set("targetShown", shown.getToggleState());
+        j.set("targetBand", band.getToggleState()); j.set("targetOffset", offset.getValue());
+        if (choice.getSelectedId() == 4) { j.set("targetText", source); j.set("targetName", choice.getText().toStdString()); }
+    }
+    void load(const Json& j) {
+        int id = j["targetChoice"].asInt(1);
+        if (id == 4) {
+            auto text = j["targetText"].asString(); auto parsed = foh::parseTarget(text);
+            if (parsed.ok()) { source = std::move(text); target = std::move(parsed);
+                if (choice.getNumItems() == 3) choice.addItem(String(j["targetName"].asString("Imported target")), 4);
+                choice.setSelectedId(4, dontSendNotification); }
+            else { choice.setSelectedId(1, dontSendNotification); selectBuiltin(); }
+        } else { choice.setSelectedId(jlimit(1, 3, id), dontSendNotification); selectBuiltin(); }
+        shown.setToggleState(j["targetShown"].asBool(), dontSendNotification);
+        band.setToggleState(j["targetBand"].asBool(target.useTolerance), dontSendNotification);
+        double value = j["targetOffset"].asNumber(offset.getValue());
+        if (std::isfinite(value)) offset.setValue(value, dontSendNotification);
+        changed();
+    }
+private:
+    void changed() { if (onChange) onChange(); }
+    void selectBuiltin() {
+        if (choice.getSelectedId() == 4) {
+            target = foh::parseTarget(source);
+            band.setToggleState(target.useTolerance, dontSendNotification); return;
+        }
+        const char* data[] = {BinaryData::targetplus6_txt, BinaryData::targetplus9_txt, BinaryData::targetplus12_txt};
+        const int sizes[] = {BinaryData::targetplus6_txtSize, BinaryData::targetplus9_txtSize, BinaryData::targetplus12_txtSize};
+        int i = jlimit(0, 2, choice.getSelectedId() - 1);
+        target = foh::parseTarget(std::string(data[i], (size_t) sizes[i]));
+        band.setToggleState(target.useTolerance, dontSendNotification);
+    }
+    ComboBox choice; TextButton import {"Import"}; ToggleButton shown, band; Slider offset;
+    foh::TargetTrace target; std::string source; std::unique_ptr<FileChooser> chooser;
+};
+
 // ===================== Transfer function (magnitude) =====================
 class TransferFunctionPanel : public Panel {
 public:
@@ -38,17 +137,18 @@ public:
         reset.onClick = [this] { model.send(foh::Command::resetAverages()); };
         store.onClick = [this] { model.storeTrace("Trace " + String(model.traces.count() + 1)); };
         for (auto* c : std::initializer_list<Component*>{&smooth, &avg, &blank, &reset, &store}) addAndMakeVisible(c);
+        addAndMakeVisible(target); target.onChange = [this] { modelChanged(AppModel::Overlay); };
         syncControls();
     }
     fohws::Size minSize() const override { return { WS::plotPanelMinWidth, WS::plotPanelMinHeight }; }
     int priority() const override { return 100; }
-    Json saveState() const override { Json j = Json::object(); j.set("yMin", plot.yMin); j.set("yMax", plot.yMax); return j; }
-    void loadState(const Json& j) override { if (j.has("yMin")) { plot.yMin = j["yMin"].asNumber(-12); plot.yMax = j["yMax"].asNumber(12); plot.yStep = (plot.yMax - plot.yMin) / 4; } }
+    Json saveState() const override { Json j = Json::object(); j.set("yMin", plot.yMin); j.set("yMax", plot.yMax); target.save(j); return j; }
+    void loadState(const Json& j) override { if (j.has("yMin")) { plot.yMin = j["yMin"].asNumber(-12); plot.yMax = j["yMax"].asNumber(12); plot.yStep = (plot.yMax - plot.yMin) / 4; } target.load(j); }
     void resized() override {
         auto r = getLocalBounds().reduced(pad, 6); auto row = controlRow(r);
         store.setBounds(row.removeFromRight(64)); row.removeFromRight(6); reset.setBounds(row.removeFromRight(84)); row.removeFromRight(6);
         avg.setBounds(row.removeFromRight(92)); row.removeFromRight(6); smooth.setBounds(row.removeFromRight(118)); row.removeFromRight(6); blank.setBounds(row.removeFromRight(108));
-        plot.setBounds(r);
+        target.setBounds(controlRow(r)); plot.setBounds(r);
     }
     void syncControls() { smooth.setSelectedId(model.smoothingFraction + 1, dontSendNotification); avg.setSelectedId(model.averages == 0 ? 1000 : model.averages, dontSendNotification);
                           blank.setSelectedId(roundToInt(model.blankThreshold * 100), dontSendNotification); }
@@ -60,12 +160,13 @@ public:
         if (ov.active && !ov.mag.empty()) { plot.series = ov.mag; plot.shade = ov.shade; plot.shadeLabel = ov.shadeLabel; }
         else { addStoredTraces(model, plot, true);
                PlotComponent::Series s; s.c = C::traceLive(); s.label = "Live"; logDecimate(model.tf, model.tf.magDb, s.f, s.v, &s.gap); plot.series.push_back(s); }
+        target.appendTo(plot);
         plot.lowCoh = blankedRegions(model.tf);
         plot.note = "averages " + String(model.tf.averages) + (model.calApplied ? u8(" \xc2\xb7 cal applied") : "") + ((model.conv.unsettled || model.capture.unsettled) ? u8(" \xc2\xb7 \xe2\x96\xb2 unsettled") : model.conv.settled ? u8(" \xc2\xb7 settled") : u8(" \xc2\xb7 averaging"));
         plot.repaint();
     }
 private:
-    PlotComponent plot; ComboBox smooth, avg, blank; TextButton reset {"Reset avg"}, store {"Store"};
+    TargetControls target; PlotComponent plot; ComboBox smooth, avg, blank; TextButton reset {"Reset avg"}, store {"Store"};
 };
 
 // ===================== Phase =====================
@@ -126,24 +227,25 @@ class RtaPanel : public Panel {
 public:
     explicit RtaPanel(AppModel& m) : Panel(m, "RTA", "RTA") {
         helpText = "The RTA shows the level in each 1/3 or 1/6 octave band at the mic.\n\nUse it to see what's loud in the room. To judge the system itself, prefer the transfer function: the RTA includes the spectrum of whatever is playing.";
-        plot.yLabel = "dBFS"; plot.yMin = -100; plot.yMax = 0; plot.yStep = 20; plot.bars = true; addAndMakeVisible(plot);
+        plot.yLabel = "dBFS"; plot.yMin = -100; plot.yMax = 0; plot.yStep = 20; plot.bars = true; plot.showLegend = true; addAndMakeVisible(plot);
         frac.addItem("1/3 octave", 3); frac.addItem("1/6 octave", 6); frac.setSelectedId(model.rtaFraction, dontSendNotification);
         frac.onChange = [this] { model.setRtaFraction(frac.getSelectedId()); }; addAndMakeVisible(frac);
+        addAndMakeVisible(target); target.onChange = [this] { modelChanged(AppModel::Overlay); };
     }
     fohws::Size minSize() const override { return { WS::plotPanelMinWidth, WS::plotPanelMinHeight }; }
     int priority() const override { return 90; }
-    Json saveState() const override { Json j = Json::object(); j.set("fraction", model.rtaFraction); return j; }
-    void loadState(const Json& j) override { if (j.has("fraction")) { int f = j["fraction"].asInt(3); if (f != model.rtaFraction) model.setRtaFraction(f); } }
-    void resized() override { auto r = getLocalBounds().reduced(pad, 6); auto row = controlRow(r); frac.setBounds(row.removeFromRight(120)); plot.setBounds(r); }
+    Json saveState() const override { Json j = Json::object(); j.set("fraction", model.rtaFraction); target.save(j); return j; }
+    void loadState(const Json& j) override { if (j.has("fraction")) { int f = j["fraction"].asInt(3); if (f != model.rtaFraction) model.setRtaFraction(f); } target.load(j); }
+    void resized() override { auto r = getLocalBounds().reduced(pad, 6); auto row = controlRow(r); frac.setBounds(row.removeFromRight(120)); target.setBounds(controlRow(r)); plot.setBounds(r); }
     void modelChanged(int w) override {
         if (w & AppModel::Settings) frac.setSelectedId(model.rtaFraction, dontSendNotification);
-        if (!(w & (AppModel::Snapshot | AppModel::Theme)) || !isShowing()) return;
-        plot.series.clear(); plot.barLo.clear(); plot.barHi.clear(); PlotComponent::Series s; s.c = C::accent();
+        if (!(w & (AppModel::Snapshot | AppModel::Theme | AppModel::Overlay)) || !isShowing()) return;
+        plot.series.clear(); plot.barLo.clear(); plot.barHi.clear(); PlotComponent::Series s; s.c = C::accent(); s.label = "Live";
         for (size_t i = 0; i < model.rtaDb.size() && i < model.rtaBands.size(); ++i) { auto& b = model.rtaBands[i]; plot.barLo.push_back(b.fLo); plot.barHi.push_back(b.fHi); s.f.push_back(b.fCenter); s.v.push_back(model.rtaDb[i]); }
-        plot.series.push_back(s); plot.note = model.calApplied ? "cal applied" : ""; plot.repaint();
+        plot.series.push_back(s); target.appendTo(plot); plot.note = model.calApplied ? "cal applied" : ""; plot.repaint();
     }
 private:
-    PlotComponent plot; ComboBox frac;
+    TargetControls target {-40}; PlotComponent plot; ComboBox frac;
 };
 
 // ===================== Delay finder =====================
@@ -249,32 +351,16 @@ private:
 // ===================== Inputs & devices (mic / channel list) =====================
 class InputsAndDevicesPanel : public Panel {
 public:
-    explicit InputsAndDevicesPanel(AppModel& m) : Panel(m, "InputsAndDevices", "Inputs & Devices"),
-        selector(m.dm, 1, 4, 1, 4, false, false, false, false) {
-        helpText = "Pick your interface (UMC404HD) at 48 kHz.\n\nMic = In 1 (ECM8000, +48 V).\n\nReference = In 2: a 1/4\" TRS loopback from Out 2, so it carries exactly what goes to the system.\n\nOut 1 goes to the console.";
-        addAndMakeVisible(selector);
-        auto items = [](ComboBox& b, const char* pre) { for (int i = 1; i <= 4; ++i) b.addItem(String(pre) + String(i), i); };
-        items(mic, "Mic: In "); items(ref, "Ref: In "); items(outA, "To console: Out "); items(outB, "Loopback: Out ");
-        mic.onChange = [this] { model.engine.micCh = mic.getSelectedId() - 1; }; ref.onChange = [this] { model.engine.refCh = ref.getSelectedId() - 1; };
-        outA.onChange = [this] { model.engine.outA = outA.getSelectedId() - 1; }; outB.onChange = [this] { model.engine.outB = outB.getSelectedId() - 1; };
-        for (auto* b : {&mic, &ref, &outA, &outB}) addAndMakeVisible(b);
-        styleLabel(routing, T::label, C::textSecondary()); routing.setText("ROUTING (UMC404HD defaults)", dontSendNotification); addAndMakeVisible(routing);
-        sync();
+    explicit InputsAndDevicesPanel(AppModel& m) : Panel(m, "InputsAndDevices", "Inputs & Devices"), setup(m, false) {
+        helpText = "Select your input and output devices, sample rate, microphone and reference inputs, and generator outputs. Play a short chime to check the outputs. Use Audio Setup in the toolbar and Done to save these settings.";
+        addAndMakeVisible(setup);
     }
-    fohws::Size minSize() const override { return { 360, 220 }; }
-    void sync() { mic.setSelectedId(model.engine.micCh + 1, dontSendNotification); ref.setSelectedId(model.engine.refCh + 1, dontSendNotification);
-                  outA.setSelectedId(model.engine.outA + 1, dontSendNotification); outB.setSelectedId(model.engine.outB + 1, dontSendNotification); }
+    fohws::Size minSize() const override { return { 360, 420 }; }
+    void resized() override { setup.setBounds(getLocalBounds()); }
     Json saveState() const override { Json j = Json::object(); j.set("mic", model.engine.micCh.load()); j.set("ref", model.engine.refCh.load()); j.set("outA", model.engine.outA.load()); j.set("outB", model.engine.outB.load()); return j; }
     void loadState(const Json& j) override { if (!j.isObject()) return; model.engine.micCh = j["mic"].asInt(0); model.engine.refCh = j["ref"].asInt(1); model.engine.outA = j["outA"].asInt(0); model.engine.outB = j["outB"].asInt(1); sync(); }
-    void resized() override {
-        auto r = getLocalBounds().reduced(pad, 6); auto bottom = r.removeFromBottom(56);
-        routing.setBounds(bottom.removeFromTop(20)); auto row = bottom.removeFromTop(28); int w = row.getWidth() / 4;
-        for (auto* b : {&mic, &ref, &outA, &outB}) b->setBounds(row.removeFromLeft(w).reduced(3, 0));
-        selector.setBounds(r);
-    }
-    void modelChanged(int w) override { if (w & AppModel::Settings) sync(); if (w & AppModel::Theme) routing.setColour(Label::textColourId, C::textSecondary()); }
 private:
-    AudioDeviceSelectorComponent selector; ComboBox mic, ref, outA, outB; Label routing;
+    SetupPage setup;
 };
 
 // ===================== Calibration =====================

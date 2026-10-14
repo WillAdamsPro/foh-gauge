@@ -1,8 +1,9 @@
 // MainComponent: window frame only. Toolbar (title, workspace switcher, status pills, Stop), sidebar
-// (workspace nav, appearance, UI scale) and the WorkspaceView that hosts the panels.
+// (appearance, UI scale) and the WorkspaceView that hosts the panels.
 #pragma once
 #include "FloatingPanels.h"
 #include <fohcore/session.h>
+#include "SetupPage.h"
 #include "WorkspaceManager.h"
 #include "WorkspacePresetCommands.h"
 
@@ -16,7 +17,13 @@ public:
     void openSession();
     bool writeSession(const juce::File&);
     bool readSession(const juce::File&);
-    void paint(juce::Graphics&) override; void resized() override;
+    void resized() override;
+    int uiScalePercent() const { return uiScale; }
+    void setUiScale(int percent);
+    void stepUiScale(int direction);
+    void fitSavedScale();
+    bool isSunlightTheme() const { return foh::theme::ThemeManager::get().current().isLight; }
+    void setSunlightTheme(bool enabled);
     void selectWorkspace(int index);
     void selectWorkspace(const std::string& id);
     bool keyPressed(const juce::KeyPress&) override;
@@ -25,7 +32,16 @@ public:
 protected:
     void timerCallback() override; void changeListenerCallback(juce::ChangeBroadcaster*) override; void modelChanged(int what) override;
     virtual void workspaceSelected() {}
-    bool sidebarVisible() const { return !showMode && getWidth() >= 1280; } // spec §7: sidebar collapses under 1280 px
+    bool sidebarVisible() const { return !showMode && content.getWidth() >= 1280; } // spec §7: sidebar collapses under 1280 px
+    // Only this child is transformed; the native window stays in display coordinates.
+    struct Content : juce::Component {
+        explicit Content(MainComponent& ownerIn) : owner(ownerIn) {}
+        void paint(juce::Graphics& g) override { owner.paintContent(g); }
+        MainComponent& owner;
+    } content { *this };
+    void paintContent(juce::Graphics&);
+    void layoutContent();
+    int uiScale = 100;
     juce::File sessionFolder;
     std::unique_ptr<juce::FileChooser> sessionChooser;
     std::optional<foh::Json> sessionSplCal, sessionTargets;
@@ -36,11 +52,14 @@ protected:
     juce::OwnedArray<FloatingPanelWindow> floats;
     bool showMode = false;
     void setShowMode(bool enabled);
+    void openSetup();
+    SetupPage setup { model };
+    juce::TextButton setupBtn { "Audio Setup" };
     juce::TextButton wsMenuBtn, showModeBtn;
     void openFloatingWindows(); void closeFloatingWindows();
     void showWorkspaceMenu(); void updateSwitcher(); void leaveWorkspace();
     WorkspaceView view { model, PanelRegistry::standard() };
     juce::Label toolbarTitle; SegmentedControl switcher {{"Setup", "Alignment", "Tuning", "RTA/Show"}};
     StatusPills status; juce::TextButton pauseBtn;
-    juce::OwnedArray<NavButton> nav; SegmentedControl appearance {{"Dark", "Sunlight"}}; juce::ComboBox scaleBox;
+    SegmentedControl appearance {{"Dark", "Sunlight"}}; juce::ComboBox scaleBox;
 };
