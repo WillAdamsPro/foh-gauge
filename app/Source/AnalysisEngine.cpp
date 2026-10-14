@@ -12,6 +12,7 @@ void AnalysisEngine::cancelSweep(const char* reason) {
 }
 
 void AnalysisEngine::rebuild(double newFs) {
+    leq = std::make_unique<foh::LeqMeter>(newFs);
     fs = newFs; levelEnergy = 0; levelSamples = 0;
     tf = std::make_unique<foh::TransferFunction>(fftN, fs); rta = std::make_unique<foh::RTA>(fftN, fs, rtaFrac);
     tf->setConvergenceTimeout(10.0);
@@ -64,6 +65,7 @@ void AnalysisEngine::publish() {
     s.delay = delay; s.delaySeq = delaySeq; s.delayWasSub = delayWasSub;
     s.refDelaySamples = tf->referenceDelaySamples(); s.refDelayMs = s.refDelaySamples / fs * 1000.0;
     s.calApplied = cal != nullptr; s.setCalName(cal ? calName.c_str() : "");
+    s.leq = leq->reading(); s.leqRevision = meterRevision;
     s.micLevelDbfs = levelSamples > 0 ? 10 * std::log10(2 * levelEnergy / levelSamples + 1e-20) : -120;
     s.micLevelValid = levelSamples > 0 && !paused.load() && !engine.deviceFailed.load()
         && engine.state.load() != AudioEngine::Stopped && engine.state.load() != AudioEngine::InvalidInputs;
@@ -95,6 +97,8 @@ void AnalysisEngine::run() {
           if (calDirty) { cal = pendingCal; calName = pendingCalName.toStdString(); calDirty = false;
                           rta->setCalibrationDb(cal ? cal->correctionDb(fftN / 2 + 1, fs / fftN) : std::vector<double>{}); } }
         foh::Command c; while (commands.pop(c)) handle(c);
+        const auto revision = leqRevision.load();
+        if (revision != meterRevision) { leq->reset(); meterRevision = revision; }
         if (sweepCapturing && (paused.load() || engine.deviceFailed.load()
             || engine.state.load() != AudioEngine::Ready || engine.gen.load() == AudioEngine::Pink
             || (engine.gen.load() == AudioEngine::Off && !engine.sweepPlaybackDone.load(std::memory_order_acquire))
@@ -118,6 +122,7 @@ void AnalysisEngine::run() {
             }
             for (int i = 0; i < n; ++i) levelEnergy += double(m[i]) * m[i];
             levelSamples += n;
+            leq->process(m.data(), n);
             tf->process(r.data(), m.data(), n); rta->process(m.data(), n);
             int H = (int) histRef.size();
             for (int i = 0; i < n; ++i) { histRef[(size_t) histPos] = r[(size_t) i]; histMic[(size_t) histPos] = m[(size_t) i]; histPos = (histPos + 1) % H; }

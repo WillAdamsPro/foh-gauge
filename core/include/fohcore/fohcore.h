@@ -2,6 +2,7 @@
 // (generators, RingBuffer::push). Analysis runs on a worker/UI thread.
 #pragma once
 #include "fohcore/format.h"
+#include "fohcore/leq.h"
 #include <atomic>
 #include <complex>
 #include <cmath>
@@ -435,6 +436,8 @@ struct AnalysisSnapshot {
     uint64_t resetSeq = 0;      // id of the last ResetAverages command, acknowledges a fresh capture
     ConvergenceState convergence; // progress (0..1), settled, deltaDb, frames...
     double inputPeakDbRef = -120, inputPeakDbMeas = -120;
+    LeqReading leq;
+    uint64_t leqRevision = 0;
     double micLevelDbfs = -120;
     uint64_t inputEpoch = 0;
     int micChannel = -1;

@@ -6,7 +6,7 @@ juce_add_gui_app(FOHGauge
     MICROPHONE_PERMISSION_ENABLED TRUE
     MICROPHONE_PERMISSION_TEXT "FOH Gauge needs audio input to measure your sound system."
     PLIST_TO_MERGE "<plist><dict><key>LSMinimumSystemVersion</key><string>26.0</string></dict></plist>")
-target_sources(FOHGauge PRIVATE Source/Main.cpp Source/MainComponent.cpp Source/SetupPage.cpp Source/EasySetup.cpp Source/RoutingWizard.cpp Source/SessionFiles.cpp Source/AudioEngine.cpp Source/AnalysisEngine.cpp Source/Widgets.cpp Source/AppModel.cpp Source/LayoutModel.cpp Source/Panels.cpp Source/GuidePanel.cpp Source/WorkspaceView.cpp Source/WorkspaceManager.cpp Source/FloatingPanels.cpp)
+target_sources(FOHGauge PRIVATE Source/Main.cpp Source/MainComponent.cpp Source/SetupPage.cpp Source/EasySetup.cpp Source/RoutingWizard.cpp Source/SessionFiles.cpp Source/AudioEngine.cpp Source/AnalysisEngine.cpp Source/Widgets.cpp Source/AppModel.cpp Source/LayoutModel.cpp Source/Panels.cpp Source/GuidePanel.cpp Source/WorkspaceView.cpp Source/WorkspaceManager.cpp Source/FloatingPanels.cpp Source/Diagrams.cpp)
 if(APPLE)
     enable_language(OBJCXX)
     set_source_files_properties(Source/Main.cpp PROPERTIES LANGUAGE OBJCXX)
@@ -23,8 +23,8 @@ if(FOH_TSAN)
 endif()
 
 if(FOH_BUILD_TESTS)
-    add_executable(fohapp_tests ../tests/test_audio_bridge.cpp ../tests/test_workspace_presets.cpp ../tests/test_workspace_restore.cpp ../tests/test_guide_panel.cpp ../tests/test_routing_wizard.cpp ../tests/test_app_lifetime.cpp ../tests/test_easy_setup.cpp
-        Source/AudioEngine.cpp Source/AnalysisEngine.cpp Source/LayoutModel.cpp Source/WorkspaceManager.cpp Source/WorkspaceView.cpp Source/FloatingPanels.cpp Source/Widgets.cpp Source/GuidePanel.cpp Source/RoutingWizard.cpp Source/EasySetup.cpp Source/SetupPage.cpp Source/Panels.cpp Source/MainComponent.cpp Source/SessionFiles.cpp)
+    add_executable(fohapp_tests ../tests/test_audio_bridge.cpp ../tests/test_workspace_presets.cpp ../tests/test_workspace_restore.cpp ../tests/test_guide_panel.cpp ../tests/test_routing_wizard.cpp ../tests/test_app_lifetime.cpp ../tests/test_easy_setup.cpp ../tests/test_stored_traces.cpp
+        Source/AudioEngine.cpp Source/AnalysisEngine.cpp Source/LayoutModel.cpp Source/WorkspaceManager.cpp Source/WorkspaceView.cpp Source/FloatingPanels.cpp Source/Widgets.cpp Source/GuidePanel.cpp Source/RoutingWizard.cpp Source/EasySetup.cpp Source/SetupPage.cpp Source/Panels.cpp Source/MainComponent.cpp Source/SessionFiles.cpp Source/Diagrams.cpp Source/SessionFiles.cpp)
     target_include_directories(fohapp_tests PRIVATE Source)
     target_compile_definitions(fohapp_tests PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JUCE_MODAL_LOOPS_PERMITTED=1)
     target_link_libraries(fohapp_tests PRIVATE fohcore foh_sanitizers FOHGaugeData Catch2::Catch2WithMain juce::juce_audio_utils juce::juce_gui_extra

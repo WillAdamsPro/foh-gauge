@@ -78,6 +78,7 @@ void AppModel::timerCallback() {
     }
     { const auto& snap = analysis.latest(); // single reader thread (this timer); copy out what we keep
       if (!deviceFailed && snap.seq != lastSeq && snap.inputEpoch == epoch) { lastSeq = snap.seq; what |= Snapshot;
+          leq = snap.leq; leqRevision = snap.leqRevision;
           micLevelDbfs = snap.micLevelDbfs;
           levelInputKey = splInputKey(); levelInputEpoch = snap.inputEpoch;
           levelTimeMs = Time::getMillisecondCounterHiRes();
@@ -133,13 +134,15 @@ void AppModel::loadCalFile(const File& f) {
         if (!parsed.ok()) throw std::runtime_error(parsed.error);
         auto published = std::make_shared<foh::MicCal>(parsed);
         calText = std::move(text); cal = std::move(parsed); calFile = f.getFileName(); calOn = true;
-        analysis.setCal(std::move(published), calFile); notify(Cal);
+        analysis.setCal(std::move(published), calFile); ++analysis.leqRevision;
+        notify(Cal);
     } catch (const std::exception& e) {
         AlertWindow::showMessageBoxAsync(AlertWindow::WarningIcon, "Mic calibration import failed", String(e.what()));
     }
 }
 void AppModel::setCalEnabled(bool on) {
-    calOn = on && cal.ok(); analysis.setCal(calOn ? std::make_shared<foh::MicCal>(cal) : nullptr, calFile); notify(Cal);
+    calOn = on && cal.ok(); analysis.setCal(calOn ? std::make_shared<foh::MicCal>(cal) : nullptr, calFile); ++analysis.leqRevision;
+    notify(Cal);
 }
 
 std::string AppModel::splInputKey() const {
@@ -155,11 +158,13 @@ bool AppModel::calibrateSpl(double known) {
     if (!c.calibrate(micLevelDbfs - (calOn ? cal.dbAt(1000) : 0), known, splSensitivity())) return false;
     splCals[splInputKey()] = c;
     if (auto* p = settings.getUserSettings()) { p->setValue("splCalibration", juce::String(splCalJson().dump())); p->saveIfNeeded(); }
+    ++analysis.leqRevision;
     notify(Cal | Settings); return true;
 }
 void AppModel::clearSpl() {
     splCals.erase(splInputKey());
     if (auto* p = settings.getUserSettings()) { p->setValue("splCalibration", juce::String(splCalJson().dump())); p->saveIfNeeded(); }
+    ++analysis.leqRevision;
     notify(Cal | Settings);
 }
 foh::Json AppModel::splCalJson() const {
@@ -176,6 +181,7 @@ void AppModel::loadSplCalJson(const foh::Json& j) {
         candidate[entry.first] = c;
     }
     splCals = std::move(candidate);
+    ++analysis.leqRevision;
     notify(Cal | Settings);
 }
 

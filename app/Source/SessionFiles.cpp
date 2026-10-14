@@ -117,7 +117,7 @@ bool MainComponent::readSession(const File& folder) {
     }
     model.engine.micCh = s.mic; model.engine.refCh = s.reference; model.engine.outA = s.outputA; model.engine.outB = s.outputB;
     model.calText = s.micCalText; model.cal = foh::parseMicCal(s.micCalText); model.calFile = String(s.micCalName); model.setCalEnabled(s.micCalEnabled);
-    model.traces.clear();
+    model.clearTraces();
     for (const auto& t : s.captures) { model.traces.store(t.name, t.tf, t.refDelayMs); model.traces.at(model.traces.count() - 1).visible = t.visible; }
     model.loadSplCalJson(s.splCal.value_or(foh::Json::object()));
     if (auto* prefs = model.settings.getUserSettings()) { prefs->setValue("splCalibration", String(model.splCalJson().dump())); prefs->saveIfNeeded(); } sessionTargets = s.targets;
