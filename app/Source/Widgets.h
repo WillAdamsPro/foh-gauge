@@ -63,6 +63,8 @@ public:
     struct Annotation { double lo, hi; juce::String label; };
     std::vector<Annotation> annotations; bool showLegend = false; // legend row: series with a label, 13 px, gap 18, padding 4/14
     juce::String yLabel; double yMin = -12, yMax = 12, yStep = 6; double fMin = 20, fMax = 20000; bool wrapPhase = false;
+    struct ToleranceBand { std::vector<double> f, lower, upper; juce::Colour colour; };
+    std::vector<ToleranceBand> toleranceBands;
     std::vector<Series> series; std::vector<std::pair<double,double>> shade; juce::String shadeLabel; juce::String note, centreNote;
     bool bars = false; std::vector<double> barLo, barHi;
     std::vector<std::pair<double,double>> lowCoh; // hatched low-coherence regions (Hz)

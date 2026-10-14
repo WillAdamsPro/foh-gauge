@@ -318,6 +318,19 @@ private:
     std::vector<cpx> X; // preallocated FFT scratch
 };
 
+// ---------- Target traces (message/worker thread only; parser allocates) ----------
+struct TargetTrace {
+    std::vector<double> hz, db;
+    double toleranceDb = 0;
+    bool useTolerance = false;
+    std::string error;
+    bool ok() const { return hz.size() >= 2 && error.empty(); }
+};
+// Smaart four-column TF export or header + two-column target. Phase and coherence
+// are validated but not used; unavailable Hz * * * bins are skipped. Frequencies are sorted; duplicate frequencies keep
+// the first row. Invalid numeric rows fail the import rather than hiding errors.
+TargetTrace parseTarget(const std::string& text);
+
 // ---------- Mic calibration ----------
 struct MicCal {
     std::vector<double> hz, db, phaseDeg; bool hasPhase = false;
