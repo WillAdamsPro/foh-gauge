@@ -20,8 +20,6 @@ MainComponent::MainComponent() {
     content.addAndMakeVisible(pauseBtn); pauseBtn.setClickingTogglesState(true); makePrimary(pauseBtn); pauseBtn.setButtonText(u8("\xe2\x96\xa0 Stop"));
     pauseBtn.onClick = [this] { model.setPaused(pauseBtn.getToggleState()); pauseBtn.setButtonText(model.paused ? u8("\xe2\x96\xb6 Start") : u8("\xe2\x96\xa0 Stop")); };
 
-    const char* names[] = {"Setup", "Alignment", "Tuning", "RTA / Show"}; NavButton::Glyph glyphs[] = {NavButton::Home, NavButton::Guides, NavButton::Transfer, NavButton::Rta};
-    for (int i = 0; i < 4; ++i) { auto* b = nav.add(new NavButton(names[i], glyphs[i])); b->onClick = [this, i] { selectWorkspace(i); }; content.addAndMakeVisible(b); }
     appearance.setSelected(foh::theme::ThemeManager::get().current().isLight ? 1 : 0);
     appearance.onChange = [this](int i) { setSunlightTheme(i == 1); };
     content.addAndMakeVisible(appearance);
@@ -68,7 +66,7 @@ void MainComponent::selectWorkspace(int i) {
     leaveWorkspace();
     current = i; view.setWorkspace(&mgr.at(i)); openFloatingWindows();
     { std::vector<std::string> ids; mgr.at(i).root.collectPanels(ids); for (auto& id : ids) if (id != "Inspector") { view.focus(id); break; } } // Inspector explains the first panel
-    switcher.setSelected(i < 4 ? i : -1); for (int k = 0; k < nav.size(); ++k) nav[k]->setToggleState(k == i, dontSendNotification);
+    switcher.setSelected(i < 4 ? i : -1);
     toolbarTitle.setText(String(mgr.at(i).name), dontSendNotification);
     if (auto* pf = model.settings.getUserSettings()) pf->setValue("workspace", String(mgr.at(i).id));
     updateSwitcher(); workspaceSelected(); repaint();
@@ -239,7 +237,6 @@ void MainComponent::paintContent(Graphics& g) {
     if (nw) { g.setColour(C::navBackground()); g.fillRect(0, top, nw, content.getHeight() - top); g.setColour(C::border()); g.fillRect((float) nw - D::hairline(), (float) top, D::hairline(), (float) content.getHeight()); }
     g.setFont(FohLookAndFeel::font(T::logo, true)); g.setColour(C::textPrimary()); g.drawText("FOH", 16, 0, 40, top, Justification::centredLeft);
     g.setColour(C::accent()); g.drawText("Gauge", 52, 0, 80, top, Justification::centredLeft);
-    if (nw) { g.setColour(C::textAxis()); g.setFont(FohLookAndFeel::font(T::axisTick, true)); g.drawText("WORKSPACES", 16, top + 14, nw - 32, 16, Justification::centredLeft); }
 }
 void MainComponent::layoutContent() {
     const int top = D::statusBarHeight(), nw = sidebarVisible() ? D::navWidth() : 0;
@@ -253,9 +250,8 @@ void MainComponent::layoutContent() {
     int sw = jlimit(100, 380, bar.getWidth() - 128); switcher.setBounds(bar.removeFromLeft(sw).withSizeKeepingCentre(sw, foh::theme::ws::switcherHeight - 6)); bar.removeFromLeft(8);
     wsMenuBtn.setBounds(bar.removeFromLeft(112).withSizeKeepingCentre(112, foh::theme::ws::switcherHeight - 6)); bar.removeFromLeft(16);
     status.setBounds(bar);
-    for (auto* b : nav) b->setVisible(nw > 0); appearance.setVisible(nw > 0); scaleBox.setVisible(nw > 0);
-    if (nw) { auto s = Rectangle<int>(0, top, nw, content.getHeight() - top).reduced(10, 0); s.removeFromTop(36);
-        for (auto* b : nav) { b->setBounds(s.removeFromTop(40)); s.removeFromTop(4); }
+    appearance.setVisible(nw > 0); scaleBox.setVisible(nw > 0);
+    if (nw) { auto s = Rectangle<int>(0, top, nw, content.getHeight() - top).reduced(10, 0);
         auto bot = s.removeFromBottom(80); appearance.setBounds(bot.removeFromTop(30).reduced(0, 2)); bot.removeFromTop(8); scaleBox.setBounds(bot.removeFromTop(28)); }
     view.setBounds(content.getLocalBounds().withTrimmedTop(top).withTrimmedLeft(nw));
     setup.setBounds(content.getLocalBounds().withTrimmedTop(top).withTrimmedLeft(nw));

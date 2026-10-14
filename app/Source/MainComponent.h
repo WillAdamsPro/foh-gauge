@@ -1,5 +1,5 @@
 // MainComponent: window frame only. Toolbar (title, workspace switcher, status pills, Stop), sidebar
-// (workspace nav, appearance, UI scale) and the WorkspaceView that hosts the panels.
+// (appearance, UI scale) and the WorkspaceView that hosts the panels.
 #pragma once
 #include "FloatingPanels.h"
 #include "SetupPage.h"
@@ -50,5 +50,5 @@ protected:
     WorkspaceView view { model, PanelRegistry::standard() };
     juce::Label toolbarTitle; SegmentedControl switcher {{"Setup", "Alignment", "Tuning", "RTA/Show"}};
     StatusPills status; juce::TextButton pauseBtn;
-    juce::OwnedArray<NavButton> nav; SegmentedControl appearance {{"Dark", "Sunlight"}}; juce::ComboBox scaleBox;
+    SegmentedControl appearance {{"Dark", "Sunlight"}}; juce::ComboBox scaleBox;
 };
