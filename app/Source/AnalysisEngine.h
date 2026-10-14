@@ -31,11 +31,16 @@ public:
     std::atomic<bool> paused { false };
 
 private:
+    friend struct AnalysisEngineSoakAccess; // runs worker steps without wall-clock waits
+    void processBlock(const float* mic, const float* ref, int n);
+    int serviceCommands(uint64_t epoch);
+    int serviceCommands() { return serviceCommands(inputEpoch); }
     // Tests may drive the same consumer pass without starting a worker thread.
     friend class AnalysisEngineTestAccess;
     bool inputFailed = false; // worker only: last observed device-failure state
     bool processPendingAudio(std::vector<float>& mic, std::vector<float>& ref,
                              const std::vector<float>& silence, uint64_t& epoch);
+    std::vector<float> silenceBlock; // worker only; sized outside the audio callback
     void run() override;
     void rebuild(double fs);
     void handle(const foh::Command& c);
