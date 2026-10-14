@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <limits>
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/catch_approx.hpp>
 #include "fohcore/fohcore.h"
@@ -716,5 +717,38 @@ TEST_CASE("Leading-silence pairs: two-spike, S16 reflection and reverb tail at 4
         auto v = findDelay(src, verb, fs); REQUIRE(v.arrivals[0].delaySamples==Approx(0.0048*fs).margin(tol));
         // forSubs() on the same broadband pair smears (documents the golden-test root cause)
         auto ws = findDelay(src, two, fs, DelayOptions::forSubs()); REQUIRE(std::fabs(ws.arrivals[0].delaySamples - 0.003*fs) > tol);
+    }
+}
+TEST_CASE("S16 -3 dB reflection level is rate-independent (fractional-sample peaks) at 44.1/48/96 kHz") {
+    for (double fs : {44100.0, 48000.0, 96000.0}) { INFO("fs " << fs);
+        auto src = pink((int)fs, 302); for (auto& v : src) v += 0.0175f;
+        for (double d0 : {0.002, 0.0021}) { // 88.2 / 92.61 smp at 44.1k: peaks between samples
+            auto refl = mix(zpDelay(src, d0*fs), zpDelay(src, (d0+0.008)*fs), -3.0); auto s = findDelay(src, refl, fs);
+            REQUIRE(s.ok()); REQUIRE(s.arrivals.size() >= 2); REQUIRE(s.arrivals[0].delaySamples == Approx(d0*fs).margin(0.1));
+            bool fr=false; for (auto& a : s.arrivals) if (std::fabs(a.delaySamples-(d0+0.008)*fs) < 1.0) { fr=true; CHECK(a.relLevelDb==Approx(-3.0).margin(0.2)); }
+            REQUIRE(fr); CHECK(!s.twoSimilarArrivals); }
+        // fractional half-sample arrival at 0 dB vs integer: level must not dip
+        auto h = mix(zpDelay(src, 100.0), zpDelay(src, 300.5), -6.0); auto t = findDelay(src, h, fs);
+        bool f=false; for (auto& a : t.arrivals) if (std::fabs(a.delaySamples-300.5) < 0.2) { f=true; CHECK(a.relLevelDb==Approx(-6.0).margin(0.2)); } REQUIRE(f);
+    }
+}
+TEST_CASE("D-SGN negative lags: swapped inputs give a negative delay only when enabled") {
+    for (double fs : {44100.0, 48000.0, 96000.0}) { INFO("fs " << fs);
+        auto src = pink((int)fs, 303); double d = 0.0048*fs; auto mic = zpDelay(src, d);
+        auto pos = findDelay(src, mic, fs); REQUIRE(pos.arrivals[0].delaySamples == Approx(d).margin(0.1));
+        DelayOptions sym; sym.minDelayMs = -std::numeric_limits<double>::infinity();
+        auto sp = findDelay(src, mic, fs, sym); REQUIRE(sp.arrivals[0].delaySamples == Approx(d).margin(0.1));
+        REQUIRE(sp.arrivals[0].relLevelDb == 0.0);
+        auto sw = findDelay(mic, src, fs, sym); REQUIRE(sw.ok()); REQUIRE(sw.arrivals[0].delaySamples == Approx(-d).margin(0.1));
+        REQUIRE(sw.arrivals[0].delayMs == Approx(-4.8).margin(0.003)); REQUIRE(sw.arrivals[0].distanceM < 0); REQUIRE(!sw.arrivals[0].inverted);
+        DelayOptions lim; lim.minDelayMs = -10; lim.maxDelayMs = 10;
+        auto sl = findDelay(mic, src, fs, lim); REQUIRE(sl.arrivals[0].delaySamples == Approx(-d).margin(0.1));
+        DelayOptions shallow; shallow.minDelayMs = -2; // -4.8 ms is outside [-2 ms, ...): must not be reported
+        auto ss = findDelay(mic, src, fs, shallow); for (auto& a : ss.arrivals) REQUIRE(a.delaySamples > -2e-3*fs - 3);
+        auto def = findDelay(mic, src, fs); // default: positive lags only, never negative
+        for (auto& a : def.arrivals) REQUIRE(a.delaySamples >= 0);
+        REQUIRE(def.impulse.size() == sw.impulse.size()); // impulse stays positive-lag only
+        auto inv = mic; for (auto& v : inv) v = -v; auto si = findDelay(inv, src, fs, sym);
+        REQUIRE(si.arrivals[0].delaySamples == Approx(-d).margin(0.1)); REQUIRE(si.arrivals[0].inverted);
     }
 }

@@ -18,11 +18,6 @@ DelayResult findDelay(const std::vector<float>& ref, const std::vector<float>& m
     DelayOptions o; o.phat = phat; o.maxArrivals = maxArr; o.minSeparationMs = minSepMs; o.speedOfSound = c;
     return findDelay(ref, meas, fs, o);
 }
-// value of a sampled curve at fractional index x (linear)
-static double at(const std::vector<double>& v, double x) {
-    if (v.empty()) return 0; if (x <= 0) return v[0]; size_t i = (size_t) x; if (i + 1 >= v.size()) return v.back();
-    double t = x - (double) i; return v[i] * (1 - t) + v[i + 1] * t; }
-
 DelayResult findDelay(const std::vector<float>& ref, const std::vector<float>& meas, double fs, const DelayOptions& opt) {
     DelayResult res;
     if (!(fs > 0) || !std::isfinite(fs)) { res.error = "invalid sample rate"; return res; }
@@ -37,7 +32,7 @@ DelayResult findDelay(const std::vector<float>& ref, const std::vector<float>& m
     double hpHz = std::isfinite(opt.hpHz) && opt.hpHz > 0 ? std::min(opt.hpHz, 0.5 * fs) : 0.0;
     if (lpHz > 0 && hpHz >= lpHz) { res.error = "empty band (hpHz >= lpHz)"; return res; }
     int N = nextPow2(2 * L); FFT fft(N);
-    std::vector<cpx> X((size_t) N), Y((size_t) N), Tspec((size_t) N);
+    std::vector<cpx> X((size_t) N), Y((size_t) N), Tspec((size_t) N), Espec((size_t) N / 2 + 1);
     bool anyX = false, anyY = false;
     for (int i = 0; i < L; ++i) {
         float x = ref[(size_t) i], y = meas[(size_t) i];
@@ -58,15 +53,22 @@ DelayResult findDelay(const std::vector<float>& ref, const std::vector<float>& m
         X[(size_t) k] = t * w; Tspec[(size_t) k] = t * w;
         // analytic signal of the unweighted correlation: keep DC/Nyquist, double positive, zero negative
         double h = (k == 0 || k == N / 2) ? 1.0 : (k < N / 2 ? 2.0 : 0.0);
-        Y[(size_t) k] = gl * (w * h); }
-    fft.inverse(X); fft.inverse(Y);
-    // positive lags only (meas later than ref); bounded by maxDelayMs
+        Y[(size_t) k] = gl * (w * h); if (k <= N / 2) Espec[(size_t) k] = Y[(size_t) k]; }
+    fft.inverse(X);
+    // lag range [-nNeg, L): positive lags by default (meas later than ref), bounded by maxDelayMs;
+    // negative lags only when minDelayMs < 0 (N >= 2L so negative lags never alias positive ones)
+    const int Lw = L;
     if (std::isfinite(opt.maxDelayMs) && opt.maxDelayMs > 0) L = std::min(L, std::max(2, toSamples(opt.maxDelayMs * 1e-3 * fs, 0, kMaxWindow) + 2));
-    std::vector<double> r((size_t) L), env((size_t) L);
-    for (int i = 0; i < L; ++i) { r[(size_t) i] = X[(size_t) i].real(); env[(size_t) i] = std::abs(Y[(size_t) i]); }
-    res.impulse = r;
+    int nNeg = 0;
+    if (std::isnan(opt.minDelayMs) || opt.minDelayMs < 0)
+        nNeg = std::isfinite(opt.minDelayMs) ? std::min(Lw - 1, toSamples(-opt.minDelayMs * 1e-3 * fs, 0, kMaxWindow) + 2) : Lw - 1;
+    const int M = nNeg + L;
+    std::vector<double> r((size_t) M);
+    for (int j = 0; j < M; ++j) { int lag = j - nNeg; size_t q = (size_t) (lag < 0 ? lag + N : lag);
+        r[(size_t) j] = X[q].real(); }
+    res.impulse.assign(r.begin() + nNeg, r.end());
     std::vector<double> a(r.size()); for (size_t i = 0; i < r.size(); ++i) a[i] = std::fabs(r[i]);
-    int sep = std::max(1, toSamples(opt.minSeparationMs * 1e-3 * fs, 1, L));
+    int sep = std::max(1, toSamples(opt.minSeparationMs * 1e-3 * fs, 1, M));
     std::vector<char> used(a.size(), 0); double peak0 = 0;
     for (int m = 0; m < maxArr; ++m) {
         int best = -1; double bv = 0;
@@ -76,7 +78,7 @@ DelayResult findDelay(const std::vector<float>& ref, const std::vector<float>& m
         double off = 0;
         if (best > 0 && best + 1 < (int) a.size()) { double y0 = a[(size_t) best-1], y1 = a[(size_t) best], y2 = a[(size_t) best+1];
             double d = y0 - 2*y1 + y2; if (std::fabs(d) > 1e-30) off = std::clamp(0.5 * (y0 - y2) / d, -0.5, 0.5); }
-        double ds = best + off;
+        double ds = best - nNeg + off;
         Arrival ar{ds, ds / fs * 1000.0, ds / fs * c, 0.0, r[(size_t) best] < 0, 20.0 * std::log10(bv / peak0)};
         res.arrivals.push_back(ar);
         for (int i = std::max(0, best - sep); i <= std::min((int) a.size() - 1, best + sep); ++i) used[(size_t) i] = 1;
@@ -97,15 +99,20 @@ DelayResult findDelay(const std::vector<float>& ref, const std::vector<float>& m
         for (int it = 0; it < 30; ++it) {
             if (f1 > f2) { hi = x2; x2 = x1; f2 = f1; x1 = hi - gr * (hi - lo); f1 = std::fabs(rAt(x1)); }
             else { lo = x1; x1 = x2; f1 = f2; x2 = lo + gr * (hi - lo); f2 = std::fabs(rAt(x2)); } }
-        double ds = std::max(0.0, 0.5 * (lo + hi));
+        double ds = std::max((double) -nNeg, 0.5 * (lo + hi));
         ar.delaySamples = ds; ar.delayMs = ds / fs * 1000.0; ar.distanceM = ds / fs * c; ar.inverted = rAt(ds) < 0;
     }
-    double e0 = at(env, res.arrivals[0].delaySamples);
-    for (auto& ar : res.arrivals) { double e = at(env, ar.delaySamples); ar.relLevelDb = (e0 > 0 && e > 0) ? 20.0 * std::log10(e / e0) : -120.0; }
+    // level: |analytic correlation| evaluated exactly at the fractional delay (band-limited DFT sum),
+    // not linear interpolation between samples; the latter under-reads a peak that falls between
+    // samples (e.g. 2 ms = 88.2 smp at 44.1k) and made the S16 -3 dB reflection read -2.5 dB at 44.1k only
+    auto envAt = [&](double tau) { cpx acc{}; cpx rot = std::polar(1.0, 2.0 * M_PI * tau / N), ph{1.0, 0.0};
+        for (int k = 0; k <= N / 2; ++k) { acc += Espec[(size_t) k] * ph; ph *= rot; } return std::abs(acc) / N; };
+    double e0 = envAt(res.arrivals[0].delaySamples);
+    for (auto& ar : res.arrivals) { double e = envAt(ar.delaySamples); ar.relLevelDb = (e0 > 0 && e > 0) ? 20.0 * std::log10(e / e0) : -120.0; }
     res.arrivals.erase(std::remove_if(res.arrivals.begin() + 1, res.arrivals.end(), [](const Arrival& a) { return a.relLevelDb < -26.0; }), res.arrivals.end());
     // confidence: peak vs RMS of the timing correlation outside the main lobe, mapped 0..1
     int excl = std::max(sep, lpHz > 0 ? toSamples(fs / lpHz, 1, L) : sep);
-    int b0 = (int) std::lround(res.arrivals[0].delaySamples);
+    int b0 = (int) std::lround(res.arrivals[0].delaySamples) + nNeg;
     double s = 0; size_t cnt = 0;
     for (size_t i = 0; i < a.size(); ++i) if (std::abs((int) i - b0) > excl) { s += a[i] * a[i]; ++cnt; }
     double rms = cnt ? std::sqrt(s / cnt) : 0;

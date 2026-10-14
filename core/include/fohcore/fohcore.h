@@ -271,6 +271,9 @@ DelayResult findDelay(const std::vector<float>& ref, const std::vector<float>& m
 struct DelayOptions {
     bool phat = true; int maxArrivals = 3; double minSeparationMs = 0.5;
     double speedOfSound = 343.0; double hpHz = 0, lpHz = 0; double maxDelayMs = 0;
+    // minDelayMs < 0 also searches negative lags (mic earlier than ref, e.g. swapped inputs) down to
+    // minDelayMs; NaN or -Inf = symmetric (-window). Default 0 = positive lags only (unchanged).
+    double minDelayMs = 0;
     // lpHz (if > 0) is floored at 10 Hz and both edges are clamped to Nyquist; hpHz >= lpHz is an error.
     // Level measurement for relLevelDb / two-spike: Unweighted = envelope of the plain
     // cross-correlation (Vega spec); RefWhitened = envelope of Y X* / |X|^2 (impulse-response
