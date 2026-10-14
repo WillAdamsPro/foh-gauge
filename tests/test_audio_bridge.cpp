@@ -1850,3 +1850,47 @@ TEST_CASE("Missing reference completes delay requests with an invalid snapshot",
     }
     analysis.stop();
 }
+
+TEST_CASE("W7 discards sweep tails and playback requests across rapid toggles", "[app][show][audio][edges]") {
+    juce::ScopedJuceInitialiser_GUI gui;
+    AppModel model;
+    SyntheticDevice device; model.engine.audioDeviceAboutToStart(&device);
+    // Synchronous consumer acknowledges the device restart; no worker is running.
+    model.engine.analysisEpoch = model.engine.captureEpoch.load();
+    foh::TFResult reference; reference.sampleRate = 48000; reference.fftSize = 16;
+    for (int i = 0; i <= 8; ++i) {
+        reference.freq.push_back(i * 3000.0); reference.magDb.push_back(0); reference.coherence.push_back(1);
+    }
+    REQUIRE(model.traces.store("Synthetic reference", reference, 0));
+    auto panel = PanelRegistry::standard().create("ShowMonitoring", model);
+    juce::TextButton* button = nullptr;
+    for (auto* child : panel->getChildren()) {
+        if (auto* box = dynamic_cast<juce::ComboBox*>(child)) box->setSelectedId(1, juce::sendNotificationSync);
+        if (auto* b = dynamic_cast<juce::TextButton*>(child); b && b->getButtonText() == "Monitor") button = b;
+    }
+    REQUIRE(button);
+    float input[512], a[512], b[512]; std::fill_n(input, 512, 0.1f);
+    const float* inputs[] {input, input}; float* outputs[] {a, b};
+    auto feed = [&] { model.engine.audioDeviceIOCallbackWithContext(inputs, 2, outputs, 2, 512, {}); };
+    auto silent = [&] {
+        CHECK(std::all_of(std::begin(a), std::end(a), [](float v) { return v == 0; }));
+        CHECK(std::all_of(std::begin(b), std::end(b), [](float v) { return v == 0; }));
+        CHECK(model.engine.gen.load() == AudioEngine::Off);
+    };
+    for (bool callbackDuringMonitoring : {false, true}) {
+        model.engine.gen = AudioEngine::Sweep;
+        for (int block = 0; block < 20; ++block) feed();
+        REQUIRE(std::any_of(std::begin(a), std::end(a), [](float v) { return v != 0; }));
+        for (int cycle = 0; cycle < 100; ++cycle) {
+            button->onClick(); REQUIRE(model.engine.monitoringSilent.load());
+            if (callbackDuringMonitoring) {
+                // Commands issued during monitoring must also be discarded.
+                model.engine.startSweepMeasurement(); model.engine.playChime();
+                feed(); silent();
+            }
+            button->onClick(); REQUIRE_FALSE(model.engine.monitoringSilent.load());
+            const auto captured = model.engine.micRing.available();
+            feed(); silent(); CHECK(model.engine.micRing.available() == captured + 512);
+        }
+    }
+}

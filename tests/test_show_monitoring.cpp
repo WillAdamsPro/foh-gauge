@@ -246,3 +246,61 @@ TEST_CASE("W7 session reload releases monitoring and requires a new reference", 
     selectReference(*panel); click(*panel, "Monitor"); CHECK(model.engine.monitoringSilent.load());
     click(*panel, "Stop monitoring"); CHECK_FALSE(model.engine.monitoringSilent.load());
 }
+
+TEST_CASE("W7 missing references never start monitoring", "[app][show][edges]") {
+    juce::ScopedJuceInitialiser_GUI gui;
+    AppModel model;
+    auto panel = PanelRegistry::standard().create("ShowMonitoring", model);
+    for (int attempt = 0; attempt < 100; ++attempt) {
+        click(*panel, "Monitor");
+        CHECK_FALSE(model.engine.monitoringSilent.load());
+        CHECK(model.engine.gen.load() == AudioEngine::Off);
+    }
+    REQUIRE(model.traces.store("Synthetic reference", syntheticTF(), 0));
+    model.notify(AppModel::Traces); selectReference(*panel);
+    model.removeTrace(0);
+    click(*panel, "Monitor");
+    CHECK_FALSE(model.engine.monitoringSilent.load());
+    CHECK(model.engine.gen.load() == AudioEngine::Off);
+}
+
+TEST_CASE("W7 incompatible FFT and sample rate invalidate drift and reset alerts", "[app][show][edges]") {
+    const auto live = syntheticTF(3);
+    for (bool changeRate : {false, true}) {
+        auto reference = syntheticTF();
+        if (changeRate) reference.sampleRate *= 2;
+        else reference.fftSize /= 2;
+        fohui::ShowDriftAlert alert;
+        for (int i = 0; i < 3; ++i) alert.update(fohui::showDrift(live, syntheticTF()));
+        REQUIRE(alert.consecutive == 3);
+        const auto drift = fohui::showDrift(live, reference);
+        CHECK_FALSE(drift.valid); CHECK(std::isfinite(drift.rmsDb));
+        CHECK_FALSE(alert.update(drift)); CHECK(alert.consecutive == 0);
+    }
+}
+
+TEST_CASE("W7 NaN live magnitudes are ignored only with sufficient valid coverage", "[app][show][edges]") {
+    const auto reference = syntheticTF();
+    auto live = syntheticTF(3);
+    for (size_t i = 0; i < live.freq.size(); ++i)
+        if (live.freq[i] > 1000) live.magDb[i] = std::numeric_limits<double>::quiet_NaN();
+    const auto partial = fohui::showDrift(live, reference);
+    REQUIRE(partial.valid); CHECK(partial.rmsDb == Catch::Approx(3));
+    fohui::ShowDriftAlert alert;
+    CHECK_FALSE(alert.update(partial)); CHECK_FALSE(alert.update(partial)); CHECK(alert.update(partial));
+    std::fill(live.magDb.begin(), live.magDb.end(), std::numeric_limits<double>::quiet_NaN());
+    const auto invalid = fohui::showDrift(live, reference);
+    CHECK_FALSE(invalid.valid); CHECK(std::isfinite(invalid.rmsDb));
+    CHECK_FALSE(alert.update(invalid)); CHECK(alert.consecutive == 0);
+    CHECK_FALSE(alert.update({true, std::numeric_limits<double>::quiet_NaN()}));
+}
+
+TEST_CASE("W7 exact threshold is inclusive and the adjacent lower value resets", "[app][show][edges]") {
+    const auto drift = fohui::showDrift(syntheticTF(3), syntheticTF());
+    REQUIRE(drift.valid); REQUIRE(drift.rmsDb == 3.0);
+    fohui::ShowDriftAlert alert;
+    CHECK_FALSE(alert.update(drift)); CHECK_FALSE(alert.update(drift)); CHECK(alert.update(drift));
+    CHECK_FALSE(alert.update({true, std::nextafter(3.0, 0.0)}));
+    CHECK(alert.consecutive == 0);
+    CHECK_FALSE(alert.update(drift)); CHECK_FALSE(alert.update(drift)); CHECK(alert.update(drift));
+}
