@@ -1,5 +1,7 @@
 #pragma once
 #include <string>
+#include <cmath>
+#include <limits>
 #include <utility>
 #include <vector>
 namespace foh {
@@ -19,7 +21,7 @@ public:
     bool isNull() const { return t == Null; } bool isObject() const { return t == Object; } bool isArray() const { return t == Array; }
     bool asBool(bool d = false) const { return t == Bool ? b : d; }
     double asNumber(double d = 0) const { return t == Number ? n : d; }
-    int asInt(int d = 0) const { return t == Number ? (int) n : d; }
+    int asInt(int d = 0) const { return t == Number && std::isfinite(n) && n >= std::numeric_limits<int>::min() && n <= std::numeric_limits<int>::max() ? (int) n : d; }
     std::string asString(const std::string& d = {}) const { return t == String ? s : d; }
     const std::vector<Json>& items() const { return a; }
     std::vector<Json>& items() { return a; }

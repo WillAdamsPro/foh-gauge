@@ -1,4 +1,7 @@
 #include "LayoutModel.h"
+#include <fohcore/fohcore.h>
+#include <limits>
+#include <set>
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -130,7 +133,8 @@ Json toJson(const LayoutNode& n) {
     Json c = Json::array(); for (auto& ch : n.children) c.push(toJson(ch)); j.set("children", c);
     return j;
 }
-bool fromJson(const Json& j, LayoutNode& n, std::string& err) {
+static bool parseNode(const Json& j, LayoutNode& n, std::string& err, int depth, size_t& count) {
+    if (depth > 32 || ++count > 256) { err = "Layout is too complex"; return false; }
     if (!j.isObject()) { err = "node is not an object"; return false; }
     auto t = j["type"].asString();
     n = {};
@@ -138,14 +142,35 @@ bool fromJson(const Json& j, LayoutNode& n, std::string& err) {
     if (t != "tabs" && t != "split") { err = "unknown node type '" + t + "'"; return false; }
     n.kind = t == "tabs" ? LayoutNode::Tabs : LayoutNode::Split;
     if (!j["children"].isArray() || j["children"].items().empty()) { err = t + " without children"; return false; }
-    for (auto& c : j["children"].items()) { LayoutNode ch; if (!fromJson(c, ch, err)) return false; if (n.kind == LayoutNode::Tabs && ch.kind != LayoutNode::Leaf) { err = "tab child must be a leaf"; return false; } n.children.push_back(std::move(ch)); }
-    if (n.kind == LayoutNode::Tabs) { n.active = std::clamp(j["active"].asInt(0), 0, (int) n.children.size() - 1); return true; }
+    for (auto& c : j["children"].items()) { LayoutNode ch; if (!parseNode(c, ch, err, depth + 1, count)) return false; if (n.kind == LayoutNode::Tabs && ch.kind != LayoutNode::Leaf) { err = "tab child must be a leaf"; return false; } n.children.push_back(std::move(ch)); }
+    if (n.kind == LayoutNode::Tabs) {
+        double active = j["active"].asNumber(0);
+        if (!std::isfinite(active) || active < 0 || active > 1023 || std::floor(active) != active || (j.has("active") && j["active"].type() != Json::Number)) { err = "Invalid active tab"; return false; }
+        n.active = std::clamp((int) active, 0, (int) n.children.size() - 1); return true;
+    }
+    if (j.has("dir") && j["dir"].asString() != "h" && j["dir"].asString() != "v") { err = "Invalid split direction"; return false; }
     n.horizontal = j["dir"].asString("h") != "v";
+    for (const auto* key : {"sizes", "presetSizes"}) {
+        if (std::string(key) == "presetSizes" && !j.has(key)) continue;
+        if (!j[key].isArray()) { err = "Invalid split sizes"; return false; }
+        double total = 0;
+        for (const auto& v : j[key].items()) {
+            double d = v.asNumber(-1);
+            if (!std::isfinite(d) || d < 0 || d > 1) { err = "Invalid split proportion"; return false; }
+            total += d;
+        }
+        if (total <= 0) { err = "Empty split proportions"; return false; }
+    }
     for (auto& v : j["sizes"].items()) n.sizes.push_back(v.asNumber());
     for (auto& v : j["presetSizes"].items()) n.presetSizes.push_back(v.asNumber());
     if (n.sizes.size() != n.children.size()) { err = "sizes/children count mismatch"; return false; }
     renorm(n.sizes); if (n.presetSizes.size() != n.children.size()) n.presetSizes = n.sizes; else renorm(n.presetSizes);
     return true;
+}
+bool fromJson(const Json& j, LayoutNode& n, std::string& err) {
+    LayoutNode candidate; size_t count = 0;
+    if (!parseNode(j, candidate, err, 0, count)) return false;
+    n = std::move(candidate); err.clear(); return true;
 }
 Json toJson(const Workspace& w) {
     Json j = Json::object();
@@ -159,15 +184,46 @@ Json toJson(const Workspace& w) {
 }
 bool fromJson(const Json& j, Workspace& w, std::string& err) {
     if (!j.isObject() || j["format"].asString() != "foh-gauge-workspace") { err = "not a FOH Gauge workspace"; return false; }
-    if (j["version"].asInt(0) > 1) { err = "workspace version " + std::to_string(j["version"].asInt()) + " is newer than this app"; return false; }
+    if (j["version"].asNumber() != 1) { err = "workspace version " + std::to_string(j["version"].asInt()) + " is newer than this app"; return false; }
     Workspace x; x.version = 1; x.id = j["id"].asString(); x.name = j["name"].asString(x.id); x.builtIn = j["builtIn"].asBool();
-    if (x.id.empty()) { err = "workspace without id"; return false; }
+    if (x.id.empty() || x.id.size() > 128 || x.id.find_first_not_of("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_") != std::string::npos) { err = "workspace without id"; return false; }
     if (!fromJson(j["root"], x.root, err)) return false;
+    if (j.has("floating") && (!j["floating"].isArray() || j["floating"].items().size() > 64)) { err = "Invalid floating panels"; return false; }
     for (auto& o : j["floating"].items()) { FloatingPanel fp; fp.panel = o["panel"].asString(); auto& b = o["bounds"];
+        if (!o.isObject() || fp.panel.empty() || !b.isObject()) { err = "Invalid floating panel"; return false; }
+        for (const auto* key : {"x", "y", "w", "h"}) {
+            double v = b[key].asNumber(std::numeric_limits<double>::quiet_NaN());
+            if (!std::isfinite(v) || std::floor(v) != v || std::abs(v) > 100000 || ((std::string(key) == "w" || std::string(key) == "h") && v <= 0)) {
+                err = "Invalid floating bounds"; return false;
+            }
+        }
         fp.bounds = { b["x"].asInt(), b["y"].asInt(), b["w"].asInt(400), b["h"].asInt(300) }; fp.displayId = o["display"].asString(); fp.alwaysOnTop = o["alwaysOnTop"].asBool(); fp.returnNeighbour = o["returnNeighbour"].asString();
         if (!fp.panel.empty()) x.floating.push_back(fp); }
+    if (j.has("panelState") && !j["panelState"].isObject()) { err = "Invalid panel state"; return false; }
+    for (const auto& entry : j["panelState"].members()) {
+        const auto& state = entry.second;
+        if (!state.isObject()) { err = "Invalid panel state"; return false; }
+        for (const auto* key : {"mic", "ref", "outA", "outB", "fraction", "targetChoice", "postMs", "targetOffset", "yMin", "yMax"}) {
+            if (!state.has(key)) continue;
+            double v = state[key].asNumber(std::numeric_limits<double>::quiet_NaN());
+            bool valid = std::isfinite(v);
+            std::string k(key);
+            if (k == "yMin" || k == "yMax") valid &= std::abs(v) <= 300;
+            else if (k == "targetOffset") valid &= std::abs(v) <= 100;
+            else if (k == "postMs") valid &= v > 0 && v <= 10000;
+            else valid &= v >= ((k == "mic" || k == "ref" || k == "outA" || k == "outB") ? -1 : 0) && v <= 1023 && std::floor(v) == v;
+            if (!valid) { err = "Invalid panel setting: " + k; return false; }
+        }
+        if (state.has("yMin") && state["yMax"].asNumber() <= state["yMin"].asNumber()) { err = "Invalid plot range"; return false; }
+        if (state["targetChoice"].asInt() == 4 && !state.has("targetText")) { err = "Missing saved target"; return false; }
+        if (state.has("targetText") && !foh::parseTarget(state["targetText"].asString()).ok()) { err = "Invalid saved target"; return false; }
+    }
     if (j["panelState"].isObject()) x.panelState = j["panelState"];
-    w = std::move(x); return true;
+    std::vector<std::string> panels; x.root.collectPanels(panels);
+    for (const auto& fp : x.floating) panels.push_back(fp.panel);
+    std::set<std::string> unique;
+    for (const auto& panel : panels) if (!unique.insert(panel).second) { err = "Duplicate panel in workspace"; return false; }
+    w = std::move(x); err.clear(); return true;
 }
 
 // ===================== presets (ws-component-spec §7) =====================
