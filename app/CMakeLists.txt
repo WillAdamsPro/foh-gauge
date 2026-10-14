@@ -3,7 +3,8 @@ juce_add_gui_app(FOHGauge
     COMPANY_NAME "Will Adams"
     BUNDLE_ID "com.willadams.fohgauge"
     MICROPHONE_PERMISSION_ENABLED TRUE
-    MICROPHONE_PERMISSION_TEXT "FOH Gauge needs audio input to measure your sound system.")
+    MICROPHONE_PERMISSION_TEXT "FOH Gauge needs audio input to measure your sound system."
+    PLIST_TO_MERGE "<plist><dict><key>LSMinimumSystemVersion</key><string>26.0</string></dict></plist>")
 target_sources(FOHGauge PRIVATE Source/Main.cpp Source/MainComponent.cpp Source/AudioEngine.cpp Source/AnalysisEngine.cpp Source/Widgets.cpp Source/AppModel.cpp Source/LayoutModel.cpp Source/Panels.cpp Source/GuidePanel.cpp Source/WorkspaceView.cpp Source/WorkspaceManager.cpp Source/FloatingPanels.cpp)
 juce_add_binary_data(FOHGaugeData SOURCES Resources/Fonts/Inter-Regular.ttf Resources/Fonts/Inter-SemiBold.ttf Resources/Fonts/Inter-Bold.ttf)
 set_target_properties(FOHGaugeData PROPERTIES POSITION_INDEPENDENT_CODE ON)
