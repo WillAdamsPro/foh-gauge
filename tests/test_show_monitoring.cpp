@@ -182,3 +182,16 @@ TEST_CASE("W7 rejects malformed clocks grids silent references and overflow", "[
     fohui::ShowDriftAlert alert;
     for (int i = 0; i < 3; ++i) CHECK_FALSE(alert.update({true, INFINITY}));
 }
+
+TEST_CASE("W7 session reload releases monitoring and requires a new reference", "[app][show][edges]") {
+    juce::ScopedJuceInitialiser_GUI gui;
+    AppModel model; REQUIRE(model.traces.store("Synthetic reference", syntheticTF(), 0));
+    auto panel = PanelRegistry::standard().create("ShowMonitoring", model);
+    selectReference(*panel); click(*panel, "Monitor");
+    REQUIRE(model.engine.monitoringSilent.load());
+    model.notify(AppModel::Session);
+    CHECK_FALSE(model.engine.monitoringSilent.load());
+    click(*panel, "Monitor"); CHECK_FALSE(model.engine.monitoringSilent.load());
+    selectReference(*panel); click(*panel, "Monitor"); CHECK(model.engine.monitoringSilent.load());
+    click(*panel, "Stop monitoring"); CHECK_FALSE(model.engine.monitoringSilent.load());
+}

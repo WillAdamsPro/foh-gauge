@@ -127,13 +127,17 @@ bool TraceStore::store(const std::string& name, const TFResult& tf, double ms) {
     if ((int) traces.size() >= kMax) return false; traces.push_back({name, tf, ms, true}); return true; }
 bool TraceStore::remove(int i) { if (i < 0 || i >= count()) return false; traces.erase(traces.begin() + i); return true; }
 Band2 acousticCrossover(const TFResult& a, const TFResult& b, double within, double fmin, double fmax) {
-    Band2 out; size_t n = std::min(a.freq.size(), b.freq.size());
+    Band2 out;
+    if (a.freq != b.freq || a.magDb.size() != a.freq.size() || b.magDb.size() != b.freq.size()) return out;
+    size_t n = a.freq.size();
     for (size_t k = 1; k < n; ++k) { double f = a.freq[k]; if (f < fmin || f > fmax) continue;
         if (std::fabs(a.magDb[k] - b.magDb[k]) <= within) { if (!out.found) { out.lo = f; out.found = true; } out.hi = f; } }
     return out;
 }
 PhaseOffset phaseOffset(const TFResult& a, const TFResult& b, double lo, double hi) {
-    cpx acc{}; double wsum = 0, fsum = 0; size_t n = std::min(a.H.size(), b.H.size());
+    if (a.freq != b.freq || a.H.size() != a.freq.size() || b.H.size() != b.freq.size()
+        || a.coherence.size() != a.freq.size() || b.coherence.size() != b.freq.size()) return {};
+    cpx acc{}; double wsum = 0, fsum = 0; size_t n = a.H.size();
     for (size_t k = 1; k < n; ++k) { double f = a.freq[k]; if (f < lo || f > hi) continue;
         double w = std::min(a.coherence[k], b.coherence[k]);
         cpx d = b.H[k] * std::conj(a.H[k]); double m = std::abs(d); if (m < 1e-20) continue;

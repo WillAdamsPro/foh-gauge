@@ -431,6 +431,7 @@ TEST_CASE("W6 checks each isolated box with fresh sweep impulse direction", "[ap
         CHECK_FALSE(button(*panel, action).isEnabled());
         model.notify(AppModel::Snapshot);
         CHECK_FALSE(button(*panel, action).isEnabled());
+        model.sweepSeq = model.nextGuideSweepId;
         model.sweepCapturing = true; model.notify(AppModel::Snapshot);
         model.sweepCapturing = false;
         model.sweep.response.impulse = {0, sign, -0.2 * sign};
@@ -807,4 +808,141 @@ TEST_CASE("Workspace and Show presentation changes retire pending guide work", "
         capture.finish(model);
         CHECK_FALSE(model.overlay.active);
     }
+}
+
+TEST_CASE("Guide Back and session reload retire pending and duplicated completions", "[app][guide][edges]") {
+    juce::ScopedJuceInitialiser_GUI gui;
+    for (bool reload : {false, true}) {
+        AppModel model; CaptureStub capture;
+        auto panel = makeGuidePanel(model); panel->setSize(260, 780);
+        prepareVerify(*panel, model, capture);
+        button(*panel, "Re-measure to verify").onClick();
+        if (reload) model.notify(AppModel::Session); else button(*panel, "Back").onClick();
+        const int step = panel->saveState()["step"].asInt();
+        capture.finish(model, 3);
+        CHECK(panel->saveState()["step"].asInt() == step);
+        CHECK_FALSE(labelContains(*panel, "Mean change:"));
+        cannotPass(*panel);
+    }
+    AppModel model; CaptureStub capture;
+    auto panel = makeGuidePanel(model); panel->setSize(260, 780);
+    auto state = fohws::Json::object(); state.set("guide", 3); state.set("step", 3); panel->loadState(state);
+    button(*panel, "Measure before change").onClick();
+    auto duplicate = capture.pending; capture.finish(model);
+    CHECK(panel->saveState()["step"].asInt() == 4);
+    duplicate(true); CHECK(panel->saveState()["step"].asInt() == 4);
+    CHECK_FALSE(button(*panel, "Pass").isEnabled());
+}
+
+TEST_CASE("W2 failed or absent sub captures cannot reuse a previous run", "[app][guide][edges]") {
+    juce::ScopedJuceInitialiser_GUI gui;
+    for (bool missing : {false, true}) {
+        AppModel model; CaptureStub capture; storeSyntheticPair(model);
+        auto panel = makeGuidePanel(model); panel->setSize(260, 780);
+        auto state = fohws::Json::object(); state.set("guide", 1); state.set("step", 1); panel->loadState(state);
+        button(*panel, "Capture sub \xe2\x97\x8f").onClick();
+        CHECK(model.findTrace("Sub") == nullptr);
+        if (missing) { auto then = std::move(capture.pending); then(true); }
+        else { capture.settled = false; capture.finish(model); }
+        CHECK(panel->saveState()["step"].asInt() == 1);
+        CHECK(labelContains(*panel, "No settled measurement"));
+    }
+}
+
+TEST_CASE("W6 Back hiding and session reload discard in-flight box sweeps", "[app][guide][edges][polarity]") {
+    juce::ScopedJuceInitialiser_GUI gui;
+    for (int navigation = 0; navigation < 3; ++navigation) {
+        AppModel model; auto panel = makeGuidePanel(model); panel->setSize(260, 780);
+        panel->setVisible(true);
+        auto state = fohws::Json::object(); state.set("guide", 5); state.set("step", 1); panel->loadState(state);
+        button(*panel, "Measure box sweep").onClick();
+        model.sweepSeq = model.nextGuideSweepId;
+        model.sweepCapturing = true; model.notify(AppModel::Snapshot);
+        if (navigation == 0) button(*panel, "Back").onClick();
+        if (navigation == 1) panel->setVisible(false);
+        if (navigation == 2) model.notify(AppModel::Session);
+        const int step = panel->saveState()["step"].asInt();
+        model.sweepCapturing = false; model.sweep.response.impulse = {0, 1, 0};
+        model.sweep.response.arrivals.push_back({}); model.notify(AppModel::Snapshot);
+        CHECK(panel->saveState()["step"].asInt() == step);
+        CHECK_FALSE(labelContains(*panel, "This box: NORMAL"));
+        cannotPass(*panel);
+    }
+}
+
+TEST_CASE("W6 verdict requires current unpaused audio and is consumed before next box", "[app][guide][edges][polarity]") {
+    juce::ScopedJuceInitialiser_GUI gui;
+    for (int change = 0; change < 5; ++change) {
+        AppModel model; auto panel = makeGuidePanel(model); panel->setSize(260, 780);
+        auto state = fohws::Json::object(); state.set("guide", 5); state.set("step", 1); panel->loadState(state);
+        auto sweep = [&](const char* action) {
+            button(*panel, action).onClick();
+            model.sweepSeq = model.nextGuideSweepId;
+            model.sweepCapturing = true; model.notify(AppModel::Snapshot);
+            model.sweepCapturing = false; model.sweep.response.impulse = {0, 1, 0};
+            model.sweep.response.arrivals = {{}}; model.notify(AppModel::Snapshot);
+        };
+        sweep("Measure box sweep"); button(*panel, "Polarity state confirmed").onClick();
+        sweep("Verify box sweep");
+        noteEditor(*panel).setText("Synthetic box matches", false); noteEditor(*panel).onTextChange();
+        REQUIRE(button(*panel, "Pass").isEnabled());
+        if (change == 0) model.paused = true;
+        if (change == 1) model.engine.deviceFailed = true;
+        if (change == 2) model.engine.sampleRate = 96000;
+        if (change == 3) model.refDelayMs = 5;
+        button(*panel, "Pass").onClick();
+        if (change < 4) CHECK(panel->saveState()["step"].asInt() == 3);
+        else {
+            CHECK(panel->saveState()["step"].asInt() == 4);
+            CHECK_FALSE(button(*panel, "Pass").isEnabled());
+            button(*panel, "Check next box").onClick();
+            CHECK(panel->saveState()["step"].asInt() == 0);
+        }
+    }
+}
+
+TEST_CASE("W6 rapid re-entry cannot claim the previous queued sweep", "[app][guide][edges][polarity]") {
+    juce::ScopedJuceInitialiser_GUI gui;
+    AppModel model; auto panel = makeGuidePanel(model); panel->setSize(260, 780);
+    auto state = fohws::Json::object(); state.set("guide", 5); state.set("step", 1); panel->loadState(state);
+    button(*panel, "Measure box sweep").onClick(); const auto retired = model.nextGuideSweepId;
+    button(*panel, "Back").onClick(); button(*panel, "Box isolated").onClick();
+    button(*panel, "Measure box sweep").onClick(); REQUIRE(model.nextGuideSweepId != retired);
+    model.sweepSeq = retired; model.sweepCapturing = true; model.notify(AppModel::Snapshot);
+    model.sweepCapturing = false; model.sweep.response.impulse = {0, 1, 0};
+    model.sweep.response.arrivals = {{}}; model.notify(AppModel::Snapshot);
+    CHECK(panel->saveState()["step"].asInt() == 1);
+    CHECK_FALSE(labelContains(*panel, "This box: NORMAL"));
+    model.sweepSeq = model.nextGuideSweepId; model.sweepCapturing = true; model.notify(AppModel::Snapshot);
+    model.sweepCapturing = false; model.notify(AppModel::Snapshot);
+    CHECK(panel->saveState()["step"].asInt() == 2);
+}
+
+TEST_CASE("W2 rejects incompatible timing and malformed stored captures", "[app][guide][edges]") {
+    juce::ScopedJuceInitialiser_GUI gui;
+    for (int change = 0; change < 4; ++change) {
+        AppModel model; storeSyntheticPair(model);
+        if (change == 0) model.traces.at(1).refDelayMs = 1;
+        if (change == 1) model.refDelayMs = 1;
+        if (change == 2) model.traces.at(1).tf.magDb.clear();
+        if (change == 3) model.traces.at(1).tf.sampleRate = 96000;
+        auto panel = makeGuidePanel(model); panel->setSize(260, 780); panel->loadState(findDelayStep());
+        button(*panel, "Use this delay").onClick();
+        CHECK(panel->saveState()["step"].asInt() == 2);
+        CHECK(labelContains(*panel, "Capture mains and sub again"));
+        for (auto* row : choices(*panel)) CHECK_FALSE(row->isEnabled());
+    }
+}
+
+TEST_CASE("W2 sub completion tolerates a mains capture losing its measurement", "[app][guide][edges]") {
+    juce::ScopedJuceInitialiser_GUI gui;
+    AppModel model; CaptureStub capture; storeSyntheticPair(model);
+    auto panel = makeGuidePanel(model); panel->setSize(260, 780);
+    auto state = fohws::Json::object(); state.set("guide", 1); state.set("step", 1); panel->loadState(state);
+    button(*panel, "Capture sub \xe2\x97\x8f").onClick();
+    model.traces.at(0).tf.magDb.clear();
+    capture.finish(model);
+    CHECK(panel->saveState()["step"].asInt() == 2);
+    CHECK(labelContains(*panel, "Capture mains and sub again"));
+    button(*panel, "Use this delay").onClick(); CHECK(panel->saveState()["step"].asInt() == 2);
 }

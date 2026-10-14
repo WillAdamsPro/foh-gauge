@@ -7,6 +7,9 @@ public:
     explicit RoutingWizard(AudioEngine&);
     void setChannels(const juce::StringArray& inputs, const juce::StringArray& outputs);
     void begin();
+    void cancel();
+    void visibilityChanged() override;
+    void parentHierarchyChanged() override { visibilityChanged(); }
     ~RoutingWizard() override;
     void setDevices(const juce::String& input, const juce::String& output);
     void resized() override;
@@ -26,7 +29,7 @@ private:
     juce::String inputDevice, outputDevice, suggestion;
     std::array<juce::String, 4> results;
     double testStartedMs = 0;
-    bool refreshing = false;
+    bool refreshing = false, active = false;
     juce::Label title, explanation, presetNotice, testStatus;
     juce::ComboBox channel;
     juce::TextButton back { "Back" }, next { "Next" }, skip { "Skip" };

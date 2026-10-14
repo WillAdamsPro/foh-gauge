@@ -1509,3 +1509,25 @@ TEST_CASE("Analysis applies stored loopback only to its capture epoch", "[app][a
     CHECK(acknowledged().tf.magDb[100] == Catch::Approx(-6.0206).margin(.1));
     analysis.stop();
 }
+
+TEST_CASE("Guide sweep cancellation is scoped to its accepted request", "[app][audio][sweep][guide][edges]") {
+    AudioEngine engine; SyntheticDevice device; engine.audioDeviceAboutToStart(&device);
+    AnalysisEngine analysis(engine); analysis.start();
+    REQUIRE(waitFor([&] { return engine.analysisEpoch.load() == engine.captureEpoch.load(); }));
+    foh::Command sweep; sweep.type = foh::CommandType::MeasureSweep; sweep.id = 42;
+    REQUIRE(analysis.send(sweep));
+    REQUIRE(waitFor([&] { return analysis.latest().sweepCapturing && analysis.latest().sweepSeq == 42; }));
+    foh::Command cancel; cancel.type = foh::CommandType::CancelSweep; cancel.id = 42;
+    REQUIRE(analysis.send(cancel));
+    REQUIRE(waitFor([&] { return !analysis.latest().sweepCapturing; }));
+    CHECK(engine.gen.load() == AudioEngine::Off);
+    sweep.id = 43; REQUIRE(analysis.send(sweep));
+    REQUIRE(waitFor([&] { return analysis.latest().sweepCapturing && analysis.latest().sweepSeq == 43; }));
+    const auto seq = analysis.latest().seq;
+    REQUIRE(analysis.send(cancel)); // delayed cancellation from the retired guide
+    REQUIRE(waitFor([&] { return analysis.latest().seq > seq; }));
+    CHECK(analysis.latest().sweepCapturing); CHECK(analysis.latest().sweepSeq == 43);
+    cancel.id = 43; REQUIRE(analysis.send(cancel));
+    REQUIRE(waitFor([&] { return !analysis.latest().sweepCapturing; }));
+    CHECK(engine.gen.load() == AudioEngine::Off); analysis.stop();
+}

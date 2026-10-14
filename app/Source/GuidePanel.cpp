@@ -69,13 +69,19 @@ public:
         fail.onClick = [this] { recordVerdict("FAIL"); };
         delayChoices[0].setToggleState(true, dontSendNotification);
         guideBox.setVisible(true);
-        prev.onClick = [this] { if (step > 0) { --step; refresh(); } };
+        prev.onClick = [this] { if (step > 0) {
+            ++frameGeneration; frameCapturePending = false; retireBoxSweep();
+            verified = false; verificationRecord.clear(); note.clear();
+            --step;
+            if (guide == 5 && step <= 1) boxBaseline = foh::ImpulsePolarity::Unknown;
+            say("Repeat the measurement or confirmation after going Back."); refresh();
+        } };
         act.onClick = [this] { action(kGuides[(size_t) guide][(size_t) step].act); };
         restyle();
         model.overlayBuilder = [this] { buildOverlay(); };
         refresh();
     }
-    ~GuidePanel() override { model.overlayBuilder = {}; model.overlay = {}; }
+    ~GuidePanel() override { retireBoxSweep(); model.overlayBuilder = {}; model.overlay = {}; }
     fohws::Size minSize() const override { return { foh::theme::ws::inspectorMinWidth, 780 }; }
     int priority() const override { return 60; }
     fohws::Json saveState() const override { auto j = fohws::Json::object(); j.set("guide", guide); j.set("step", step); j.set("verificationNote", verificationRecord.toStdString()); return j; }
@@ -106,7 +112,15 @@ public:
         makePrimary(act);
     }
     void modelChanged(int w) override {
+        if (w & AppModel::Session) {
+            resetVerification(); step = 0; say("Session changed. Restart the guide with fresh measurements."); refresh();
+        }
         if (w & AppModel::Rig) { updateGuides(); refresh(); }
+        if (guide == 5 && (boxSweepPending || boxBaseline != foh::ImpulsePolarity::Unknown)
+            && (w & (AppModel::Snapshot | AppModel::Settings | AppModel::Capture | AppModel::Levels)) && boxContextChanged()) {
+            resetVerification(); step = 1;
+            say("Audio routing changed or measurement interrupted. Measure this box again before Apply and Verify."); refresh();
+        }
         if (w & AppModel::Theme) { restyle(); repaint(); }
         if ((w & AppModel::Snapshot) && guide == 5) {
             if (boxSweepPending) finishBoxSweep(); else refresh();
@@ -122,8 +136,8 @@ public:
         }
     }
     void visibilityChanged() override {
-        if (!isShowing() && frameCapturePending) {
-            ++frameGeneration; frameCapturePending = false; verified = false;
+        if (!isShowing() && (frameCapturePending || boxSweepPending)) {
+            ++frameGeneration; frameCapturePending = false; retireBoxSweep(); verified = false;
             say("Guide measurement interrupted while hidden. Repeat the measurement; no verdict recorded.");
             refresh();
         }
@@ -235,7 +249,7 @@ private:
         }
         progress = c.removeFromBottom(26); c.removeFromBottom(4);
         result.setVisible(true); result.setBounds(c);
-        prev.setVisible(step > 0); prev.setEnabled(!frameCapturePending && !boxSweepPending); act.setVisible(true); act.setButtonText(u8(st.action));
+        prev.setVisible(step > 0); prev.setEnabled(true); act.setVisible(true); act.setButtonText(u8(st.action));
         if (step > 0) { prev.setBounds(buttons.removeFromLeft(72)); buttons.removeFromLeft(8); }
         act.setBounds(buttons);
         act.setEnabled(!((st.act == 25 || st.act == 26) && boxBaseline == foh::ImpulsePolarity::Unknown) && !boxSweepPending && !(guide == 5 && model.sweepCapturing) && !frameCapturePending && (!(st.act == 20 || st.act == 22) || !model.capture.active) && ((st.act != 21 && st.act != 22) || baselineValid));
@@ -285,6 +299,11 @@ private:
         polarity.setText({}, dontSendNotification);
         for (auto& row : delayChoices) { row.setEnabled(false); row.setButtonText("--"); }
         auto* m = model.findTrace("Main"); auto* s = model.findTrace("Sub"); if (!m || !s) { return "Capture mains and sub first."; }
+        if (!validTrace(m->tf) || !validTrace(s->tf) || m->refDelayMs != s->refDelayMs
+            || m->refDelayMs != model.refDelayMs || m->tf.sampleRate != s->tf.sampleRate
+            || m->tf.fftSize != s->tf.fftSize || m->tf.freq != s->tf.freq) {
+            xover = {}; return "Captures are invalid or timing/resolution changed. Capture mains and sub again.";
+        }
         xover = foh::acousticCrossover(m->tf, s->tf, 10.0); if (!xover.found) { return "No overlap within 10 dB between 30-300 Hz. Check levels."; }
         auto estimate = foh::subDelayFromPhase(m->tf, s->tf, xover.lo, xover.hi, 0,
             model.delayLocked() && model.delayWasSub ? &model.delay : nullptr);
@@ -322,23 +341,32 @@ private:
         model.requestDelay(sub, [safe, generation, then = std::move(then)] {
             if (!safe || safe->frameGeneration != generation) return;
             if (!safe->checkOperationContext()) { safe->refresh(); return; }
-            safe->frameCapturePending = false; then(); safe->refresh();
+            ++safe->frameGeneration; safe->frameCapturePending = false; then(); if (safe) safe->refresh();
         });
     }
     void guidedCapture(const String& name, std::function<void(bool)> then) {
         const int generation = ++frameGeneration;
         operationEpoch = model.engine.captureEpoch.load(); operationRate = model.engine.sampleRate.load();
+        // Remove the previous slot before requesting a new measurement. A failed
+        // capture must not silently reuse the last run's Main/Sub trace.
+        for (int i = model.traces.count() - 1; i >= 0; --i)
+            if (model.traces.at(i).name == name.toStdString()) model.traces.remove(i);
         frameCapturePending = true; refresh();
         SafePointer<GuidePanel> safe(this);
-        model.beginCapture(name, [safe, generation, then = std::move(then)](bool settled) {
+        model.beginCapture(name, [safe, generation, name, then = std::move(then)](bool settled) {
             if (!safe || safe->frameGeneration != generation) return;
             if (!safe->checkOperationContext()) { safe->refresh(); return; }
-            safe->frameCapturePending = false; then(settled); safe->refresh();
+            ++safe->frameGeneration; safe->frameCapturePending = false;
+            const auto* trace = safe->model.findTrace(name.toRawUTF8());
+            if (!settled || !trace || !validTrace(trace->tf)) {
+                safe->say("No settled measurement. Check signal and coherence, then repeat."); safe->refresh(); return;
+            }
+            then(settled); if (safe) safe->refresh();
         });
     }
 
     void action(int a) {
-        if (frameCapturePending) return;
+        if (frameCapturePending || boxSweepPending) return;
         String out; SafePointer<GuidePanel> safe(this);
         switch (a) {
             case 1: if (model.requestWorkspace) model.requestWorkspace("setup"); return;
@@ -363,7 +391,6 @@ private:
             case 7: say("Averaging the sub until the trace settles...");
                     guidedCapture("Sub", [safe](bool settled) { if (!safe) return; auto& q = *safe;
                         q.say("Stored 'Sub' (same locked delay " + String(consoleMs(q.model.lockedDelayMs), 2) + " ms)." + String(settled ? "" : u8(" \xe2\x96\xb2 Unsettled: the average did not settle within 10 s.")));
-                        auto* m = q.model.findTrace("Main"); auto* s = q.model.findTrace("Sub"); if (m && s) q.xover = foh::acousticCrossover(m->tf, s->tf, 10.0);
                         q.selectedDelay = 0; q.delayChoices[0].setToggleState(true, dontSendNotification);
                         q.next(); q.refresh(); });
                     return;
@@ -403,15 +430,21 @@ private:
     // Runs only on the message thread, using the existing analysis-worker sweep path.
     void startBoxSweep(bool verify) {
         if (boxSweepPending || model.sweepCapturing || (verify && boxBaseline == foh::ImpulsePolarity::Unknown)) return;
-        if (verify && boxSweepEpoch != model.engine.captureEpoch.load()) {
+        if (model.paused || model.engine.deviceFailed.load() || model.engine.state.load() != AudioEngine::Ready) {
+            say("Input device unavailable or measurement paused. Check Setup and retry."); refresh(); return;
+        }
+        if (verify && boxContextChanged()) {
             boxBaseline = foh::ImpulsePolarity::Unknown; step = 1;
             say("Audio routing changed. Measure this box again before Apply and Verify."); refresh(); return;
         }
         verified = false; note.clear(); verificationRecord.clear();
         boxSweepPending = true; boxSweepStarted = false; boxSweepVerify = verify;
+        if (!verify) boxBaseline = foh::ImpulsePolarity::Unknown;
         boxSweepEpoch = model.engine.captureEpoch.load();
+        baselineRate = model.engine.sampleRate.load(); baselineDelayMs = model.refDelayMs;
         boxSweepStartMs = Time::getMillisecondCounterHiRes();
         foh::Command command; command.type = foh::CommandType::MeasureSweep;
+        command.id = boxSweepId = ++model.nextGuideSweepId;
         if (!model.analysis.send(command)) {
             boxSweepPending = false; say("Measurement busy. Retry the box sweep."); refresh(); return;
         }
@@ -420,15 +453,20 @@ private:
     static String direction(foh::ImpulsePolarity p) {
         return p == foh::ImpulsePolarity::Normal ? "NORMAL (positive)" : "INVERTED (negative)";
     }
+    bool boxContextChanged() const {
+        return model.paused || model.engine.deviceFailed.load() || model.engine.state.load() != AudioEngine::Ready
+            || boxSweepEpoch != model.engine.captureEpoch.load() || baselineRate != model.engine.sampleRate.load()
+            || baselineDelayMs != model.refDelayMs;
+    }
     void finishBoxSweep() {
-        if (boxSweepEpoch != model.engine.captureEpoch.load()) {
+        if (boxContextChanged()) {
             boxSweepPending = false; boxBaseline = foh::ImpulsePolarity::Unknown; step = 1;
             say("Audio routing changed. Measure this box again before Apply and Verify."); refresh(); return;
         }
-        if (model.sweepCapturing) { boxSweepStarted = true; return; }
-        if (!boxSweepStarted) {
+        if (model.sweepSeq == boxSweepId && model.sweepCapturing) { boxSweepStarted = true; return; }
+        if (!boxSweepStarted || model.sweepSeq != boxSweepId) {
             if (Time::getMillisecondCounterHiRes() - boxSweepStartMs < 12000) return;
-            boxSweepPending = false;
+            retireBoxSweep();
             say("Sweep did not start. Open Audio Setup, resume measurement and retry."); refresh(); return;
         }
         boxSweepPending = false;
@@ -464,15 +502,23 @@ private:
                 || t.coherence[i] < 0 || t.coherence[i] > 1) return false;
         return true;
     }
+    void retireBoxSweep() {
+        if (boxSweepPending) {
+            foh::Command cancel; cancel.type = foh::CommandType::CancelSweep; cancel.id = boxSweepId;
+            model.analysis.send(cancel);
+        }
+        boxSweepPending = boxSweepStarted = false;
+    }
     void resetVerification() {
-        boxSweepPending = boxSweepStarted = false; boxBaseline = foh::ImpulsePolarity::Unknown;
+        retireBoxSweep(); boxBaseline = foh::ImpulsePolarity::Unknown;
         ++frameGeneration; frameCapturePending = false; baselineValid = verified = false; verificationRecord.clear();
         baseline = {}; after = {}; suggestedChange.clear(); note.clear();
     }
     // W6 compares two fresh box sweeps rather than stored before/after traces.
     bool verdictContextValid() const {
-        if (guide == 5) return verified && !boxSweepPending && boxSweepEpoch == model.engine.captureEpoch.load();
-        return verified && baselineValid && !contextChanged() && model.findTrace("Guide before") && !frameCapturePending;
+        const int act = kGuides[(size_t) guide][(size_t) step].act;
+        if (guide == 5) return act == 26 && verified && !boxSweepPending && !boxContextChanged();
+        return act == 22 && verified && baselineValid && !contextChanged() && model.findTrace("Guide before") && !frameCapturePending;
     }
     void updateVerdictButtons() {
         const bool ready = verdictContextValid() && note.getText().trim().isNotEmpty();
@@ -510,7 +556,7 @@ private:
         SafePointer<GuidePanel> safe(this);
         model.beginCapture(name, [safe, generation, captureGuide, captureStep, name, verify, epoch, rate, faults](bool settled) {
             if (!safe || safe->frameGeneration != generation) return;
-            auto& p = *safe; p.frameCapturePending = false;
+            auto& p = *safe; ++p.frameGeneration; p.frameCapturePending = false;
             if (p.guide != captureGuide || p.step != captureStep) { p.refresh(); return; }
             if (p.model.engine.deviceFailed.load() || p.model.engine.state.load() != AudioEngine::Ready
                 || epoch != p.model.engine.captureEpoch.load() || rate != p.model.engine.sampleRate.load()
@@ -565,7 +611,7 @@ private:
     int frameGeneration = 0;
     foh::ImpulsePolarity boxBaseline = foh::ImpulsePolarity::Unknown;
     bool boxSweepPending = false, boxSweepStarted = false, boxSweepVerify = false;
-    uint64_t boxSweepEpoch = 0;
+    uint64_t boxSweepEpoch = 0, boxSweepId = 0;
     double boxSweepStartMs = 0;
     std::array<ToggleButton, 4> delayChoices;
     std::array<double, 4> choiceMs {};

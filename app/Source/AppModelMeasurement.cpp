@@ -58,7 +58,7 @@ void AppModel::timerCallback() {
           levelTimeMs = Time::getMillisecondCounterHiRes();
           micLevelValid = snap.micLevelValid && snap.inputEpoch == engine.captureEpoch.load()
               && snap.micChannel == engine.micCh.load() && engine.micCh.load() >= 0;
-          sweep = snap.sweep; sweepCapturing = snap.sweepCapturing;
+          sweep = snap.sweep; sweepCapturing = snap.sweepCapturing; sweepSeq = snap.sweepSeq;
           if (loopbackMeasuring && snap.resetSeq == loopbackResetId && snap.refDelaySamples == 0 && snap.convergence.settled) finishLoopback(&snap.rawTf);
           multiPosition = snap.multiPosition; positionCount = snap.positionCount; positionMask = snap.positionMask;
           tf = snap.tf; rtaDb = snap.rtaDb; rtaBands = snap.rtaBands; conv = snap.convergence;

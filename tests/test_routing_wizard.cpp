@@ -154,3 +154,35 @@ TEST_CASE("Each wizard connection reports pass or swapped inputs without applyin
     button(wizard, "Skip").onClick();
     CHECK(engine.connectionResult() == foh::ConnectionResult::pending);
 }
+
+TEST_CASE("Routing Finish is single use and survives destruction by its Apply listener", "[app][routing][edges]") {
+    juce::ScopedJuceInitialiser_GUI gui;
+    AudioEngine engine; RoutingWizard wizard(engine);
+    int applied = 0, closed = 0;
+    wizard.onApplied = [&] { ++applied; }; wizard.onClose = [&] { ++closed; };
+    for (int i = 0; i < 3; ++i) button(wizard, "Next").onClick();
+    button(wizard, "Finish").onClick(); button(wizard, "Finish").onClick();
+    button(wizard, "Skip").onClick(); button(wizard, "Test connection").onClick();
+    CHECK(applied == 1); CHECK(closed == 1);
+    wizard.begin(); button(wizard, "Skip").onClick(); CHECK(closed == 2);
+    auto owned = std::make_unique<RoutingWizard>(engine);
+    owned->onApplied = [&] { owned.reset(); };
+    for (int i = 0; i < 3; ++i) button(*owned, "Next").onClick();
+    auto finish = button(*owned, "Finish").onClick; finish(); CHECK_FALSE(owned);
+}
+
+TEST_CASE("Routing navigation and hiding retire connection tests before re-entry", "[app][routing][edges]") {
+    juce::ScopedJuceInitialiser_GUI gui;
+    AudioEngine engine; RoutingWizard wizard(engine);
+    wizard.setChannels({"In 1", "In 2"}, {"Out 1", "Out 2"});
+    for (bool hide : {false, true}) {
+        wizard.begin(); wizard.setVisible(true);
+        button(wizard, "Next").onClick(); button(wizard, "Test connection").onClick();
+        if (hide) wizard.setVisible(false); else button(wizard, "Back").onClick();
+        CHECK(engine.connectionResult() == foh::ConnectionResult::pending);
+        juce::MessageManager::getInstance()->runDispatchLoopUntil(70);
+        juce::Timer::callPendingTimersSynchronously();
+        wizard.begin(); CHECK(button(wizard, "Test connection").isEnabled());
+        CHECK(choice(wizard).getSelectedId() == 2);
+    }
+}

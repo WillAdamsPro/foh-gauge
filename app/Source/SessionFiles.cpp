@@ -116,6 +116,7 @@ bool MainComponent::readSession(const File& folder) {
     // Opening a session always leaves the generator off, including a device fallback.
     model.engine.gen = AudioEngine::Off;
     model.cancelSessionOperations();
+    model.notify(AppModel::Session);
     if (available) {
         model.dm.setCurrentAudioDeviceType(String(s.deviceType), true);
         auto setup = model.dm.getAudioDeviceSetup();

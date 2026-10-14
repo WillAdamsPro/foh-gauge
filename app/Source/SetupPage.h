@@ -9,10 +9,17 @@ public:
     explicit SetupPage(AppModel&, bool showDone = true);
     ~SetupPage() override;
     void resized() override;
+    void visibilityChanged() override { if (!isVisible()) { wizard.cancel(); questionnaire.cancel(); wizard.setVisible(false); questionnaire.setVisible(false); } }
     void focusSplCalibration() { splReference.grabKeyboardFocus(); }
     std::function<void()> onDone;
 private:
-    void modelChanged(int what) override { if (what & (AppModel::Settings | AppModel::Cal)) refresh(); }
+    void modelChanged(int what) override {
+        if (what & AppModel::Session) {
+            wizard.cancel(); questionnaire.cancel();
+            wizard.setVisible(false); questionnaire.setVisible(false);
+        }
+        if (what & (AppModel::Settings | AppModel::Cal)) refresh();
+    }
     void refresh();
     void applyDevice();
     void changeListenerCallback(juce::ChangeBroadcaster*) override { refresh(); }
