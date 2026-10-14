@@ -101,7 +101,14 @@ public:
             if (parsed.ok()) { source = std::move(text); target = std::move(parsed);
                 if (choice.getNumItems() == 3) choice.addItem(String(j["targetName"].asString("Imported target")), 4);
                 choice.setSelectedId(4, dontSendNotification); }
-            else { AlertWindow::showMessageBoxAsync(AlertWindow::WarningIcon, "Saved target", String(parsed.error)); return; }
+            else {
+                source.clear();
+                choice.setSelectedId(1, dontSendNotification); selectBuiltin();
+                shown.setToggleState(false, dontSendNotification);
+                band.setToggleState(false, dontSendNotification);
+                changed();
+                AlertWindow::showMessageBoxAsync(AlertWindow::WarningIcon, "Saved target", String(parsed.error)); return;
+            }
         } else { choice.setSelectedId(jlimit(1, 3, id), dontSendNotification); selectBuiltin(); }
         shown.setToggleState(j["targetShown"].asBool(), dontSendNotification);
         band.setToggleState(j["targetBand"].asBool(target.useTolerance), dontSendNotification);
