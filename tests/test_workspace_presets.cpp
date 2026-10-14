@@ -34,7 +34,7 @@ TEST_CASE("Cmd+1-4 restore the four workspace panel sets in order", "[app][works
         { "Calibration", "Generator", "InputsAndDevices", "Inspector", "LimitPreset", "SignalMeters" },
         { "Coherence", "DelayFinder", "GuideInspector", "Impulse", "Inspector", "Phase", "TransferFunction" },
         { "EQSuggestions", "Inspector", "Phase", "RTA", "TraceList", "TransferFunction" },
-        { "Dose", "Events", "Inspector", "RTA", "SPLHistory", "SPLNumbers" }
+        { "Dose", "Events", "Inspector", "RTA", "SPLHistory", "SPLNumbers", "ShowMonitoring" }
     };
     const std::vector<std::string> names { "Setup", "Alignment", "Tuning", "RTA/Show" };
 

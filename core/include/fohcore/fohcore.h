@@ -2,6 +2,7 @@
 // (generators, RingBuffer::push). Analysis runs on a worker/UI thread.
 #pragma once
 #include "fohcore/format.h"
+#include "fohcore/leq.h"
 #include <atomic>
 #include <complex>
 #include <cmath>
@@ -135,6 +136,27 @@ struct TFResult {
     bool isBlanked(size_t k) const { return k < blanked.size() && blanked[k] != 0; }
     TrafficLight light(size_t k) const { return k < coherence.size() ? classifyCoherence(coherence[k]) : TrafficLight::Red; }
 };
+// Stored complex Out->In response, including its latency. Worker/message thread only.
+// Corrections require the same FFT grid and sample rate; incompatible data is untouched.
+class Json;
+struct LoopbackCorrection {
+    double sampleRate = 0;
+    int fftSize = 0;
+    std::vector<cpx> H;
+    bool valid() const;
+    static LoopbackCorrection measure(const TFResult& raw);
+    bool apply(TFResult& tf) const;
+    Json toJson() const;
+    static LoopbackCorrection fromJson(const Json&);
+};
+// Worker/message-thread only. Delay is the remaining acoustic delay in the supplied
+// TF (subtract any reference compensation already applied). Positive delay is removed.
+struct MicPosition { TFResult tf; double delayMs = 0; };
+// Two or three matching frequency grids; invalid inputs return an empty result.
+// Complex responses are aligned, then averaged with per-bin coherence weights.
+// Blanked/nonfinite/zero-coherence bins contribute no weight; unsupported bins are blanked.
+TFResult multiPositionAverage(const std::vector<MicPosition>& positions);
+
 // Band summary for the status pill: mean coherence over [lo, hi] Hz and its light.
 struct CoherenceSummary {
     double meanCoherence = 0; TrafficLight light = TrafficLight::Red; int bins = 0;
@@ -224,7 +246,7 @@ public:
     void setCoherenceBlankThreshold(double t) { blankThr = !std::isfinite(t) || t < 0 ? 0 : (t > 1 ? 1 : t); }
     double coherenceBlankThreshold() const { return blankThr; }
     void reset();
-    TFResult result(int smoothingFraction = 0) const;
+    TFResult result(int smoothingFraction = 0, const LoopbackCorrection* loopback = nullptr) const;
     int frames() const { return frameCount; }
     void setConvergence(const ConvergenceSettings& c) { conv = c; resetConvergence(); }
     const ConvergenceSettings& convergenceSettings() const { return conv; }
@@ -306,6 +328,17 @@ inline int recommendedDelayWindowSamples(double sampleRate, bool sub, double sec
     double samples = s * sampleRate;
     return samples >= (1 << 23) ? (1 << 23) : (int) samples;
 }
+// Offline/analysis-worker sweep deconvolution. Equal-length captures include the
+// whole sweep and its decay; reference is the recorded loopback, not the generator.
+// Regularized Y*conj(X)/|X|^2, zero-padded to avoid circular wrap. Positive lags
+// up to 500 ms are returned; ETC is the analytic-envelope energy, peak = 0 dB.
+struct SweepResult {
+    DelayResult response;
+    std::vector<double> etcDb;
+};
+SweepResult deconvolveSweep(const std::vector<float>& reference,
+                           const std::vector<float>& measurement, double sampleRate);
+
 // Impulse response from an averaged TF (IFFT of H). Empty if fftSize is not a power of two.
 std::vector<double> impulseFromTF(const TFResult& tf);
 
@@ -410,6 +443,11 @@ private:
 struct AnalysisSnapshot {
     uint64_t seq = 0;           // increments on every publish
     TFResult tf;                // smoothed + blanked TF
+    TFResult rawTf;             // uncorrected, unsmoothed; loopback capture only
+    uint64_t loopbackRevision = 0; // last stored-correction update consumed by analysis
+    TFResult multiPosition;
+    int positionCount = 0;
+    uint8_t positionMask = 0;
     int smoothingFraction = 0;  // smoothing applied to tf (0,3,6,12,24,48)
     std::vector<double> rtaDb;  // per-band dBFS, same order/size as rtaBands
     std::vector<Band> rtaBands; // RTA band centre + edges (fCenter, fLo, fHi)
@@ -417,12 +455,15 @@ struct AnalysisSnapshot {
     DelayResult delay;          // last delay-finder run (may be empty)
     uint64_t delaySeq = 0;      // id of the FindDelay command that produced `delay` (0 = none)
     bool delayWasSub = false;
+    SweepResult sweep; bool sweepCapturing = false;
     double refDelaySamples = 0, refDelayMs = 0; // compensation currently applied to the reference
     bool calApplied = false;
     char calName[64] = {};      // NUL-terminated, truncated; empty when no cal
     uint64_t resetSeq = 0;      // id of the last ResetAverages command, acknowledges a fresh capture
     ConvergenceState convergence; // progress (0..1), settled, deltaDb, frames...
     double inputPeakDbRef = -120, inputPeakDbMeas = -120;
+    LeqReading leq;
+    uint64_t leqRevision = 0;
     double micLevelDbfs = -120;
     uint64_t inputEpoch = 0;
     int micChannel = -1;
@@ -444,12 +485,12 @@ private:
 };
 
 // ---------- Commands in (UI -> analysis thread), lock-free SPSC, fixed-size POD ----------
-enum class CommandType : uint8_t { SetSmoothing, SetRtaFraction, FindDelay, SetBlankThreshold, SetAverages, ResetAverages, SetReferenceDelay };
+enum class CommandType : uint8_t { SetSmoothing, SetRtaFraction, FindDelay, SetBlankThreshold, SetAverages, ResetAverages, SetReferenceDelay, MeasureSweep, StoreMicPosition, ClearMicPositions };
 struct Command {
     CommandType type = CommandType::ResetAverages;
     bool sub = false;        // FindDelay: true = subs (LF-weighted, 3 s), false = mains
-    int32_t i = 0;           // SetSmoothing/SetRtaFraction: fraction; SetAverages: N (0 = infinite)
-    double d = 0;            // SetBlankThreshold: 0..1; SetReferenceDelay: samples
+    int32_t i = 0;           // SetSmoothing/SetRtaFraction: fraction; SetAverages: N (0 = infinite); StoreMicPosition: slot 0..2
+    double d = 0;            // SetBlankThreshold: 0..1; SetReferenceDelay: samples; StoreMicPosition: total arrival ms
     uint64_t id = 0;         // caller tag, echoed in delaySeq (FindDelay) or resetSeq (ResetAverages)
     static Command smoothing(int frac) { Command c; c.type = CommandType::SetSmoothing; c.i = frac; return c; }
     static Command rtaFraction(int frac) { Command c; c.type = CommandType::SetRtaFraction; c.i = frac; return c; }
@@ -457,6 +498,8 @@ struct Command {
     static Command blankThreshold(double t) { Command c; c.type = CommandType::SetBlankThreshold; c.d = t; return c; }
     static Command averages(int n) { Command c; c.type = CommandType::SetAverages; c.i = n; return c; }
     static Command resetAverages(uint64_t id = 0) { Command c; c.type = CommandType::ResetAverages; c.id = id; return c; }
+    static Command micPosition(int slot, double delayMs) { Command c; c.type = CommandType::StoreMicPosition; c.i = slot; c.d = delayMs; return c; }
+    static Command clearMicPositions() { Command c; c.type = CommandType::ClearMicPositions; return c; }
     static Command referenceDelay(double samples) { Command c; c.type = CommandType::SetReferenceDelay; c.d = samples; return c; }
 };
 static_assert(std::is_trivially_copyable<Command>::value, "Command must be POD");

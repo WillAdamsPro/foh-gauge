@@ -1,0 +1,50 @@
+#include <catch2/catch_test_macros.hpp>
+#include <catch2/catch_approx.hpp>
+#include "fohcore/fohcore.h"
+using Catch::Approx;
+static void tone(foh::LeqMeter& meter, double fs, double seconds, double amplitude=0.1, double frequency=1000) {
+    std::vector<float> block(1000); int total=int(fs*seconds);
+    for (int at=0; at<total;) {
+        int n=std::min(1000,total-at);
+        for (int i=0; i<n; ++i) block[i]=float(amplitude*std::sin(2*3.141592653589793*frequency*(at+i)/fs));
+        meter.process(block.data(),n); at+=n;
+    }
+}
+TEST_CASE("Calibrated SPL and constant-signal Leq read 94 dB", "[leq]") {
+    for (double fs : {44100.,48000.,96000.}) {
+        foh::LeqMeter m(fs); foh::SplCal c; REQUIRE(c.calibrate(-20,94));
+        tone(m,fs,2); auto r=m.reading();
+        for (int w : {0,1,2}) {
+            REQUIRE(c.level(r.level[w])==Approx(94).margin(0.1));
+            REQUIRE(c.level(r.minute[w])==Approx(94).margin(0.1));
+            REQUIRE(c.level(r.fifteenMinutes[w])==Approx(94).margin(0.1));
+            REQUIRE(c.level(r.session[w])==Approx(94).margin(0.1));
+        }
+        REQUIRE(r.seconds==Approx(2));
+    }
+}
+TEST_CASE("Leq averages energy and expires rolling windows", "[leq]") {
+    foh::LeqMeter m(8000); tone(m,8000,900,0.1); tone(m,8000,900,0.01);
+    auto r=m.reading(); REQUIRE(r.minute[2]==Approx(-40).margin(0.01));
+    REQUIRE(r.fifteenMinutes[2]==Approx(-40).margin(0.01));
+    REQUIRE(r.session[2]==Approx(10*std::log10((0.01+0.0001)/2)).margin(0.01));
+    m.reset(); REQUIRE(m.reading().seconds==0); REQUIRE(m.reading().session[2]==-120);
+    tone(m,8000,60.05); REQUIRE(m.reading().minute[2]==Approx(-20).margin(0.01));
+}
+TEST_CASE("A and C weighting attenuate low frequencies relative to Z", "[leq]") {
+    foh::LeqMeter m(48000); tone(m,48000,3,0.1,100); auto r=m.reading();
+    REQUIRE(r.session[0]-r.session[2]==Approx(-19.1).margin(0.3));
+    REQUIRE(r.session[1]-r.session[2]==Approx(-0.3).margin(0.2));
+    float bad[] = {NAN, INFINITY, -INFINITY}; m.process(bad,3);
+    for (auto value:m.reading().session) REQUIRE(std::isfinite(value));
+    REQUIRE_THROWS_AS(foh::LeqMeter(0),std::invalid_argument);
+}
+TEST_CASE("Exposure presets use A weighted limits and NIOSH duration", "[leq]") {
+    using P=foh::ExposurePreset;
+    REQUIRE_FALSE(foh::exposureWarning(P::WHO,99.9,110,60).exceeded);
+    REQUIRE(foh::exposureWarning(P::WHO,100,70,60).exceeded);
+    REQUIRE_FALSE(foh::exposureWarning(P::NIOSH,110,85,28799).exceeded);
+    REQUIRE(foh::exposureWarning(P::NIOSH,70,85,28800).exceeded);
+    REQUIRE(foh::exposureWarning(P::NIOSH,70,94,3600).dosePercent==Approx(100));
+    REQUIRE_FALSE(foh::exposureWarning(P::NIOSH,70,94,0).exceeded);
+}

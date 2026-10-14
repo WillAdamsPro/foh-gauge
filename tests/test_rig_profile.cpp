@@ -1,5 +1,6 @@
 #include <catch2/catch_test_macros.hpp>
 #include <fohcore/rig_profile.h>
+#include <stdexcept>
 
 using namespace foh;
 TEST_CASE("Three sample rigs map to existing W step lists", "[rig]") {
@@ -42,4 +43,56 @@ TEST_CASE("Rig JSON rejects malformed answers", "[rig]") {
     SECTION("wrong arrangement") { j.set("subArrangement", "unknown"); }
     SECTION("wrong object type") { j = Json::array(); }
     CHECK_THROWS(RigProfile::fromJson(j));
+}
+
+TEST_CASE("Rig count bounds and flag types reject unsafe numeric answers", "[rig][regression]") {
+    for (const char* key : {"clusters", "cabinetsPerCluster", "frontFills", "subs"}) {
+        for (double value : {0.0, -1.0, 257.0, 1e100, 1.5,
+                             std::numeric_limits<double>::infinity(),
+                             std::numeric_limits<double>::quiet_NaN()}) {
+            INFO(key << " = " << value);
+            auto j = RigProfile{}.toJson(); j.set(key, value);
+            CHECK_THROWS_AS(RigProfile::fromJson(j), std::runtime_error);
+        }
+    }
+    for (const char* key : {"clusters", "cabinetsPerCluster", "control", "frontFills", "subs", "subArrangement"}) {
+        auto full = RigProfile{}.toJson(), partial = Json::object();
+        for (const auto& member : full.members()) if (member.first != key) partial.set(member.first, member.second);
+        INFO("missing " << key);
+        CHECK_THROWS_AS(RigProfile::fromJson(partial), std::runtime_error);
+    }
+    for (int count : {0, -1, 257, std::numeric_limits<int>::max()}) {
+        for (bool cluster : {false, true}) {
+            RigProfile rig;
+            (cluster ? rig.clusters : rig.cabinetsPerCluster) = count;
+            CHECK_FALSE(rig.valid()); CHECK_THROWS(rig.toJson());
+            CHECK(rigSteps(rig) == rigSteps(std::nullopt));
+        }
+    }
+}
+
+TEST_CASE("Empty truncated and malformed rig JSON cannot become valid answers", "[rig][regression]") {
+    for (const char* text : {"", "{", "{\"clusters\":2,", "{broken}", "null", "[]", "\"\"", "{}",
+                             "{\"clusters\":1,\"clusters\":2}"}) {
+        INFO(text);
+        std::string error;
+        auto j = Json::parse(text, &error);
+        CHECK_THROWS_AS(RigProfile::fromJson(j), std::runtime_error);
+    }
+}
+
+TEST_CASE("Rig boundary answers and extra keys preserve the supported profile", "[rig]") {
+    for (int count : {1, 256}) {
+        RigProfile rig; rig.clusters = rig.cabinetsPerCluster = count;
+        auto j = rig.toJson(); j.set("futureAnswer", Json::array()); j.set("subCount", 1e100);
+        CHECK(RigProfile::fromJson(Json::parse(j.dump())).toJson() == rig.toJson());
+    }
+    for (auto control : {static_cast<RigProfile::Control>(-1), static_cast<RigProfile::Control>(2)}) {
+        RigProfile rig; rig.control = control;
+        CHECK_FALSE(rig.valid()); CHECK_THROWS(rig.toJson()); CHECK(rigSteps(rig) == rigSteps(std::nullopt));
+    }
+    for (auto arrangement : {static_cast<RigProfile::SubArrangement>(-1), static_cast<RigProfile::SubArrangement>(4)}) {
+        RigProfile rig; rig.subArrangement = arrangement;
+        CHECK_FALSE(rig.valid()); CHECK_THROWS(rig.toJson()); CHECK(rigSteps(rig) == rigSteps(std::nullopt));
+    }
 }

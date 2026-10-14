@@ -23,7 +23,7 @@ MainComponent::MainComponent(juce::File workspaceFolder) : mgr(std::move(workspa
     content.addAndMakeVisible(status);
     content.addChildComponent(audioNotice); audioNotice.setFont(FohLookAndFeel::font(T::small));
     content.addAndMakeVisible(showModeBtn); showModeBtn.setButtonText("Show mode"); showModeBtn.setClickingTogglesState(true);
-    showModeBtn.setTooltip("Minimal live RTA view; toggle off to restore the workspace layout");
+    showModeBtn.setTooltip("Live TF/RTA monitoring against a stored reference; toggle off to restore the workspace layout");
     showModeBtn.onClick = [this] { setShowMode(showModeBtn.getToggleState()); };
     content.addAndMakeVisible(pauseBtn); pauseBtn.setClickingTogglesState(true); makePrimary(pauseBtn); pauseBtn.setButtonText(u8("\xe2\x96\xa0 Stop"));
     pauseBtn.onClick = [this] { model.setPaused(pauseBtn.getToggleState()); pauseBtn.setButtonText(model.paused ? u8("\xe2\x96\xb6 Start") : u8("\xe2\x96\xa0 Stop")); };
@@ -96,7 +96,7 @@ void MainComponent::setShowMode(bool enabled) {
         pf->setValue("showMode", enabled);
         pf->saveIfNeeded();
     }
-    view.focus("RTA");
+    view.focus(enabled ? "ShowMonitoring" : "RTA");
     resized(); repaint();
 }
 
@@ -116,8 +116,8 @@ void MainComponent::openFloatingWindows() {
         win->addKeyListener(presetCommands.keyMappings());
         auto window = SafePointer<FloatingPanelWindow>(win);
         // Ignore queued actions if a workspace switch or reset has already destroyed the window.
-        win->onDock = [this, id, window] { MessageManager::callAsync([sp = SafePointer<MainComponent>(this), id, window] { if (sp && window) sp->dockPanel(id); }); };
-        win->onClose = [this, id, window] { MessageManager::callAsync([sp = SafePointer<MainComponent>(this), id, window] { if (sp && window) { // close = hide; Workspace > Show Panels brings it back
+        win->onDock = [self = SafePointer<MainComponent>(this), id, window] { MessageManager::callAsync([sp = self, id, window] { if (sp && window) sp->dockPanel(id); }); };
+        win->onClose = [self = SafePointer<MainComponent>(this), id, window] { MessageManager::callAsync([sp = self, id, window] { if (sp && window) { // close = hide; Workspace > Show Panels brings it back
             auto* w2 = sp->view.workspace(); if (!w2) return;
             // Erasing from the state vector invalidates references held by every later window.
             sp->closeFloatingWindows();

@@ -26,6 +26,14 @@ SetupPage::SetupPage(AppModel& m, bool showDone) : model(m) {
     wizard.onApplied = [this] { model.notify(AppModel::Settings); };
     wizard.onClose = [this] { wizard.setVisible(false); refresh(); };
     addAndMakeVisible(notice);
+    loopbackInstructions.setText("Interface correction: disconnect the PA and mic (phantom off). Cable generator output to the mic input, and loopback output to reference input. Keep gains fixed; restore the mic after measuring.", dontSendNotification);
+    loopbackInstructions.setJustificationType(Justification::topLeft);
+    addAndMakeVisible(loopbackInstructions); addAndMakeVisible(loopbackStatus);
+    addAndMakeVisible(measureLoopback); addAndMakeVisible(clearLoopback);
+    measureLoopback.onClick = [this] {
+        if (!model.beginLoopback()) notice.setText("Select two separate inputs and both outputs before measuring.", dontSendNotification);
+    };
+    clearLoopback.onClick = [this] { model.clearLoopback(); };
     splInstructions.setText("SPL calibration: fit a 1 kHz calibrator to the mic, or play a steady signal and enter its known level. Keep input gain unchanged after calibration.", dontSendNotification);
     splInstructions.setJustificationType(Justification::topLeft);
     addAndMakeVisible(splInstructions); addAndMakeVisible(splStatus);
@@ -90,6 +98,10 @@ void SetupPage::refresh() {
         notice.setText(model.dm.setAudioDeviceSetup(setup, true), dontSendNotification);
     }
     chime.setEnabled(dev && outs.size() > 0);
+    const bool hasLoopback = model.loopbackCals.count(model.loopbackKey()) != 0;
+    loopbackStatus.setText(model.loopbackStatus.isNotEmpty() ? model.loopbackStatus
+        : hasLoopback ? "Interface correction active for this routing." : "No interface correction for this routing.", dontSendNotification);
+    measureLoopback.setEnabled(dev && !model.loopbackMeasuring); clearLoopback.setEnabled(hasLoopback && !model.loopbackMeasuring);
     auto c = model.splCal();
     splStatus.setText(c.calibrated ? "This input: dB SPL (offset " + String(c.offsetDb, 2) + " dB)" : "This input: uncalibrated, dBFS", dontSendNotification);
     calibrate.setEnabled(dev && model.engine.micCh.load() >= 0); clearSpl.setEnabled(c.calibrated);
@@ -113,6 +125,12 @@ void SetupPage::resized() {
     rigSetup.setBounds(r.removeFromTop(30));
     auto buttons = r.removeFromBottom(36); done.setBounds(buttons.removeFromRight(90)); chime.setBounds(buttons.removeFromLeft(130));
     notice.setBounds(r.removeFromBottom(32));
+    auto correction = r.removeFromBottom(122);
+    loopbackInstructions.setBounds(correction.removeFromTop(60));
+    loopbackStatus.setBounds(correction.removeFromTop(26));
+    auto correctionButtons = correction.removeFromTop(32);
+    measureLoopback.setBounds(correctionButtons.removeFromLeft(145)); correctionButtons.removeFromLeft(8);
+    clearLoopback.setBounds(correctionButtons.removeFromLeft(145));
     auto spl = r.removeFromBottom(142);
     splInstructions.setBounds(spl.removeFromTop(48)); splStatus.setBounds(spl.removeFromTop(28));
     auto row = spl.removeFromTop(32); splReference.setBounds(row.removeFromLeft(155)); row.removeFromLeft(6);
