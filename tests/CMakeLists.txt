@@ -9,3 +9,8 @@ add_executable(golden_tests test_golden.cpp)
 target_link_libraries(golden_tests PRIVATE fohcore Catch2::Catch2WithMain)
 target_compile_definitions(golden_tests PRIVATE FOH_TEST_DATA="${CMAKE_CURRENT_SOURCE_DIR}/data")
 catch_discover_tests(golden_tests TEST_PREFIX "golden:")
+# Simulated-room harness (Juno). Minimal target; labels/CI wiring by Kai (#42).
+add_executable(roomsim_tests test_room_sim.cpp)
+target_include_directories(roomsim_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(roomsim_tests PRIVATE fohcore Catch2::Catch2WithMain)
+catch_discover_tests(roomsim_tests TEST_PREFIX "roomsim:")
