@@ -1,5 +1,5 @@
 #include "AnalysisEngine.h"
-#include "MainComponent.h" // AudioEngine
+#include "Widgets.h" // AudioEngine
 
 void AnalysisEngine::setCal(std::shared_ptr<const foh::MicCal> c, const juce::String& name) {
     std::lock_guard<std::mutex> l(calLock); pendingCal = std::move(c); pendingCalName = name; calDirty = true;

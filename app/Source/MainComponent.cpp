@@ -1,757 +1,97 @@
 #include "MainComponent.h"
-#if __has_include("BinaryData.h")
- #include "BinaryData.h"
- #define FOH_HAS_FONTS 1
-#endif
 using namespace juce;
 namespace C = foh::ui::col;
 namespace D = foh::ui::dim;
 namespace T = foh::theme::type;
 
-// ===================== Look and feel =====================
-Typeface::Ptr FohLookAndFeel::regular, FohLookAndFeel::semibold, FohLookAndFeel::bold;
-FohLookAndFeel::FohLookAndFeel() {
-#ifdef FOH_HAS_FONTS
-    if (!regular) {
-        regular  = Typeface::createSystemTypefaceFor(BinaryData::InterRegular_ttf, BinaryData::InterRegular_ttfSize);
-        semibold = Typeface::createSystemTypefaceFor(BinaryData::InterSemiBold_ttf, BinaryData::InterSemiBold_ttfSize);
-        bold     = Typeface::createSystemTypefaceFor(BinaryData::InterBold_ttf, BinaryData::InterBold_ttfSize);
-    }
-#endif
-    applyTheme();
-}
-void FohLookAndFeel::applyTheme() {
-    setColour(ResizableWindow::backgroundColourId, C::background());
-    setColour(Label::textColourId, C::textPrimary());
-    setColour(TextButton::buttonColourId, C::pillBackground()); setColour(TextButton::textColourOffId, C::textBody());
-    setColour(TextButton::buttonOnColourId, C::navItemActiveBg()); setColour(TextButton::textColourOnId, C::textStrong());
-    setColour(ComboBox::backgroundColourId, C::pillBackground()); setColour(ComboBox::outlineColourId, C::pillBorder()); setColour(ComboBox::textColourId, C::textBody());
-    setColour(PopupMenu::backgroundColourId, C::cardBackground()); setColour(ListBox::backgroundColourId, C::cardBackground());
-    setColour(Slider::thumbColourId, C::accent()); setColour(Slider::trackColourId, C::divider());
-    setColour(Slider::textBoxTextColourId, C::textPrimary()); setColour(Slider::textBoxBackgroundColourId, C::pillBackground()); setColour(Slider::textBoxOutlineColourId, C::pillBorder());
-    setColour(ComboBox::arrowColourId, C::textSecondary()); setColour(PopupMenu::textColourId, C::textPrimary()); setColour(PopupMenu::highlightedBackgroundColourId, C::accent()); setColour(PopupMenu::highlightedTextColourId, C::textOnAccent());
-    setColour(TextEditor::backgroundColourId, C::pillBackground()); setColour(TextEditor::textColourId, C::textPrimary()); setColour(TextEditor::outlineColourId, C::pillBorder());
-    setColour(ListBox::textColourId, C::textPrimary()); setColour(ToggleButton::textColourId, C::textPrimary()); setColour(ToggleButton::tickColourId, C::accent());
-}
-Typeface::Ptr FohLookAndFeel::getTypefaceForFont(const Font& f) {
-    // Embedded Inter only when a (deprecated) theme asks for it; Apple-pro themes use the system UI font (SF Pro / Segoe UI).
-    if (regular != nullptr && foh::ui::uiFontName() == "Inter" && f.getTypefaceName() == "Inter") {
-        auto st = f.getTypefaceStyle();
-        if (st.containsIgnoreCase("Bold")) return bold;
-        if (st.containsIgnoreCase("SemiBold")) return semibold;
-        return regular;
-    }
-    return LookAndFeel_V4::getTypefaceForFont(f);
-}
-Font FohLookAndFeel::numeric(float size, bool b) {
-   #if JUCE_MAC
-    String mono = "Menlo";      // SF Mono isn't addressable by name; Menlo has fixed-width digits
-   #elif JUCE_WINDOWS
-    String mono = "Consolas";
-   #else
-    String mono = Font::getDefaultMonospacedFontName();
-   #endif
-    return Font(FontOptions(mono, size, b ? Font::bold : Font::plain));
-}
-Font FohLookAndFeel::font(float size, bool b, bool sb) {
-    return Font(FontOptions(foh::ui::uiFontName(), size, Font::plain).withStyle(b ? "Bold" : sb ? "Semibold" : "Regular"));
-}
-void FohLookAndFeel::drawButtonBackground(Graphics& g, Button& b, const Colour& bgc, bool over, bool down) {
-    auto r = b.getLocalBounds().toFloat().reduced(0.5f);
-    bool primary = b.getProperties()["primary"];
-    if (primary) { g.setColour(C::accent().brighter(over ? 0.1f : 0.f).darker(down ? 0.2f : 0.f)); g.fillRoundedRectangle(r, D::radiusButton()); return; }
-    g.setColour(b.getToggleState() ? C::navItemActiveBg() : bgc.brighter(over ? 0.05f : 0.f));
-    g.fillRoundedRectangle(r, D::radiusButton());
-    g.setColour(C::ghostBorder()); g.drawRoundedRectangle(r, D::radiusButton(), D::hairline());
-}
-static void makePrimary(TextButton& b) { b.getProperties().set("primary", true); b.setColour(TextButton::textColourOffId, C::textOnAccent()); }
-
-// ===================== Plot =====================
-float PlotComponent::xOf(double f) const { return (float) (plotX() + plotW() * std::log10(f / fMin) / std::log10(fMax / fMin)); }
-float PlotComponent::yOf(double v) const { return (float) (plotY() + plotH() * (yMax - jlimit(yMin, yMax, v)) / (yMax - yMin)); }
-void PlotComponent::paint(Graphics& g) {
-    auto pr = Rectangle<float>((float) plotX(), (float) plotY(), (float) plotW(), (float) plotH());
-    g.setColour(C::plotWell()); g.fillRect(pr); // A2: darker plot well
-    g.setFont(FohLookAndFeel::font(T::axisTick));
-    for (auto& s : shade) { float a = xOf(s.first), b = xOf(s.second); g.setColour(C::accent().withAlpha(C::crossoverBandAlpha())); g.fillRect(a, pr.getY(), b - a, pr.getHeight());
-        if (shadeLabel.isNotEmpty()) { g.setColour(C::accent()); g.setFont(FohLookAndFeel::font(T::label)); g.drawText(shadeLabel, (int) a - 40, (int) pr.getY() + 10, (int) (b - a) + 80, 14, Justification::centred); g.setFont(FohLookAndFeel::font(T::axisTick)); } }
-    for (auto& a : annotations) { float x0 = xOf(a.lo), x1 = xOf(a.hi); // layout-spec: warning @ annotationBandAlpha, label at band right + 6, y 30
-        g.setColour(C::warning().withAlpha(C::annotationBandAlpha())); g.fillRect(x0, pr.getY(), x1 - x0, pr.getHeight());
-        if (a.label.isNotEmpty()) { g.setColour(C::warning()); g.setFont(FohLookAndFeel::font(T::label)); g.drawText(a.label, (int) x1 + 6, (int) pr.getY() + 30 - 7, 160, 14, Justification::left); g.setFont(FohLookAndFeel::font(T::axisTick)); } }
-    if (showLegend) { int x = plotX() + 14; int y = (int) pr.getBottom() + 24 + 4; g.setFont(FohLookAndFeel::font(T::small));
-        for (auto& s : series) { if (s.label.isEmpty()) continue; g.setColour(s.c);
-            if (s.dash) { for (int k = 0; k < 18; k += 6) g.fillRect((float) x + k, (float) y + 7, 4.f, s.width); } else g.fillRect((float) x, (float) y + 7, 18.f, s.width);
-            int tw = GlyphArrangement::getStringWidthInt(g.getCurrentFont(), s.label); g.setColour(C::textBody()); g.drawText(s.label, x + 24, y, tw + 4, 16, Justification::left); x += 24 + tw + 18; }
-        g.setFont(FohLookAndFeel::font(T::axisTick)); }
-    g.setColour(C::border());
-    for (double f : {20., 50., 100., 200., 500., 1000., 2000., 5000., 10000., 20000.}) { if (f < fMin || f > fMax) continue;
-        float x = xOf(f); g.drawVerticalLine((int) x, pr.getY(), pr.getBottom());
-        g.setColour(C::textAxis()); g.drawText(f >= 1000 ? String((int) (f / 1000)) + "k" : String((int) f), (int) x - 15, (int) pr.getBottom() + 4, 30, 14, Justification::centred); g.setColour(C::border()); }
-    for (double v = yMin; v <= yMax + 1e-9; v += yStep) { float y = yOf(v); g.drawHorizontalLine((int) y, pr.getX(), pr.getRight());
-        g.setColour(C::textAxis()); g.drawText(yStep < 1 ? String(v, 1) : String((int) v), 0, (int) y - 7, plotX() - 6, 14, Justification::right); g.setColour(C::border()); }
-    if (note.isNotEmpty()) { g.setColour(C::textAxis()); g.drawText(note, (int) pr.getRight() - 300, (int) pr.getY() + 2, 296, 14, Justification::right); }
-    if (centreNote.isNotEmpty()) { g.setColour(C::textAxis()); g.setFont(FohLookAndFeel::font(T::small)); g.drawText(centreNote, (int) xOf(1500) - 120, (int) pr.getCentreY() - 8, 240, 16, Justification::centred); }
-    if (exampleData) { // top-right, ~103x20, 11 px warning text, 1 px warning border, radius 4 (layout-spec)
-        auto tag = Rectangle<float>(pr.getRight() - 109, pr.getY() + 6, 103, 20);
-        g.setColour(C::warning()); g.drawRoundedRectangle(tag.reduced(0.5f), D::radiusTag(), D::hairline());
-        g.setFont(FohLookAndFeel::font(T::axisTick, false, true)); g.drawText("EXAMPLE DATA", tag, Justification::centred); g.setFont(FohLookAndFeel::font(T::axisTick)); }
-    if (!lowCoh.empty()) { auto hc = C::textAxis().withAlpha(foh::ui::theme().trace.lowCoherenceHatchAlpha);
-        if (hatchTile.isNull() || hatchFor != hc) { hatchFor = hc; hatchTile = Image(Image::ARGB, 8, 8, true); Graphics hg(hatchTile); hg.setColour(hc);
-            hg.drawLine(0, 8, 8, 0, 1.0f); hg.drawLine(-4, 4, 4, -4, 1.0f); hg.drawLine(4, 12, 12, 4, 1.0f); }
-        Graphics::ScopedSaveState hs(g); g.setTiledImageFill(hatchTile, 0, 0, 1.0f);
-        for (auto& r : lowCoh) { float a = jmax(pr.getX(), xOf(r.first)), b = jmin(pr.getRight(), xOf(r.second)); if (b > a) g.fillRect(a, pr.getY(), b - a, pr.getHeight()); } }
-    if (showLowCohCallout && !lowCoh.empty()) { // widest hatched region (log width); skipped when it's basically the whole plot (no signal)
-        const std::pair<double,double>* best = nullptr; double bw = 0;
-        for (auto& rr : lowCoh) { double w = std::log10(rr.second / rr.first); if (w > bw) { bw = w; best = &rr; } }
-        float x0 = best ? jmax(pr.getX(), xOf(best->first)) : 0, x1 = best ? jmin(pr.getRight(), xOf(best->second)) : 0;
-        if (best && (x1 - x0) < pr.getWidth() * 0.8f) {
-            auto box = Rectangle<float>(0, 0, 210, 40).withCentre({ (x0 + x1) * 0.5f, pr.getBottom() - 34 });
-            box.setX(jlimit(pr.getX() + 4, pr.getRight() - box.getWidth() - 4, box.getX()));
-            g.setColour(C::cardBackground()); g.fillRoundedRectangle(box, D::radiusButton());
-            g.setColour(C::warning()); g.drawRoundedRectangle(box.reduced(0.5f), D::radiusButton(), 1.0f);
-            auto ic = Rectangle<float>(box.getX() + 10, box.getCentreY() - 7, 14, 13); Path t; t.addTriangle(ic.getCentreX(), ic.getY(), ic.getRight(), ic.getBottom(), ic.getX(), ic.getBottom()); g.fillPath(t);
-            g.setColour(C::textPrimary()); g.setFont(FohLookAndFeel::font(T::small, true)); g.drawText("Low coherence: don't EQ here", (int) box.getX() + 32, (int) box.getY() + 5, 172, 16, Justification::left);
-            g.setColour(C::textSecondary()); g.setFont(FohLookAndFeel::font(T::axisTick)); g.drawText("Likely a reflection at the mic", (int) box.getX() + 32, (int) box.getY() + 21, 172, 14, Justification::left);
-            g.setFont(FohLookAndFeel::font(T::axisTick)); } }
-    Graphics::ScopedSaveState ss(g); g.reduceClipRegion(pr.toNearestInt());
-    if (bars) for (auto& s : series) { if (s.dash) continue; g.setColour(C::rtaBar());
-        for (size_t i = 0; i < s.v.size() && i < barLo.size(); ++i) { float a = xOf(barLo[i]) + 1, b = xOf(barHi[i]) - 1, y = yOf(s.v[i]); g.fillRect(a, y, std::max(1.f, b - a), pr.getBottom() - y); }
-        Path p; for (size_t i = 0; i < s.v.size(); ++i) { float x = xOf(s.f[i]), y = yOf(s.v[i]); if (i == 0) p.startNewSubPath(x, y); else p.lineTo(x, y); }
-        g.setColour(s.c); g.strokePath(p, PathStrokeType(D::traceSecondary(), PathStrokeType::curved, PathStrokeType::rounded)); }
-    for (auto& s : series) {
-        if (bars && !s.dash) continue;
-        Path p; bool started = false; double prev = 0;
-        for (size_t i = 0; i < s.f.size(); ++i) { double f = s.f[i]; if (f < fMin || f > fMax || f > s.maxF) continue;
-            if (i < s.gap.size() && s.gap[i]) { started = false; continue; } // blanked bin: gap in the trace
-            float x = xOf(f), y = yOf(s.v[i]);
-            bool jump = started && wrapPhase && std::abs(s.v[i] - prev) > 180;
-            if (!started || jump) { p.startNewSubPath(x, y); started = true; } else p.lineTo(x, y); prev = s.v[i]; }
-        if (!s.dash && foh::ui::theme().trace.glow) { g.setColour(s.c.withMultipliedAlpha(0.22f)); g.strokePath(p, PathStrokeType(s.width * 3.5f, PathStrokeType::curved, PathStrokeType::rounded)); } // glow = second wide stroke, no shadow effects
-        g.setColour(s.c); PathStrokeType st(s.width, PathStrokeType::curved, PathStrokeType::rounded);
-        if (s.dash) { Path d; st.createDashedStroke(d, p, s.dash, 2); g.fillPath(d); } else g.strokePath(p, st);
-    }
-}
-static void logDecimate(const foh::TFResult& r, const std::vector<double>& v, std::vector<double>& fo, std::vector<double>& vo, std::vector<uint8_t>* gap = nullptr) {
-    fo.clear(); vo.clear(); if (gap) gap->clear(); if (r.fftSize == 0) return; double bin = r.sampleRate / r.fftSize; size_t last = 0;
-    for (double f = 18; f < 22000; f *= std::pow(2.0, 1.0 / 30)) { size_t k = (size_t) std::lround(f / bin); if (k == last || k >= v.size()) continue; last = k; fo.push_back(k * bin); vo.push_back(v[k]);
-        if (gap) gap->push_back(r.isBlanked(k) ? 1 : 0); }
-} // ~300 log-spaced points (spec)
-
-// ===================== Guide content =====================
-// chart: 0 none, 1 live mag (W2 mains), 2 stored mains + live sub, 3 phase to 250 Hz, 4 phase+sum, 5 done, 6 live TF mag full range, 7 = 6 + impulse/delay view
-struct Step { const char* progress; const char* title; const char* body; const char* action; int act; int chart; };
-static const std::vector<std::vector<Step>> kGuides = {
- { {"Connect", "Connect your gear", "UMC404HD: Out 1 to the console. Out 2 to In 2 with a 1/4\" TRS cable (reference loopback; TRS keeps it off phantom). ECM8000 to In 1 (XLR, +48 V on). Pick the device and channels on Setup at 48 kHz.", "Open Setup", 1, 0},
-   {"Signal", "Signal check", "Start pink noise and bring the console up to a comfortable level. Both inputs should sit near -20 dBFS (top bar), never clipping. Mic 1-3 m on-axis from ONE main, ear height, away from walls.", "Start pink noise", 2, 6},
-   {"Delay", "Find the reference delay", "The tallest spike is the direct sound; smaller later spikes are reflections. If two spikes are similar, check only one speaker is on.", "Find + lock delay", 3, 7},
-   {"Check", "Check the trace", "Phase should be fairly flat and coherence high (above ~0.8) above 200 Hz. Low coherence = don't trust that region.", "Open transfer function", 4, 6},
-   {"Save", "Save Position 1", "Store this trace so you can compare later. If you move the mic, find the delay again.", "Store 'Position 1'", 5, 6} },
- { {"Measure mains", "Measure the mains alone", "Mute the subs. Mic where sub and mains are about equally loud (often FOH). Pink noise on. This finds and locks the delay to the mains, then stores 'Main'.", "Capture mains \xe2\x97\x8f", 12, 1},
-   {"Measure sub", "Measure the sub alone", "Mute the mains, unmute the subs. Don't find the delay again: the comparison depends on the same timing. The dashed line is your stored mains.", "Capture sub \xe2\x97\x8f", 7, 2},
-   {"Find delay", "Find the delay", "Compare phase in the shaded crossover band (phase above 250 Hz is hidden). Judge polarity from these traces, not the impulse. Prefer the option where slopes match across the band and that needs the least delay.", "Use this delay", 8, 3},
-   {"Apply & verify", "Apply and verify", "Enter the change in your DSP and unmute both. The sum (white) should RISE in the crossover band, up to ~+6 dB where the two are equal, not dip. Walk a few seats.", "Capture both \xe2\x97\x8f", 9, 4},
-   {"Done", "Sub and mains aligned", "", "Measure again", 13, 5} },
- { {"Mains", "Measure the mains", "Mains already tuned. Mic in the seam: where main and fill are about equally loud, inside the fill's area. Fill muted. This finds and locks the delay to the mains.", "Find + lock delay", 3, 6},
-   {"Fill", "Measure the fill", "Mute the mains, unmute the fill. The app finds the fill's arrival and compares it with the locked mains time.", "Find fill arrival", 10, 7},
-   {"Set delay", "Set the fill delay", "Delay the fill by the amount shown. Many engineers add a few ms more so the mains arrive first and the image stays on stage (rule of thumb; trust your ears). Fill only as loud as needed.", "Open transfer function", 4, 6},
-   {"Verify", "Verify both on", "Unmute both. Mute/unmute the fill and watch which spike moves. Phase should overlap in the mid/HF where they overlap. Walk from mains-only to fill-only zones and listen.", "Store 'Main+Fill'", 11, 6} },
-};
-static const char* kGuideNames[] = {"Setup + reference delay", "Align sub to mains", "Align fills to mains"};
-
-// ===================== Impulse =====================
-void ImpulseComponent::paint(Graphics& g) {
-    auto r = getLocalBounds().toFloat().reduced(8, 6); auto axis = r.removeFromBottom(14);
-    g.setFont(FohLookAndFeel::font(T::axisTick));
-    if (res.arrivals.empty() || res.impulse.empty()) { g.setColour(C::textAxis()); g.drawText("Impulse: press Find to measure the delay", r, Justification::centred); return; }
-    double t0 = std::max(0.0, res.arrivals[0].delayMs - preMs), t1 = res.arrivals[0].delayMs + postMs;
-    for (auto& a : res.arrivals) t1 = std::max(t1, a.delayMs + 2);
-    auto xOf = [&](double ms) { return r.getX() + (float) ((ms - t0) / (t1 - t0)) * r.getWidth(); };
-    double peak = 1e-30; for (double v : res.impulse) peak = std::max(peak, std::abs(v));
-    g.setColour(C::grid()); g.drawHorizontalLine((int) r.getCentreY(), r.getX(), r.getRight());
-    double step = (t1 - t0) > 30 ? 10 : 5;
-    for (double t = std::ceil(t0 / step) * step; t <= t1; t += step) { float x = xOf(t); g.setColour(C::grid()); g.drawVerticalLine((int) x, r.getY(), r.getBottom());
-        g.setColour(C::textAxis()); g.drawText(String((int) t) + " ms", (int) x - 24, (int) axis.getY(), 48, 14, Justification::centred); }
-    // min/max per pixel column (display decimation only)
-    Path p; int W = (int) r.getWidth(); size_t N = res.impulse.size();
-    for (int px = 0; px < W; ++px) {
-        double a = (t0 + (t1 - t0) * px / W) * 1e-3 * sampleRate, b = (t0 + (t1 - t0) * (px + 1) / W) * 1e-3 * sampleRate;
-        size_t i0 = (size_t) std::max(0.0, std::floor(a)), i1 = std::min(N, (size_t) std::max(0.0, std::ceil(b)) + 1); if (i0 >= N) break;
-        double lo = 0, hi = 0; for (size_t i = i0; i < i1; ++i) { lo = std::min(lo, res.impulse[i]); hi = std::max(hi, res.impulse[i]); }
-        float x = r.getX() + px, yh = r.getCentreY() - (float) (hi / peak) * r.getHeight() * 0.48f, yl = r.getCentreY() - (float) (lo / peak) * r.getHeight() * 0.48f;
-        if (px == 0) p.startNewSubPath(x, yh); else p.lineTo(x, yh); p.lineTo(x, yl); }
-    g.setColour(C::traceLive()); g.strokePath(p, PathStrokeType(1.0f));
-    for (size_t k = 0; k < res.arrivals.size(); ++k) { auto& a = res.arrivals[k]; float x = xOf(a.delayMs);
-        g.setColour(k == 0 ? C::accent() : C::warning()); g.fillRect(x - 0.5f, r.getY(), 1.0f, r.getHeight());
-        String lab = "#" + String((int) k + 1) + " " + String(a.delayMs, 2) + " ms" + (k ? " (" + String(a.relLevelDb, 1) + " dB)" : String());
-        g.setFont(FohLookAndFeel::font(T::label)); g.drawText(lab, (int) x + 4, (int) r.getY() + (int) k * 14, 200, 14, Justification::left); }
-}
-
-// ===================== Segmented control / sidebar =====================
-void SegmentedControl::paint(Graphics& g) {
-    auto r = getLocalBounds().toFloat().reduced(0.5f); float rad = D::radiusButton();
-    g.setColour(C::pillBackground()); g.fillRoundedRectangle(r, rad);
-    g.setColour(C::border()); g.drawRoundedRectangle(r, rad, D::hairline());
-    float w = r.getWidth() / (float) jmax(1, labels.size());
-    g.setFont(FohLookAndFeel::font(T::small, false, true));
-    for (int i = 0; i < labels.size(); ++i) { auto seg = Rectangle<float>(r.getX() + i * w, r.getY(), w, r.getHeight());
-        if (i == sel) { g.setColour(foh::ui::theme().isLight ? C::cardBackground() : C::textPrimary().withAlpha(0.22f)); g.fillRoundedRectangle(seg.reduced(2), rad - 1);
-                        g.setColour(C::border()); g.drawRoundedRectangle(seg.reduced(2), rad - 1, D::hairline()); }
-        else if (i > 0 && i - 1 != sel) { g.setColour(C::border()); g.fillRect(seg.getX(), seg.getY() + 5, D::hairline(), seg.getHeight() - 10); }
-        g.setColour(i == sel ? C::textPrimary() : disabled[i] ? C::textAxis() : C::textSecondary()); g.drawText(labels[i], seg, Justification::centred); }
-}
-Path NavButton::glyphPath(Glyph gl, Rectangle<float> b) { // 16 px line glyphs, drawn as stroked paths
-    Path p; float x = b.getX(), y = b.getY(), s = b.getWidth() / 16.0f; auto P = [&](float px, float py) { return Point<float>(x + px * s, y + py * s); };
-    switch (gl) {
-        case Home: p.startNewSubPath(P(2, 8)); p.lineTo(P(8, 2.5f)); p.lineTo(P(14, 8)); p.startNewSubPath(P(4, 6.5f)); p.lineTo(P(4, 14)); p.lineTo(P(12, 14)); p.lineTo(P(12, 6.5f));
-                   p.startNewSubPath(P(6.75f, 14)); p.lineTo(P(6.75f, 10)); p.lineTo(P(9.25f, 10)); p.lineTo(P(9.25f, 14)); break;
-        case Transfer: p.startNewSubPath(P(1, 8)); p.cubicTo(P(3.5f, 2), P(5.5f, 2), P(8, 8)); p.cubicTo(P(10.5f, 14), P(12.5f, 14), P(15, 8)); break;
-        case Rta: for (int i = 0; i < 4; ++i) { float hgt[] = {5, 10, 7, 12}; float cx = 2.5f + i * 3.7f; p.startNewSubPath(P(cx, 14)); p.lineTo(P(cx, 14 - hgt[i])); } break;
-        case Guides: for (int i = 0; i < 3; ++i) { float cx = 3.5f + i * 4.5f, ky[] = {5, 10, 7}; p.startNewSubPath(P(cx, 2)); p.lineTo(P(cx, 14));
-                         p.addEllipse(x + (cx - 1.6f) * s, y + (ky[i] - 1.6f) * s, 3.2f * s, 3.2f * s); } break;
-    }
-    return p;
-}
-void NavButton::paintButton(Graphics& g, bool over, bool) {
-    auto r = getLocalBounds().toFloat().reduced(0.5f); bool on = getToggleState();
-    if (on) { g.setColour(C::navItemActiveBg()); g.fillRoundedRectangle(r, D::radiusButton()); }
-    else if (over) { g.setColour(C::textPrimary().withAlpha(0.06f)); g.fillRoundedRectangle(r, D::radiusButton()); }
-    auto gb = Rectangle<float>(r.getX() + 10, r.getCentreY() - 8, 16, 16);
-    g.setColour(on ? C::textPrimary() : C::accent()); g.strokePath(glyphPath(glyph, gb), PathStrokeType(1.4f, PathStrokeType::curved, PathStrokeType::rounded));
-    g.setColour(on ? C::textPrimary() : C::textPrimary().withMultipliedAlpha(0.9f)); g.setFont(FohLookAndFeel::font(T::body));
-    g.drawText(getButtonText(), r.withTrimmedLeft(36), Justification::centredLeft);
-}
-
-// ===================== Status pills =====================
-void StatusPills::paint(Graphics& g) {
-    auto f = FohLookAndFeel::font(T::small); g.setFont(f); float x = 0, h = 30, y = (getHeight() - h) * 0.5f;
-    for (auto& p : pills) {
-        float tw = (float) GlyphArrangement::getStringWidthInt(f, p.text), w = 12 + (p.state >= 0 ? 8 + 6 : 0) + tw + 12;
-        if (x + w > getWidth()) break;
-        auto r = Rectangle<float>(x, y, w, h);
-        g.setColour(C::pillBackground()); g.fillRoundedRectangle(r, h * 0.5f);
-        g.setColour(C::pillBorder()); g.drawRoundedRectangle(r.reduced(0.5f), h * 0.5f, D::hairline());
-        float tx = x + 12;
-        if (p.state >= 0) { auto d = Rectangle<float>(tx, r.getCentreY() - 4, 8, 8);
-            Colour c = p.state == Good ? C::ok() : p.state == Caution ? C::warning() : C::danger(); g.setColour(c);
-            if (p.state == Good) g.fillEllipse(d);
-            else if (p.state == Caution) { Path t; t.addTriangle(d.getCentreX(), d.getY(), d.getRight(), d.getBottom(), d.getX(), d.getBottom()); g.fillPath(t); }
-            else g.fillRect(d);
-            tx += 14; }
-        g.setColour(C::textBody()); g.drawText(p.text, Rectangle<float>(tx, r.getY(), tw + 2, h), Justification::centredLeft);
-        x += w + 8;
-    }
-}
-
-// ===================== Main component =====================
 MainComponent::MainComponent() {
-    { PropertiesFile::Options o; o.applicationName = "FOH Gauge"; o.filenameSuffix = ".settings"; o.folderName = "FOH Gauge"; o.osxLibrarySubFolder = "Application Support";
-      settings.setStorageParameters(o);
-      if (auto* pf = settings.getUserSettings()) foh::theme::ThemeManager::get().setTheme(pf->getValue("appearance") == "sunlight" ? "apple-pro-sunlight" : "apple-pro-dark"); }
-    setLookAndFeel(&lnf);
-    dm.initialiseWithDefaultDevices(4, 4);
-    { auto s = dm.getAudioDeviceSetup(); s.sampleRate = 48000; dm.setAudioDeviceSetup(s, true); }
-    dm.addAudioCallback(&engine); analysis.start();
-    selector = std::make_unique<AudioDeviceSelectorComponent>(dm, 1, 4, 1, 4, false, false, false, false);
-    addChildComponent(*selector);
+    if (auto* pf = model.settings.getUserSettings()) foh::theme::ThemeManager::get().setTheme(pf->getValue("appearance") == "sunlight" ? "apple-pro-sunlight" : "apple-pro-dark");
+    if (auto* t = std::getenv("FOH_THEME")) foh::theme::ThemeManager::get().setTheme(t); // dev aid
+    setLookAndFeel(&lnf); lnf.applyTheme();
+    foh::theme::ThemeManager::get().addChangeListener(this); model.addListener(this);
 
-    const char* pages[] = {"Home / Setup", "Transfer Function", "RTA / Spectrum", "Guides"};
-    for (int i = 0; i < 4; ++i) { auto* b = nav.add(new NavButton(pages[i], (NavButton::Glyph) i)); b->onClick = [this, i] { showPage(i); }; addAndMakeVisible(b); }
+    addAndMakeVisible(toolbarTitle); toolbarTitle.setFont(FohLookAndFeel::font(T::small + 1, true));
+    addAndMakeVisible(switcher); switcher.onChange = [this](int i) { selectWorkspace(i); };
     addAndMakeVisible(status);
-    addAndMakeVisible(pauseBtn); pauseBtn.setClickingTogglesState(true); pauseBtn.onClick = [this] { paused = pauseBtn.getToggleState(); pauseBtn.setButtonText(paused ? u8("\xe2\x96\xb6 Start") : u8("\xe2\x96\xa0 Stop")); };
-    addAndMakeVisible(helpPanel); addChildComponent(helpBtn); helpBtn.setClickingTogglesState(true);
-    helpBtn.onClick = [this] { helpOpen = helpBtn.getToggleState(); layoutHelp(); };
-    help.setColour(Label::textColourId, C::textBody()); help.setFont(FohLookAndFeel::font(T::body));
-    addAndMakeVisible(pageTitle); pageTitle.setFont(FohLookAndFeel::font(T::title, true));
-    addAndMakeVisible(toolbarTitle); toolbarTitle.setFont(FohLookAndFeel::font(T::small + 1, true)); toolbarTitle.setColour(Label::textColourId, C::textPrimary());
-    addAndMakeVisible(viewSeg); viewSeg.disabled.setBit(2); viewSeg.onChange = [this](int i) { if (i == 0) showPage(2); else if (i == 1) showPage(1); };
-    makePrimary(pauseBtn); pauseBtn.setButtonText(u8("\xe2\x96\xa0 Stop"));
+    addAndMakeVisible(pauseBtn); pauseBtn.setClickingTogglesState(true); makePrimary(pauseBtn); pauseBtn.setButtonText(u8("\xe2\x96\xa0 Stop"));
+    pauseBtn.onClick = [this] { model.setPaused(pauseBtn.getToggleState()); pauseBtn.setButtonText(model.paused ? u8("\xe2\x96\xb6 Start") : u8("\xe2\x96\xa0 Stop")); };
 
-    auto chanItems = [](ComboBox& b, const char* pre) { for (int i = 1; i <= 4; ++i) b.addItem(String(pre) + String(i), i); };
-    chanItems(micBox, "Mic: In "); chanItems(refBox, "Ref: In "); chanItems(outABox, "To console: Out "); chanItems(outBBox, "Loopback: Out ");
-    for (auto* b : {&micBox, &refBox, &outABox, &outBBox}) addChildComponent(*b);
-    micBox.setSelectedId(1); refBox.setSelectedId(2); outABox.setSelectedId(1); outBBox.setSelectedId(2);
-    micBox.onChange = [this] { engine.micCh = micBox.getSelectedId() - 1; };
-    refBox.onChange = [this] { engine.refCh = refBox.getSelectedId() - 1; };
-    outABox.onChange = [this] { engine.outA = outABox.getSelectedId() - 1; };
-    outBBox.onChange = [this] { engine.outB = outBBox.getSelectedId() - 1; };
-    genBox.addItem("Generator off", 1); genBox.addItem("Pink noise", 2); genBox.addItem("Log sweep 20 Hz-20 kHz (5 s, loops)", 3); genBox.setSelectedId(1);
-    genBox.onChange = [this] { engine.gen = genBox.getSelectedId() - 1; }; addChildComponent(genBox);
-    genGain.setRange(-60, 0, 0.5); genGain.setValue(-20); genGain.setTextValueSuffix(" dBFS"); genGain.onValueChange = [this] { engine.genGainDb = (float) genGain.getValue(); }; addChildComponent(genGain);
-    calBtn.onClick = [this] { loadCal(); }; addChildComponent(calBtn);
-    calToggle.setClickingTogglesState(true); calToggle.onClick = [this] { calOn = calToggle.getToggleState() && cal.ok(); analysis.setCal(calOn ? std::make_shared<foh::MicCal>(cal) : nullptr, calLabelName); }; addChildComponent(calToggle);
-    for (auto* l : {&setupHelp, &calLabel, &levelLabel}) { l->setFont(FohLookAndFeel::font(T::body)); addChildComponent(*l); }
-    setupHelp.setText("ROUTING (UMC404HD defaults)", dontSendNotification); setupHelp.setColour(Label::textColourId, C::textSecondary());
-    calLabel.setText("No mic cal loaded", dontSendNotification);
-    // Appearance: Pro Dark (default) / Pro Sunlight toggle; persisted with the UI scale
-    { auto& tm = foh::theme::ThemeManager::get(); appearance.setSelected(tm.current().isLight ? 1 : 0);
-      appearance.onChange = [this](int i) { foh::theme::ThemeManager::get().setTheme(i == 1 ? "apple-pro-sunlight" : "apple-pro-dark");
-                                            if (auto* pf = settings.getUserSettings()) { pf->setValue("appearance", i == 1 ? "sunlight" : "dark"); pf->saveIfNeeded(); } };
-      addChildComponent(appearance); appearanceLabel.setText("Appearance", dontSendNotification); appearanceLabel.setFont(FohLookAndFeel::font(T::body)); addChildComponent(appearanceLabel);
-      tm.addChangeListener(this); }
-    // Global UI scale (100/125/150/200 %), persisted between launches
+    const char* names[] = {"Setup", "Alignment", "Tuning", "RTA / Show"}; NavButton::Glyph glyphs[] = {NavButton::Home, NavButton::Guides, NavButton::Transfer, NavButton::Rta};
+    for (int i = 0; i < 4; ++i) { auto* b = nav.add(new NavButton(names[i], glyphs[i])); b->onClick = [this, i] { selectWorkspace(i); }; addAndMakeVisible(b); }
+    appearance.setSelected(foh::theme::ThemeManager::get().current().isLight ? 1 : 0);
+    appearance.onChange = [this](int i) { foh::theme::ThemeManager::get().setTheme(i == 1 ? "apple-pro-sunlight" : "apple-pro-dark");
+        if (auto* pf = model.settings.getUserSettings()) { pf->setValue("appearance", i == 1 ? "sunlight" : "dark"); pf->saveIfNeeded(); } };
+    addAndMakeVisible(appearance);
     for (int pc : {100, 125, 150, 200}) scaleBox.addItem("UI scale " + String(pc) + "%", pc);
-    { int saved = settings.getUserSettings() ? settings.getUserSettings()->getIntValue("uiScale", 100) : 100;
-      if (saved != 100 && saved != 125 && saved != 150 && saved != 200) saved = 100;
+    { int saved = model.settings.getUserSettings() ? model.settings.getUserSettings()->getIntValue("uiScale", 100) : 100; if (scaleBox.indexOfItemId(saved) < 0) saved = 100;
       scaleBox.setSelectedId(saved, dontSendNotification); if (saved != 100) Desktop::getInstance().setGlobalScaleFactor((float) saved / 100.0f); }
     scaleBox.onChange = [this] { int pc = scaleBox.getSelectedId(); Desktop::getInstance().setGlobalScaleFactor((float) pc / 100.0f);
-                                 if (auto* pf = settings.getUserSettings()) { pf->setValue("uiScale", pc); pf->saveIfNeeded(); } };
-    addChildComponent(scaleBox);
+        if (auto* pf = model.settings.getUserSettings()) { pf->setValue("uiScale", pc); pf->saveIfNeeded(); } };
+    addAndMakeVisible(scaleBox);
 
-    magPlot.yLabel = "MAGNITUDE DB"; magPlot.showLegend = true; magPlot.showLowCohCallout = true; magPlot.yMin = -12; magPlot.yMax = 12; magPlot.yStep = 6;
-    phasePlot.yLabel = u8("PHASE \xc2\xb0"); phasePlot.yMin = -180; phasePlot.yMax = 180; phasePlot.yStep = 90; phasePlot.wrapPhase = true;
-    cohPlot.yLabel = "COHERENCE"; cohPlot.yMin = 0; cohPlot.yMax = 1; cohPlot.yStep = 0.5;
-    for (auto* p : {&magPlot, &phasePlot, &cohPlot, &rtaPlot, &gPlotA, &gPlotB}) addChildComponent(*p);
-    addChildComponent(tfImpulse); addChildComponent(gImpulse);
-    smoothBox.addItem("Smoothing off", 1); smoothBox.addItem("Smoothing 1/3", 4); smoothBox.addItem("Smoothing 1/6", 7); smoothBox.addItem("Smoothing 1/12", 13); smoothBox.addItem("Smoothing 1/24", 25); smoothBox.addItem("Smoothing 1/48", 49); smoothBox.setSelectedId(13);
-    avgBox.addItem("Avg 4", 4); avgBox.addItem("Avg 8", 8); avgBox.addItem("Avg 16", 16); avgBox.addItem("Avg 32", 32); avgBox.addItem(u8("Avg \xe2\x88\x9e"), 1000); avgBox.setSelectedId(16);
-    avgBox.onChange = [this] { int a = avgBox.getSelectedId(); analysis.send(foh::Command::averages(a == 1000 ? 0 : a)); };
-    smoothBox.onChange = [this] { analysis.send(foh::Command::smoothing(smoothBox.getSelectedId() - 1)); };
-    for (int t : {40, 50, 60, 70, 80}) blankBox.addItem("Dim below " + String(t / 100.0, 2), t);
-    blankBox.setSelectedId(60, dontSendNotification); addChildComponent(blankBox);
-    blankBox.onChange = [this] { analysis.send(foh::Command::blankThreshold(blankBox.getSelectedId() / 100.0)); };
-    analysis.send(foh::Command::averages(16)); analysis.send(foh::Command::smoothing(smoothBox.getSelectedId() - 1)); analysis.send(foh::Command::blankThreshold(0.6));
-    for (auto* c : std::initializer_list<Component*>{&smoothBox, &avgBox, &blankBox, &storeBtn, &findBtn, &clearAvgBtn, &delayCaption, &delayValue, &delayDetail, &insertBtn, &traceList, &delTraceBtn}) addChildComponent(c);
-    makePrimary(insertBtn);
-    storeBtn.onClick = [this] { storeTrace("Trace " + String(traces.count() + 1)); };
-    findBtn.onClick = [this] { requestDelay(false); };
-    insertBtn.onClick = [this] { if (delayLocked()) lockDelayFromLast(); };
-    clearAvgBtn.onClick = [this] { analysis.send(foh::Command::resetAverages()); };
-    delayCaption.setText("DELAY FINDER", dontSendNotification); delayCaption.setFont(FohLookAndFeel::font(T::label)); delayCaption.setColour(Label::textColourId, C::textSecondary());
-    delayValue.setFont(FohLookAndFeel::numeric(T::valueDelay)); delayValue.setText("--", dontSendNotification);
-    delayDetail.setFont(FohLookAndFeel::font(T::body)); delayDetail.setColour(Label::textColourId, C::textSecondary()); delayDetail.setText("press Find again", dontSendNotification);
-    traceModel.o = this; traceList.setModel(&traceModel); traceList.setRowHeight(22);
-    delTraceBtn.onClick = [this] { traces.remove(traceList.getSelectedRow()); refreshTraceList(); };
-
-    rtaPlot.yLabel = "dBFS"; rtaPlot.yMin = -100; rtaPlot.yMax = 0; rtaPlot.yStep = 20; rtaPlot.bars = true;
-    rtaFracBox.addItem("1/3 octave", 3); rtaFracBox.addItem("1/6 octave", 6); rtaFracBox.setSelectedId(3);
-    rtaFracBox.onChange = [this] { analysis.send(foh::Command::rtaFraction(rtaFracBox.getSelectedId())); }; addChildComponent(rtaFracBox);
-
-    for (int i = 0; i < 3; ++i) guideBox.addItem(String("W") + String(i + 1) + ": " + kGuideNames[i], i + 1);
-    guideBox.setSelectedId(2, dontSendNotification); guideBox.onChange = [this] { guide = guideBox.getSelectedId() - 1; step = 0; guideResult.setText({}, dontSendNotification); layoutGuide(); };
-    for (auto* c : std::initializer_list<Component*>{&guideBox, &guideStepLabel, &guideBody, &guideResult, &guideReadout, &guidePolarity, &guidePrev, &guideAct, &doneSummary, &doneActions, &doneAgain, &doneHome}) addChildComponent(c);
-    makePrimary(guideAct);
-    guideStepLabel.setFont(FohLookAndFeel::font(T::label)); guideStepLabel.setColour(Label::textColourId, C::accent());
-    guideBody.setFont(FohLookAndFeel::font(T::logo)); guideBody.setJustificationType(Justification::centredLeft);
-    guideResult.setFont(FohLookAndFeel::font(T::body)); guideResult.setJustificationType(Justification::topLeft); guideResult.setColour(Label::textColourId, C::textBody());
-    guideReadout.setFont(FohLookAndFeel::numeric(T::valueMedium));
-    guidePolarity.setFont(FohLookAndFeel::font(T::small)); guidePolarity.setColour(Label::textColourId, C::textSecondary());
-    doneSummary.setFont(FohLookAndFeel::font(T::logo)); doneSummary.setJustificationType(Justification::topLeft);
-    doneActions.setFont(FohLookAndFeel::font(T::logo)); doneActions.setJustificationType(Justification::topLeft);
-    doneActions.setText("1. Walk a few seats and listen.\n2. Save the DSP settings.\n3. Note the delay values in your log.", dontSendNotification);
-    makePrimary(doneAgain); doneAgain.onClick = [this] { step = 0; layoutGuide(); }; doneHome.onClick = [this] { showPage(0); };
-    guidePrev.onClick = [this] { if (step > 0) { --step; layoutGuide(); } };
-    guideAct.onClick = [this] { guideAction(kGuides[(size_t) guide][(size_t) step].act); };
-
-    setSize(std::getenv("FOH_WINDOW_W") ? std::atoi(std::getenv("FOH_WINDOW_W")) : th::frame::baseWidth, th::frame::baseHeight); /* FOH_WINDOW_W: dev aid for narrow-layout checks */
-    showPage(0); startTimerHz(15);
-    if (auto* t = std::getenv("FOH_THEME")) foh::theme::ThemeManager::get().setTheme(t); // dev aid: apple-pro-dark, apple-pro-sunlight
-    // Dev/screenshot aid: FOH_START_PAGE=0..3, FOH_GUIDE=0..2, FOH_STEP=n
-    if (auto* e = std::getenv("FOH_START_PAGE")) { guide = std::getenv("FOH_GUIDE") ? std::atoi(std::getenv("FOH_GUIDE")) : 1; step = std::getenv("FOH_STEP") ? std::atoi(std::getenv("FOH_STEP")) : 0;
-        guideBox.setSelectedId(guide + 1, dontSendNotification); showPage(jlimit(0, 3, std::atoi(e))); }
+    addAndMakeVisible(view);
+    model.requestWorkspace = [this](const std::string& id) { selectWorkspace(id); };
+    workspaces = fohws::builtInPresets();
+    setSize(std::getenv("FOH_WINDOW_W") ? std::atoi(std::getenv("FOH_WINDOW_W")) : foh::theme::frame::baseWidth, foh::theme::frame::baseHeight); /* FOH_WINDOW_W: dev aid */
+    int start = std::getenv("FOH_WORKSPACE") ? jlimit(0, 3, std::atoi(std::getenv("FOH_WORKSPACE"))) : 1; // dev/screenshot aid, default Alignment
+    selectWorkspace(start);
+    startTimerHz(15);
 }
-MainComponent::~MainComponent() { analysis.stop(); if (auto* pf = settings.getUserSettings()) pf->saveIfNeeded(); foh::theme::ThemeManager::get().removeChangeListener(this); stopTimer(); dm.removeAudioCallback(&engine); traceList.setModel(nullptr); setLookAndFeel(nullptr); }
+MainComponent::~MainComponent() { stopTimer(); view.setWorkspace(nullptr); model.removeListener(this); foh::theme::ThemeManager::get().removeChangeListener(this); setLookAndFeel(nullptr); }
 
-Rectangle<int> MainComponent::mainArea() const {
-    return getLocalBounds().withTrimmedTop(D::statusBarHeight()).withTrimmedLeft(D::navWidth()).withTrimmedRight(helperW()).reduced(D::mainPadding());
-}
-
-static void card(Graphics& g, Rectangle<int> r, Colour border = C::border()) {
-    g.setColour(C::cardBackground()); g.fillRoundedRectangle(r.toFloat(), D::radiusCard());
-    g.setColour(border); g.drawRoundedRectangle(r.toFloat().reduced(0.5f), D::radiusCard(), D::hairline());
+void MainComponent::selectWorkspace(const std::string& id) { for (size_t i = 0; i < workspaces.size(); ++i) if (workspaces[i].id == id) { selectWorkspace((int) i); return; } }
+void MainComponent::selectWorkspace(int i) {
+    if (i < 0 || i >= (int) workspaces.size()) return;
+    current = i; view.setWorkspace(&workspaces[(size_t) i]);
+    { std::vector<std::string> ids; workspaces[(size_t) i].root.collectPanels(ids); for (auto& id : ids) if (id != "Inspector") { view.focus(id); break; } } // Inspector explains the first panel
+    switcher.setSelected(jmin(i, 3)); for (int k = 0; k < nav.size(); ++k) nav[k]->setToggleState(k == i, dontSendNotification);
+    toolbarTitle.setText(String(workspaces[(size_t) i].name), dontSendNotification);
+    workspaceSelected(); repaint();
 }
 
 void MainComponent::paint(Graphics& g) {
-    const int statusBarHeight = D::statusBarHeight(), navWidth = D::navWidth(), helperWidth = helperW();
+    const int top = D::statusBarHeight(), nw = sidebarVisible() ? D::navWidth() : 0;
     g.fillAll(C::background());
-    g.setColour(C::statusBarBackground()); g.fillRect(0, 0, getWidth(), statusBarHeight);
-    g.setColour(C::navBackground()); g.fillRect(0, statusBarHeight, navWidth, getHeight());
-    g.setColour(C::helperBackground()); g.fillRect(getWidth() - helperWidth, statusBarHeight, helperWidth, getHeight());
-    g.setColour(C::border()); g.drawHorizontalLine(statusBarHeight - 1, 0, (float) getWidth());
-    g.drawVerticalLine(navWidth - 1, (float) statusBarHeight, (float) getHeight()); g.drawVerticalLine(getWidth() - helperWidth, (float) statusBarHeight, (float) getHeight());
-    g.setFont(FohLookAndFeel::font(T::logo, true)); g.setColour(C::textPrimary()); g.drawText("FOH", 16, 0, 40, statusBarHeight, Justification::centredLeft);
-    g.setColour(C::accent()); g.drawText("Gauge", 52, 0, 80, statusBarHeight, Justification::centredLeft);
-    if (page == 1) { card(g, tfCard); card(g, delayCard, C::cardBorderEmphasis());
-        g.setFont(FohLookAndFeel::font(T::label)); g.setColour(C::textSecondary());
-        for (auto* p : {&magPlot, &phasePlot, &cohPlot}) { auto b = p->getBounds(); Graphics::ScopedSaveState s(g);
-            g.addTransform(AffineTransform::rotation(-MathConstants<float>::halfPi, (float) b.getX() - 14, (float) b.getCentreY()));
-            g.drawText(p->yLabel, b.getX() - 14 - b.getHeight() / 2, b.getCentreY() - 8, b.getHeight(), 16, Justification::centred); } }
-    if (page == 2) card(g, rtaPlot.getBounds().expanded(8));
-    if (page == 3) {
-        auto& steps = kGuides[(size_t) guide]; int n = (int) steps.size(), gap = 8; float w = (gProgress.getWidth() - gap * (n - 1)) / (float) n;
-        for (int i = 0; i < n; ++i) { float x = gProgress.getX() + i * (w + gap);
-            Colour bar = i < step ? C::ok() : i == step ? C::accent() : C::ghostBorder(), lab = i < step ? C::ok() : i == step ? C::textStrong() : C::textAxis();
-            g.setColour(bar); g.fillRoundedRectangle(x, (float) gProgress.getY(), w, 6.f, D::radiusProgress());
-            g.setColour(lab); g.setFont(FohLookAndFeel::font(T::small)); g.drawText(String(i < step ? u8("\xe2\x9c\x93 ") : "") + String(i + 1) + ". " + u8(steps[(size_t) i].progress), (int) x, gProgress.getY() + 14, (int) w, 16, Justification::left); }
-        if (!gChartCard.isEmpty()) card(g, gChartCard);
-        if (!gActionCard.isEmpty()) { card(g, gActionCard, C::cardBorderEmphasis());
-            if (capture.active) { // convergence progress (fohcore ConvergenceState::progress)
-                auto bar = gActionCard.reduced(16, 0).withHeight(4).withY(gActionCard.getBottom() - 10).toFloat();
-                g.setColour(C::divider()); g.fillRoundedRectangle(bar, 2.f);
-                g.setColour(C::accent()); g.fillRoundedRectangle(bar.withWidth(bar.getWidth() * (float) jlimit(0.0, 1.0, conv.progress)), 2.f);
-                g.setColour(C::textSecondary()); g.setFont(FohLookAndFeel::font(T::axisTick));
-                g.drawText("Averaging: " + String(roundToInt(conv.progress * 100)) + u8("% \xc2\xb7 change ") + (conv.deltaDb < 1e6 ? String(conv.deltaDb, 2) + " dB" : String("--")), bar.translated(0, -16).withHeight(14).toNearestInt(), Justification::right); } }
-        if (!gDoneA.isEmpty()) { card(g, gDoneA); card(g, gDoneB);
-            auto c = Rectangle<float>((float) gDoneA.getX() + 22, (float) gDoneA.getY() + 22, 56, 56); g.setColour(C::successBadgeBg()); g.fillEllipse(c);
-            g.setColour(C::ok()); g.setFont(FohLookAndFeel::font(T::icon, true)); g.drawText(u8("\xe2\x9c\x93"), c, Justification::centred);
-            // summary: 20 px title, then 16 px rows (padding 14/0, 1 px divider bottom) per layout-spec step 09
-            auto in = gDoneA.reduced(22); in.removeFromTop(56 + 16);
-            g.setColour(C::textPrimary()); g.setFont(FohLookAndFeel::font(20.0f, true)); g.drawText("What was set", in.removeFromTop(28), Justification::left); in.removeFromTop(6);
-            for (auto& r : summaryRows) { auto row = in.removeFromTop(16 + 28); auto tr = row.reduced(0, 14);
-                g.setFont(FohLookAndFeel::font(16.0f)); g.setColour(C::textSecondary()); g.drawText(r.first, tr.removeFromLeft(tr.getWidth() * 2 / 5), Justification::left);
-                g.setColour(C::textPrimary()); g.setFont(FohLookAndFeel::font(16.0f, false, true)); g.drawText(r.second, tr, Justification::right);
-                g.setColour(C::divider()); g.fillRect((float) row.getX(), (float) row.getBottom() - D::hairline(), (float) row.getWidth(), D::hairline()); } }
-    }
+    g.setColour(C::statusBarBackground()); g.fillRect(0, 0, getWidth(), top);
+    g.setColour(C::border()); g.fillRect(0.f, top - D::hairline(), (float) getWidth(), D::hairline());
+    if (nw) { g.setColour(C::navBackground()); g.fillRect(0, top, nw, getHeight() - top); g.setColour(C::border()); g.fillRect((float) nw - D::hairline(), (float) top, D::hairline(), (float) getHeight()); }
+    g.setFont(FohLookAndFeel::font(T::logo, true)); g.setColour(C::textPrimary()); g.drawText("FOH", 16, 0, 40, top, Justification::centredLeft);
+    g.setColour(C::accent()); g.drawText("Gauge", 52, 0, 80, top, Justification::centredLeft);
+    if (nw) { g.setColour(C::textAxis()); g.setFont(FohLookAndFeel::font(T::axisTick, true)); g.drawText("WORKSPACES", 16, top + 14, nw - 32, 16, Justification::centredLeft); }
 }
-
 void MainComponent::resized() {
-    const int statusBarHeight = D::statusBarHeight(), navWidth = D::navWidth();
-    auto nr = Rectangle<int>(10, statusBarHeight + 16, navWidth - 20, 30);
-    for (auto* b : nav) { b->setBounds(nr); nr.translate(0, 34); }
-    // A2 unified toolbar: [title][status pills ...][RTA|Transfer|SPL][Stop]
-    { auto tb = Rectangle<int>(navWidth, 0, getWidth() - navWidth, statusBarHeight).reduced(14, 0);
-      pauseBtn.setBounds(tb.removeFromRight(84).withSizeKeepingCentre(84, 28)); tb.removeFromRight(12);
-      viewSeg.setBounds(tb.removeFromRight(210).withSizeKeepingCentre(210, 26)); tb.removeFromRight(12);
-      toolbarTitle.setBounds(tb.removeFromLeft(210)); status.setBounds(tb); }
-    layoutHelp();
-    auto c = mainArea();
-    auto header = c.removeFromTop(29); c.removeFromTop(12);
-    // header pills (TF)
-    { auto h = header; storeBtn.setBounds(h.removeFromRight(80)); h.removeFromRight(8); clearAvgBtn.setBounds(h.removeFromRight(100)); h.removeFromRight(8);
-      avgBox.setBounds(h.removeFromRight(110)); h.removeFromRight(8); smoothBox.setBounds(h.removeFromRight(150)); h.removeFromRight(8); blankBox.setBounds(h.removeFromRight(150)); rtaFracBox.setBounds(header.removeFromRight(160)); guideBox.setBounds(Rectangle<int>(header.getRight() - 300, header.getY(), 300, 29)); }
-    // setup
-    { auto s = c; selector->setBounds(s.removeFromTop(330)); setupHelp.setBounds(s.removeFromTop(24));
-      auto row = s.removeFromTop(30); int w = row.getWidth() / 4; for (auto* b : {&micBox, &refBox, &outABox, &outBBox}) b->setBounds(row.removeFromLeft(w).reduced(4, 0));
-      s.removeFromTop(12); row = s.removeFromTop(30); genBox.setBounds(row.removeFromLeft(300).reduced(4, 0)); genGain.setBounds(row.removeFromLeft(360).reduced(8, 0));
-      s.removeFromTop(12); row = s.removeFromTop(30); calBtn.setBounds(row.removeFromLeft(150).reduced(4, 0)); calToggle.setBounds(row.removeFromLeft(90).reduced(4, 0)); calLabel.setBounds(row);
-      s.removeFromTop(12); levelLabel.setBounds(s.removeFromTop(30));
-      s.removeFromTop(12); row = s.removeFromTop(30); appearanceLabel.setBounds(row.removeFromLeft(100)); appearance.setBounds(row.removeFromLeft(200).reduced(4, 1)); row.removeFromLeft(16); scaleBox.setBounds(row.removeFromLeft(200).reduced(4, 0)); }
-    // TF: card, then delay bar 63 h, then trace list
-    { auto s = c; auto traceArea = s.removeFromBottom(96); s.removeFromBottom(10);
-      delayCard = s.removeFromBottom(63); s.removeFromBottom(10); tfCard = s;
-      auto in = tfCard.reduced(8).withTrimmedBottom(-4); in.removeFromLeft(26);
-      int H = in.getHeight(); int ph = H - 3 * 24 - 8; // plot heights flex 190:150:90
-      int mh = ph * 190 / 430 + 32, phh = ph * 150 / 430 + 32;
-      magPlot.setBounds(in.removeFromTop(mh)); phasePlot.setBounds(in.removeFromTop(phh)); cohPlot.setBounds(in);
-      auto d = delayCard.reduced(16, 12); insertBtn.setBounds(d.removeFromRight(118).withSizeKeepingCentre(118, 37)); d.removeFromRight(12);
-      findBtn.setBounds(d.removeFromRight(103).withSizeKeepingCentre(103, 37));
-      delayCaption.setBounds(d.removeFromLeft(110)); delayValue.setBounds(d.removeFromLeft(150)); delayDetail.setBounds(d);
-      delTraceBtn.setBounds(traceArea.removeFromRight(120).removeFromTop(30)); tfImpulse.setBounds(traceArea.removeFromLeft(traceArea.getWidth() / 2)); traceArea.removeFromLeft(10); traceList.setBounds(traceArea.withTrimmedRight(10)); }
-    { auto s = c.reduced(8); rtaPlot.setBounds(s); }
-    layoutGuide();
+    const int top = D::statusBarHeight(), nw = sidebarVisible() ? D::navWidth() : 0;
+    auto bar = getLocalBounds().removeFromTop(top).reduced(12, 0); bar.removeFromLeft(130);
+    pauseBtn.setBounds(bar.removeFromRight(84).withSizeKeepingCentre(84, 30)); bar.removeFromRight(12);
+    toolbarTitle.setBounds(bar.removeFromLeft(110));
+    int sw = 360; switcher.setBounds(bar.removeFromLeft(sw).withSizeKeepingCentre(sw, foh::theme::ws::switcherHeight - 6)); bar.removeFromLeft(16);
+    status.setBounds(bar);
+    for (auto* b : nav) b->setVisible(nw > 0); appearance.setVisible(nw > 0); scaleBox.setVisible(nw > 0);
+    if (nw) { auto s = Rectangle<int>(0, top, nw, getHeight() - top).reduced(10, 0); s.removeFromTop(36);
+        for (auto* b : nav) { b->setBounds(s.removeFromTop(40)); s.removeFromTop(4); }
+        auto bot = s.removeFromBottom(80); appearance.setBounds(bot.removeFromTop(30).reduced(0, 2)); bot.removeFromTop(8); scaleBox.setBounds(bot.removeFromTop(28)); }
+    view.setBounds(getLocalBounds().withTrimmedTop(top).withTrimmedLeft(nw));
 }
 
-void MainComponent::layoutHelp() {
-    const int top = D::statusBarHeight(), hw = D::helperWidth();
-    helpBtn.setVisible(railMode()); helpBtn.setBounds(getWidth() - railWidth + 6, top + 12, railWidth - 12, railWidth - 12);
-    if (!railMode()) { helpOpen = false; helpBtn.setToggleState(false, dontSendNotification); }
-    helpPanel.overlay = railMode();
-    helpPanel.setVisible(!railMode() || helpOpen);
-    helpPanel.setBounds(railMode() ? Rectangle<int>(getWidth() - railWidth - hw, top, hw, getHeight() - top) : Rectangle<int>(getWidth() - hw, top, hw, getHeight() - top));
-    if (helpPanel.isVisible()) helpPanel.toFront(false);
-}
-void HelpPanel::setText(const String& copy) {
-    sections.clear(); StringArray lines; lines.addLines(copy);
-    String cur; std::vector<String> ps; for (auto& l : lines) { if (l.trim().isEmpty()) { if (cur.isNotEmpty()) ps.push_back(cur); cur = {}; } else cur << (cur.isEmpty() ? "" : " ") << l.trim(); }
-    if (cur.isNotEmpty()) ps.push_back(cur);
-    for (size_t i = 0; i < ps.size(); ++i) { auto& p = ps[i]; int colon = p.indexOfChar(':');
-        if (i == 0) sections.push_back({"What am I looking at?", p});
-        else if (colon > 0 && colon <= 20) sections.push_back({p.substring(0, colon), p.substring(colon + 1).trim()});
-        else if (!sections.empty()) sections.back().second << "\n\n" << p; }
-    repaint();
-}
-void HelpPanel::paint(Graphics& g) {
-    g.fillAll(C::helperBackground());
-    g.setColour(overlay ? C::cardBorderEmphasis() : C::border()); g.fillRect(0.f, 0.f, D::hairline(), (float) getHeight());
-    auto r = getLocalBounds().reduced(14, 0).withTrimmedTop(12);
-    g.setColour(C::textSecondary()); g.setFont(FohLookAndFeel::font(T::axisTick, true)); g.drawText(caption, r.removeFromTop(18), Justification::left); r.removeFromTop(6);
-    for (size_t i = 0; i < sections.size(); ++i) { auto& hd = sections[i].first; auto& body = sections[i].second;
-        if (i) { g.setColour(C::border()); g.fillRect(0.f, (float) r.getY(), (float) getWidth(), D::hairline()); r.removeFromTop(12); }
-        g.setColour(C::textPrimary()); g.setFont(FohLookAndFeel::font(i == 0 ? T::body + 1 : T::body, true)); g.drawText(hd, r.removeFromTop(20), Justification::left); r.removeFromTop(2);
-        AttributedString as; as.append(body, FohLookAndFeel::font(T::body), C::textSecondary()); as.setLineSpacing(3.0f);
-        TextLayout tl; tl.createLayout(as, (float) r.getWidth()); auto bh = (int) std::ceil(tl.getHeight());
-        tl.draw(g, r.removeFromTop(bh).toFloat()); r.removeFromTop(12);
-        if (r.getHeight() <= 0) break; }
-}
-
-void MainComponent::changeListenerCallback(ChangeBroadcaster*) { // theme switched: refresh stock-widget colours, then re-layout (widths) + repaint
-    appearance.setSelected(foh::ui::theme().isLight ? 1 : 0); lnf.applyTheme(); makePrimary(insertBtn); makePrimary(guideAct); makePrimary(doneAgain);
-    status.repaint(); viewSeg.repaint(); makePrimary(pauseBtn); toolbarTitle.setColour(Label::textColourId, C::textPrimary()); helpPanel.repaint(); help.setColour(Label::textColourId, C::textBody()); setupHelp.setColour(Label::textColourId, C::textSecondary());
-    delayCaption.setColour(Label::textColourId, C::textSecondary()); delayDetail.setColour(Label::textColourId, C::textSecondary());
-    guideStepLabel.setColour(Label::textColourId, C::accent()); guideResult.setColour(Label::textColourId, C::textBody()); guidePolarity.setColour(Label::textColourId, C::textSecondary());
-    sendLookAndFeelChange(); updateTF(); updateGuidePlots(); resized(); repaint();
+void MainComponent::changeListenerCallback(ChangeBroadcaster*) {
+    appearance.setSelected(foh::theme::ThemeManager::get().current().isLight ? 1 : 0); lnf.applyTheme(); makePrimary(pauseBtn);
+    toolbarTitle.setColour(Label::textColourId, C::textPrimary());
+    sendLookAndFeelChange(); model.notify(AppModel::Theme | AppModel::Snapshot | AppModel::Delay | AppModel::Traces);
+    resized(); repaint(); view.repaint();
     if (auto* w = getTopLevelComponent()) if (auto* dw = dynamic_cast<DocumentWindow*>(w)) dw->setBackgroundColour(C::background());
 }
-
-void MainComponent::showPage(int p) {
-    page = p;
-    for (int i = 0; i < nav.size(); ++i) { nav[i]->setToggleState(i == p, dontSendNotification); }
-    std::vector<Component*> all {selector.get(), &micBox, &refBox, &outABox, &outBBox, &genBox, &genGain, &calBtn, &calToggle, &setupHelp, &calLabel, &levelLabel, &appearance, &appearanceLabel, &scaleBox,
-        &magPlot, &phasePlot, &cohPlot, &smoothBox, &avgBox, &storeBtn, &findBtn, &clearAvgBtn, &delayCaption, &delayValue, &delayDetail, &insertBtn, &traceList, &delTraceBtn, &tfImpulse, &gImpulse,
-        &rtaPlot, &rtaFracBox, &guideBox, &guideStepLabel, &guideBody, &guideResult, &guideReadout, &guidePolarity, &guidePrev, &guideAct, &gPlotA, &gPlotB, &doneSummary, &doneActions, &doneAgain, &doneHome};
-    for (auto* x : all) x->setVisible(false);
-    std::vector<Component*> on;
-    if (p == 0) on = {selector.get(), &micBox, &refBox, &outABox, &outBBox, &genBox, &genGain, &calBtn, &calToggle, &setupHelp, &calLabel, &levelLabel, &appearance, &appearanceLabel, &scaleBox};
-    if (p == 1) on = {&magPlot, &phasePlot, &cohPlot, &smoothBox, &avgBox, &blankBox, &storeBtn, &findBtn, &clearAvgBtn, &delayCaption, &delayValue, &delayDetail, &insertBtn, &traceList, &delTraceBtn, &tfImpulse};
-    if (p == 2) on = {&rtaPlot, &rtaFracBox};
-    for (auto* x : on) x->setVisible(true);
-    const char* titles[] = {"Home / Setup", "Transfer function", "RTA / Spectrum", ""};
-    pageTitle.setText(titles[p], dontSendNotification); pageTitle.setVisible(false); // A2: page title lives in the toolbar
-    toolbarTitle.setText(p == 3 ? String(kGuideNames[guide]) : String(titles[p]), dontSendNotification);
-    viewSeg.setSelected(p == 2 ? 0 : p == 1 ? 1 : -1);
-    if (p == 3) layoutGuide();
-    helpPanel.setText(explain()); repaint();
-}
-
-String MainComponent::explain() const {
-    switch (page) {
-        case 0: return "Pick your interface (UMC404HD) at 48 kHz.\n\nMic = In 1 (ECM8000, +48 V).\n\nReference = In 2: a 1/4\" TRS loopback from Out 2, so it carries exactly what goes to the system.\n\nOut 1 goes to the console. Both inputs should sit near -20 dBFS on pink noise, never clipping.\n\nLoad your mic cal file (CSV/TXT/FRD) and turn Cal ON.";
-        case 1: return "This compares the console (reference) to the mic. Anything that isn't flat is what the speakers + room are doing to your mix.\n\nMagnitude: top plot. 0 dB = unchanged.\n\nPhase: middle plot. Timing per frequency. A steady slope means leftover delay; flat is ideal.\n\nCoherence: bottom plot. How much to trust the trace. Low = probably a reflection or noise: don't EQ it.\n\nDelay finder lines up the reference with the mic. Stored traces are dashed.";
-        case 2: return "The RTA shows the level in each 1/3 or 1/6 octave band at the mic.\n\nUse it to see what's loud in the room. To judge the system itself, prefer the transfer function: the RTA includes the spectrum of whatever is playing.";
-        default: return "Guides walk you through one job at a time: read the step, press the one big button, check the result.\n\nThe app explains and suggests; you decide and make the change in your own gear.\n\nShaded band = acoustic crossover (where sub and mains are within 10 dB).";
-    }
-}
+void MainComponent::modelChanged(int) {}
 
 void MainComponent::timerCallback() {
-    const double fs = engine.sampleRate.load(); analysisRate = fs;
-    { const auto& snap = analysis.latest(); // single reader (this timer); copy out what we keep
-      if (snap.seq != lastSeq) { lastSeq = snap.seq;
-          lastTF = snap.tf; rtaDb = snap.rtaDb; rtaBands = snap.rtaBands; conv = snap.convergence;
-          refDelaySamples = snap.refDelaySamples; refDelayMs = snap.refDelayMs; calApplied = snap.calApplied; calName = String(snap.calName);
-          if (snap.delaySeq != lastDelaySeq) { lastDelaySeq = snap.delaySeq; lastDelay = snap.delay; lastWasSub = snap.delayWasSub; onDelayResult(); } } }
-    if (capture.active) { // wait for the average to settle instead of a fixed time
-        double el = Time::getMillisecondCounterHiRes() - capture.startMs; bool timeout = el > 20000;
-        if ((conv.settled && el > 300) || timeout) { capture.active = false; auto then = std::move(capture.then); bool ok = storeTrace(capture.name);
-            if (then) then(ok && !timeout); }
-        repaint(gActionCard.expanded(2, 12)); }
-    float mp = engine.micPeak.exchange(0), rp = engine.refPeak.exchange(0);
+    toolbarTitle.setColour(Label::textColourId, C::textPrimary());
+    float mp = model.micPeak, rp = model.refPeak; double fs = model.sampleRate;
     auto dbs = [](float p) { return p > 1e-6f ? String(20 * std::log10(p), 1) + " dBFS" : String("-inf"); };
-    auto* dev = dm.getCurrentAudioDevice();
-    { using P = StatusPills; double rdMs = refDelayMs; bool clip = mp > 0.99f || rp > 0.99f;
-      auto lvl = [&](const char* n, float p) { return P::Pill{ String(n) + " " + dbs(p), p > 0.99f ? P::Poor : p > 0.01f ? P::Good : P::Caution }; };
-      std::vector<P::Pill> v { { paused ? "Paused" : "Measuring", paused ? P::Caution : P::Good },
-                               { dev ? dev->getName() + u8(" \xc2\xb7 ") + String((int) fs / 1000) + " kHz" : String("No device"), dev ? P::None : P::Poor },
-                               lvl("Mic", mp), lvl("Ref", rp), { calApplied ? "Cal on" : "Cal off", calApplied ? P::Good : P::None }, { "Ref delay " + String(rdMs, 2) + " ms", P::None } };
-      if (clip) v.push_back({ "CLIPPING", P::Poor });
-      status.setPills(std::move(v)); }
-    if (page == 0) levelLabel.setText(String(mp > 0.01f ? u8("\xe2\x9c\x93 Mic signal     ") : u8("\xe2\x96\xa0 No mic signal     ")) + String(rp > 0.01f ? u8("\xe2\x9c\x93 Reference signal") : u8("\xe2\x96\xa0 No reference signal (check Out 2 -> In 2 loopback)")), dontSendNotification);
-    if (page == 1 || page == 3) updateTF();
-    if (page == 2) updateRTA();
-    if (page == 3) updateGuidePlots();
-}
-
-void MainComponent::updateTF() {
-    if (page != 1) return;
-    for (auto* p : {&magPlot, &phasePlot, &cohPlot}) p->series.clear();
-    for (int i = 0; i < traces.count(); ++i) { auto& t = traces.at(i); if (!t.visible) continue;
-        PlotComponent::Series s; s.c = C::storedTrace(i % 8); s.dash = th::stroke::dashStored; s.width = D::traceStored(); s.label = String(t.name);
-        logDecimate(t.tf, t.tf.magDb, s.f, s.v); magPlot.series.push_back(s);
-        logDecimate(t.tf, t.tf.phaseDeg, s.f, s.v); phasePlot.series.push_back(s); }
-    PlotComponent::Series s; s.c = C::accent(); s.label = "Live";
-    logDecimate(lastTF, lastTF.magDb, s.f, s.v, &s.gap); magPlot.series.push_back(s);
-    logDecimate(lastTF, lastTF.phaseDeg, s.f, s.v, &s.gap); phasePlot.series.push_back(s);
-    s.gap.clear(); s.label = {}; s.c = C::traceCoherence(); s.width = D::traceSecondary(); logDecimate(lastTF, lastTF.coherence, s.f, s.v); cohPlot.series.push_back(s);
-    { std::vector<std::pair<double,double>> lc; // hatch the bins fohcore blanked (coherence < blank threshold)
-      std::vector<double> cf, cv; std::vector<uint8_t> bl; logDecimate(lastTF, lastTF.coherence, cf, cv, &bl);
-      for (size_t i = 0; i < bl.size(); ++i) if (bl[i]) { double lo = i ? std::sqrt(s.f[i - 1] * s.f[i]) : s.f[i], hi = i + 1 < s.f.size() ? std::sqrt(s.f[i] * s.f[i + 1]) : s.f[i];
-          if (!lc.empty() && lc.back().second >= lo * 0.999) lc.back().second = hi; else lc.push_back({lo, hi}); }
-      magPlot.lowCoh = lc; phasePlot.lowCoh = lc; }
-    magPlot.note = "averages " + String(lastTF.averages) + (calApplied ? u8(" \xc2\xb7 cal applied") : "");
-    for (auto* p : {&magPlot, &phasePlot, &cohPlot}) p->repaint();
-}
-
-void MainComponent::updateGuidePlots() {
-    auto& st = kGuides[(size_t) guide][(size_t) step];
-    auto* main = findTrace("Main"); auto* sub = findTrace("Sub");
-    auto add = [](PlotComponent& p, const foh::TFResult& r, const std::vector<double>& v, Colour c, const float* dash, double maxF = 1e9, float w = D::trace(), const String& label = {}) {
-        PlotComponent::Series s; s.label = label; s.c = c; s.dash = dash; s.maxF = maxF; s.width = w; logDecimate(r, v, s.f, s.v); p.series.push_back(s); };
-    gPlotA.series.clear(); gPlotB.series.clear();
-    std::vector<std::pair<double,double>> band; if (xover.found) band = {{xover.lo, xover.hi}};
-    String bl = xover.found ? "crossover ~" + String((int) std::sqrt(xover.lo * xover.hi)) + " Hz" : String();
-    for (auto* p : {&gPlotA, &gPlotB}) { p->showLegend = true; p->shade = guide == 1 ? band : decltype(band){}; p->shadeLabel = bl; p->centreNote = {}; p->wrapPhase = false; }
-    auto magSetup = [](PlotComponent& p, double lo, double hi) { p.yMin = lo; p.yMax = hi; p.yStep = 6; p.wrapPhase = false; };
-    auto phSetup = [](PlotComponent& p) { p.yMin = -180; p.yMax = 180; p.yStep = 90; p.wrapPhase = true; };
-    switch (st.chart) {
-        case 1: magSetup(gPlotA, -24, 6); add(gPlotA, lastTF, lastTF.magDb, C::accent(), nullptr); break;
-        case 2: magSetup(gPlotA, -24, 6); if (main) add(gPlotA, main->tf, main->tf.magDb, C::traceStored(), th::stroke::dashStored, 1e9, D::traceStored(), "Mains (stored)");
-                add(gPlotA, lastTF, lastTF.magDb, C::traceSecondary(), nullptr, 1e9, D::trace(), "Sub (live)"); break;
-        case 3: phSetup(gPlotA); gPlotA.centreNote = "phase shown up to 250 Hz";
-                if (main) add(gPlotA, main->tf, main->tf.phaseDeg, C::accent(), nullptr, 250, D::trace(), "Mains phase"); if (sub) add(gPlotA, sub->tf, sub->tf.phaseDeg, C::traceSecondary(), nullptr, 250, D::trace(), "Sub phase"); break;
-        case 4: phSetup(gPlotA); gPlotA.centreNote = "phase shown up to 250 Hz"; magSetup(gPlotB, -24, 12);
-                if (main) add(gPlotA, main->tf, main->tf.phaseDeg, C::accent(), nullptr, 250, D::trace(), "Mains phase");
-                if (sub) add(gPlotA, sub->tf, sub->tf.phaseDeg, C::traceSecondary(), th::stroke::dashLimit, 250, D::trace(), "Sub phase");
-                if (main) add(gPlotB, main->tf, main->tf.magDb, C::traceMainsMuted(), th::stroke::dashComponent, 1e9, D::traceSecondary(), "Mains");
-                if (sub) add(gPlotB, sub->tf, sub->tf.magDb, C::traceSubMuted(), th::stroke::dashComponent, 1e9, D::traceSecondary(), "Sub");
-                add(gPlotB, lastTF, lastTF.magDb, C::traceSum(), nullptr, 1e9, D::trace(), "Sum (live)"); break;
-        case 6: case 7: magSetup(gPlotA, -24, 12); add(gPlotA, lastTF, lastTF.magDb, C::accent(), nullptr); break;
-        default: break;
-    }
-    gPlotA.repaint(); gPlotB.repaint();
-}
-
-void MainComponent::updateRTA() {
-    rtaPlot.series.clear(); rtaPlot.barLo.clear(); rtaPlot.barHi.clear();
-    PlotComponent::Series s; s.c = C::accent();
-    for (size_t i = 0; i < rtaDb.size() && i < rtaBands.size(); ++i) { auto& bd = rtaBands[i]; rtaPlot.barLo.push_back(bd.fLo); rtaPlot.barHi.push_back(bd.fHi); s.f.push_back(bd.fCenter); s.v.push_back(rtaDb[i]); }
-    rtaPlot.series.push_back(s); rtaPlot.note = calApplied ? "cal applied" : ""; rtaPlot.repaint();
-}
-
-void MainComponent::requestDelay(bool sub, std::function<void()> then) {
-    pendingDelay.id = ++nextDelayId; pendingDelay.then = std::move(then);
-    delayDetail.setText(sub ? "finding sub delay (3 s window)..." : "finding delay...", dontSendNotification);
-    analysis.send(foh::Command::findDelay(sub, pendingDelay.id));
-}
-void MainComponent::beginCapture(const String& name, std::function<void(bool)> then) {
-    capture.active = true; capture.name = name; capture.startMs = Time::getMillisecondCounterHiRes(); capture.then = std::move(then); conv = {};
-}
-void MainComponent::lockDelayFromLast() {
-    analysis.send(foh::Command::referenceDelay(lastDelay.arrivals[0].delaySamples)); lockedDelayMs = lastDelay.arrivals[0].delayMs;
-}
-void MainComponent::onDelayResult() {
-    if (lastDelaySeq == pendingDelay.id && pendingDelay.then) { auto t = std::move(pendingDelay.then); pendingDelay.then = {}; Timer::callAfterDelay(1, [t] { t(); }); }
-    tfImpulse.setResult(lastDelay, analysisRate); gImpulse.setResult(lastDelay, analysisRate);
-    if (!delayLocked()) { delayValue.setText("--", dontSendNotification); delayDetail.setText(lastDelay.arrivals.empty() ? "no signal: is pink noise playing?" : "no lock (confidence 0): check signal and that only one speaker is on", dontSendNotification); return; }
-    auto& a0 = lastDelay.arrivals[0];
-    delayValue.setText(String(a0.delayMs, 2) + " ms", dontSendNotification);
-    String t = u8("\xe2\x89\x88 ") + String(a0.distanceM, 2) + u8(" m \xc2\xb7 confidence ") + String(lastDelay.confidence > 0.7 ? "high" : lastDelay.confidence > 0.35 ? "medium" : "LOW")
-             + u8(" \xc2\xb7 polarity ") + (a0.inverted ? "INVERTED" : "normal") + (lastDelayWasSubText());
-    for (size_t i = 1; i < lastDelay.arrivals.size(); ++i) t << u8("  \xc2\xb7  #") << (int) i + 1 << " " << String(lastDelay.arrivals[i].delayMs, 2) << " ms (" << String(lastDelay.arrivals[i].relLevelDb, 1) << " dB)";
-    if (lastDelay.arrivals.size() > 1 && lastDelay.arrivals[1].relLevelDb > -3) t << u8("\n\xe2\x96\xb2 Two similar spikes: is only one speaker on?");
-    delayDetail.setText(t, dontSendNotification);
-}
-
-bool MainComponent::storeTrace(const String& name) {
-    updateTF();
-    bool ok = traces.store(name.toStdString(), lastTF, refDelayMs);
-    if (!ok) AlertWindow::showMessageBoxAsync(MessageBoxIconType::WarningIcon, "Trace store full", "Up to 8 traces. Delete one on the Transfer Function page first.");
-    refreshTraceList(); return ok;
-}
-const foh::Trace* MainComponent::findTrace(const char* n) const { for (int i = traces.count() - 1; i >= 0; --i) if (traces.at(i).name == n) return &traces.at(i); return nullptr; }
-void MainComponent::refreshTraceList() { traceList.updateContent(); traceList.repaint(); }
-int MainComponent::TraceModel::getNumRows() { return o->traces.count(); }
-void MainComponent::TraceModel::paintListBoxItem(int row, Graphics& g, int w, int h, bool sel) {
-    if (row >= o->traces.count()) return; auto& t = o->traces.at(row);
-    if (sel) g.fillAll(C::navItemActiveBg());
-    g.setColour(t.visible ? C::textPrimary() : C::textAxis()); g.setFont(FohLookAndFeel::font(T::small));
-    g.drawText(String(t.visible ? "[x] " : "[ ] ") + String(t.name) + "  (ref delay " + String(t.refDelayMs, 2) + " ms)", 6, 0, w - 6, h, Justification::centredLeft);
-}
-void MainComponent::TraceModel::listBoxItemClicked(int row, const MouseEvent& e) {
-    if (row < o->traces.count() && e.x < 30) { o->traces.at(row).visible = !o->traces.at(row).visible; o->refreshTraceList(); } }
-
-void MainComponent::loadCal() {
-    chooser = std::make_unique<FileChooser>("Mic calibration file", File(), "*.csv;*.txt;*.frd;*.cal");
-    chooser->launchAsync(FileBrowserComponent::openMode | FileBrowserComponent::canSelectFiles, [this](const FileChooser& fc) {
-        auto f = fc.getResult(); if (!f.existsAsFile()) return;
-        cal = foh::loadMicCal(f.getFullPathName().toStdString()); calLabelName = f.getFileName();
-        analysis.setCal(cal.ok() ? std::make_shared<foh::MicCal>(cal) : nullptr, calLabelName);
-        if (cal.ok()) { calOn = true; calToggle.setToggleState(true, dontSendNotification);
-            calLabel.setText(u8("\xe2\x9c\x93 ") + f.getFileName() + ": " + String((int) cal.hz.size()) + " points, " + String(cal.hz.front(), 0) + "-" + String(cal.hz.back(), 0) + " Hz" + (cal.hasPhase ? ", with phase" : ""), dontSendNotification); }
-        else { calOn = false; calLabel.setText(u8("\xe2\x96\xb2 Could not read cal: ") + String(cal.error), dontSendNotification); }
-    });
-}
-
-void MainComponent::layoutGuide() {
-    gChartCard = gActionCard = gDoneA = gDoneB = {};
-    if (page != 3) { repaint(); return; }
-    auto& steps = kGuides[(size_t) guide]; auto& st = steps[(size_t) step];
-    for (auto* x : std::initializer_list<Component*>{&guideBox, &guideStepLabel, &guideBody, &guideResult, &guidePrev, &guideAct}) x->setVisible(true);
-    for (auto* x : std::initializer_list<Component*>{&gPlotA, &gPlotB, &gImpulse, &guideReadout, &guidePolarity, &doneSummary, &doneActions, &doneAgain, &doneHome}) x->setVisible(false);
-    auto c = mainArea();
-    guideStepLabel.setText((u8("GUIDED \xc2\xb7 ") + String(kGuideNames[guide]) + u8(" \xc2\xb7 STEP ") + String(step + 1) + " OF " + String((int) steps.size())).toUpperCase(), dontSendNotification);
-    guideStepLabel.setBounds(c.removeFromTop(16)); c.removeFromTop(6);
-    toolbarTitle.setText(kGuideNames[guide], dontSendNotification);
-    pageTitle.setVisible(true); pageTitle.setText(u8(st.title), dontSendNotification); pageTitle.setBounds(c.removeFromTop(29)); c.removeFromTop(14);
-    gProgress = c.removeFromTop(36); c.removeFromTop(16);
-    if (st.chart == 5) { // Done
-        gDoneA = c.removeFromLeft(c.getWidth() * 466 / 876).withHeight(437); c.removeFromLeft(14); gDoneB = c.withHeight(437);
-        doneSummary.setText(summaryRows.empty() ? String("Nothing measured yet in this guide.") : String(), dontSendNotification);
-        doneSummary.setBounds(gDoneA.reduced(22).withTrimmedTop(110)); doneActions.setBounds(gDoneB.reduced(22).removeFromTop(120));
-        auto bc = gDoneB.reduced(22).withTrimmedTop(148); doneAgain.setBounds(bc.removeFromTop(68)); bc.removeFromTop(10); doneHome.setBounds(bc.removeFromTop(43));
-        for (auto* x : std::initializer_list<Component*>{&doneSummary, &doneActions, &doneAgain, &doneHome}) x->setVisible(true);
-        guideBody.setVisible(false); guidePrev.setVisible(false); guideAct.setVisible(false); guideResult.setVisible(false);
-        repaint(); return;
-    }
-    int chartH = st.chart == 4 ? 352 + 30 : st.chart == 3 ? 300 + 24 + 68 : st.chart == 0 ? 0 : 330 + 24;
-    if (st.chart != 0) {
-        gChartCard = c.removeFromTop(chartH + 16); c.removeFromTop(14);
-        auto in = gChartCard.reduced(8);
-        if (st.chart == 4) { gPlotA.setBounds(in.removeFromTop(176)); gPlotB.setBounds(in.removeFromTop(176)); gPlotB.setVisible(true); }
-        else if (st.chart == 3) { gPlotA.setBounds(in.removeFromTop(324)); auto ro = in.reduced(14, 2); guideReadout.setBounds(ro.removeFromTop(34)); guidePolarity.setBounds(ro);
-            guideReadout.setVisible(true); guidePolarity.setVisible(true);
-            if (guideReadout.getText().isEmpty()) guideReadout.setText("Suggested: --", dontSendNotification);
-            if (guidePolarity.getText().isEmpty()) guidePolarity.setText(u8("Polarity: judge it from the phase traces in the shaded band, not from the impulse. A flip moves the sub phase by 180\xc2\xb0."), dontSendNotification); }
-        else if (st.chart == 7) { gPlotA.setBounds(in.removeFromTop(354 - 130)); in.removeFromTop(6); gImpulse.setBounds(in); gImpulse.setVisible(true); }
-        else gPlotA.setBounds(in.removeFromTop(354));
-        gPlotA.setVisible(true);
-    }
-    gActionCard = c.removeFromTop(96);
-    auto a = gActionCard.reduced(16);
-    guideAct.setButtonText(u8(st.action)); int bw = std::max(175, guideAct.getBestWidthForHeight(48) + 52);
-    guideAct.setBounds(a.removeFromRight(bw).withSizeKeepingCentre(bw, 48)); a.removeFromRight(18);
-    guidePrev.setVisible(step > 0); if (step > 0) { guidePrev.setBounds(a.removeFromRight(87).withSizeKeepingCentre(87, 43)); a.removeFromRight(18); }
-    guideBody.setText(u8(st.body), dontSendNotification); guideBody.setBounds(a);
-    c.removeFromTop(10); guideResult.setBounds(c);
-    repaint();
-}
-
-void MainComponent::guideAction(int a) {
-    String out; auto next = [this] { if (step + 1 < (int) kGuides[(size_t) guide].size()) ++step; };
-    switch (a) {
-        case 1: showPage(0); return;
-        case 2: genBox.setSelectedId(2); out = "Pink noise on at " + String(genGain.getValue(), 1) + " dBFS. Watch the meters in the top bar."; next(); break;
-        case 3: guideResult.setText("Finding the delay...", dontSendNotification);
-                requestDelay(false, [this, next] { String o;
-                    if (delayLocked()) { lockDelayFromLast(); o = "Locked reference delay " + String(lockedDelayMs, 2) + " ms. " + delayDetail.getText(); next(); }
-                    else o = "No lock. Is pink noise playing and are both inputs showing level?";
-                    guideResult.setText(o, dontSendNotification); layoutGuide(); });
-                return;
-        case 4: showPage(1); return;
-        case 5: if (storeTrace("Position 1")) out = "Stored 'Position 1'."; break;
-        case 12: guideResult.setText("Finding the sub/mains delay (LF-weighted, 3 s window)...", dontSendNotification);
-                 requestDelay(true, [this] {
-                     if (!delayLocked()) { guideResult.setText("No lock (confidence 0). Is pink noise playing, and only the mains on?", dontSendNotification); return; }
-                     lockDelayFromLast(); analysis.send(foh::Command::resetAverages());
-                     guideResult.setText("Locked delay " + String(lockedDelayMs, 2) + " ms. Averaging until the trace settles...", dontSendNotification);
-                     beginCapture("Main", [this](bool settled) { guideResult.setText("Stored 'Main' (ref delay " + String(lockedDelayMs, 2) + " ms)." + String(settled ? "" : " Note: the average did not settle within 20 s."), dontSendNotification); ++step; layoutGuide(); }); });
-                 return;
-        case 7: analysis.send(foh::Command::resetAverages()); guideResult.setText("Averaging the sub until the trace settles...", dontSendNotification);
-                beginCapture("Sub", [this](bool settled) { guideResult.setText("Stored 'Sub' (same locked delay " + String(lockedDelayMs, 2) + " ms)." + String(settled ? "" : " Note: the average did not settle within 20 s."), dontSendNotification);
-                    auto* m = findTrace("Main"); auto* s = findTrace("Sub"); if (m && s) xover = foh::acousticCrossover(m->tf, s->tf, 10.0);
-                    if (step + 1 < (int) kGuides[(size_t) guide].size()) ++step; layoutGuide(); });
-                return;
-        case 8: { auto* m = findTrace("Main"); auto* s = findTrace("Sub"); if (!m || !s) { out = "Capture mains and sub first."; break; }
-            xover = foh::acousticCrossover(m->tf, s->tf, 10.0); if (!xover.found) { out = "No overlap within 10 dB between 30-300 Hz. Check levels."; break; }
-            auto po = foh::phaseOffset(m->tf, s->tf, xover.lo, xover.hi);
-            double period = 1000.0 / po.centerHz, inv = foh::wrapDeg(po.meanDeg + 180.0), invMs = -inv / 360.0 / po.centerHz * 1000.0;
-            String who = po.impliedMs > 0 ? "Mains" : "Sub";
-            guideReadout.setText("Suggested: " + who + " +" + String(std::abs(po.impliedMs), 1) + u8(" ms   \xc2\xb7  or flip sub polarity + ") + (invMs > 0 ? "mains " : "sub ") + String(std::abs(invMs), 1) + " ms", dontSendNotification);
-            { double halfMs = 500.0 / po.centerHz; bool flipLess = std::abs(invMs) < std::abs(po.impliedMs);
-              guidePolarity.setText(u8("Polarity: a flip = 180\xc2\xb0 \xe2\x89\x88 ") + String(halfMs, 1) + " ms at " + String(po.centerHz, 0) + " Hz. "
-                  + (flipLess ? "Flipping the sub needs less delay; check the slopes still match across the band." : "Normal polarity needs less delay; prefer it if the slopes match.")
-                  + " Judge from these phase traces, not the impulse."
-                  + (delayLocked() && lastDelayWasSub() ? String(lastDelay.arrivals[0].inverted ? u8(" Delay finder: sub correlation is INVERTED (polarity flip likely).") : u8(" Delay finder: polarity normal.")) : String()), dontSendNotification); }
-            out << "Crossover " << String(xover.lo, 0) << "-" << String(xover.hi, 0) << " Hz (centre ~" << String(po.centerHz, 0) << " Hz). Sub vs main phase " << String(po.meanDeg, 0) << u8("\xc2\xb0 = ") << String(std::abs(po.impliedMs), 2) << " ms ("
-                << (po.impliedMs > 0 ? "sub LATE" : "sub EARLY") << "). Other answers differ by whole cycles (" << String(period, 1) << u8(" ms). Target: within ~60\xc2\xb0 and parallel across the band.");
-            summaryRows = { {"Crossover", String(xover.lo, 0) + "-" + String(xover.hi, 0) + " Hz"}, {"Suggested", who + " +" + String(std::abs(po.impliedMs), 1) + " ms"},
-                            {"Alternative", "Flip sub polarity, " + String(invMs > 0 ? "mains " : "sub ") + String(std::abs(invMs), 1) + " ms"}, {"Reference delay", String(lockedDelayMs, 2) + " ms"} };
-            next(); break; }
-        case 9: { if (storeTrace("Both")) { auto* m = findTrace("Main"); auto* s = findTrace("Sub"); auto* b = findTrace("Both");
-                    if (m && s && b && xover.found) { auto vs = foh::virtualSum(m->tf, s->tf); double gain = 0, ref = 0; int n = 0;
-                        for (size_t k = 1; k < b->tf.freq.size(); ++k) if (b->tf.freq[k] >= xover.lo && b->tf.freq[k] <= xover.hi) { gain += b->tf.magDb[k] - std::max(m->tf.magDb[k], s->tf.magDb[k]); ref += vs.magDb[k] - std::max(m->tf.magDb[k], s->tf.magDb[k]); ++n; }
-                        if (n) { gain /= n; ref /= n; summaryRows.push_back({"Sum in crossover", (gain >= 0 ? "+" : "") + String(gain, 1) + " dB (predicted " + (ref >= 0 ? "+" : "") + String(ref, 1) + " dB)"}); } }
-                    out = "Stored 'Both'."; next(); } break; }
-        case 10: { guideResult.setText("Finding the fill arrival...", dontSendNotification);
-            requestDelay(false, [this, next] { if (!delayLocked()) { guideResult.setText("No lock (confidence 0). Is only the fill on?", dontSendNotification); return; }
-            String o2; String& out = o2;
-            // findDelay works on the raw (uncompensated) reference, so arrivals are absolute
-            double fillMs = lastDelay.arrivals[0].delayMs, diff = lockedDelayMs - fillMs;
-            out << "Fill arrives at " << String(fillMs, 2) << " ms; mains at " << String(lockedDelayMs, 2) << " ms. "
-                << (diff > 0 ? "Fill arrives " + String(diff, 2) + " ms BEFORE the mains here. Suggested: delay the fill by ~" + String(diff, 2) + " ms (optionally a few ms more)."
-                             : "Fill already arrives after the mains (" + String(-diff, 2) + " ms). Check the seam position and which speaker is on.");
-            next(); guideResult.setText(out, dontSendNotification); layoutGuide(); });
-            return; }
-        case 11: if (storeTrace("Main+Fill")) out = "Stored 'Main+Fill'. Compare with 'Main' on the Transfer Function page."; break;
-        case 13: step = 0; break;
-        default: break;
-    }
-    guideResult.setText(out, dontSendNotification); layoutGuide();
+    auto* dev = model.dm.getCurrentAudioDevice();
+    using P = StatusPills; bool clip = mp > 0.99f || rp > 0.99f;
+    auto lvl = [&](const char* n, float p) { return P::Pill{ String(n) + " " + dbs(p), p > 0.99f ? P::Poor : p > 0.01f ? P::Good : P::Caution }; };
+    std::vector<P::Pill> v { { model.paused ? "Paused" : "Measuring", model.paused ? P::Caution : P::Good },
+                             { dev ? dev->getName() + u8(" \xc2\xb7 ") + String((int) fs / 1000) + " kHz" : String("No device"), dev ? P::None : P::Poor },
+                             lvl("Mic", mp), lvl("Ref", rp), { model.calApplied ? "Cal on" : "Cal off", model.calApplied ? P::Good : P::None }, { "Ref delay " + String(model.refDelayMs, 2) + " ms", P::None } };
+    if (clip) v.push_back({ "CLIPPING", P::Poor });
+    status.setPills(std::move(v));
 }
