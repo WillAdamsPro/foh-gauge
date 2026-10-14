@@ -7,7 +7,9 @@
 #include <thread>
 #include <random>
 #include <iostream>
+#ifndef _WIN32
 #include <sys/resource.h>
+#endif
 
 namespace {
 foh::TFResult syntheticTF(double gain = 0) {
@@ -92,6 +94,9 @@ TEST_CASE("W7 panel owns a stable reference and releases silent mode", "[app][sh
 // Set FOH_W7_CPU=1 to run the optional real-time, visible synthetic acceptance check.
 // Process CPU includes callback feeding, analysis, snapshot copying and chart rendering.
 TEST_CASE("W7 visible synthetic programme CPU measurement", "[app][show][cpu]") {
+#ifdef _WIN32
+    SKIP("Optional process CPU measurement requires POSIX getrusage");
+#else
     if (juce::SystemStats::getEnvironmentVariable("FOH_W7_CPU", "") != "1") return;
     juce::ScopedJuceInitialiser_GUI initialise;
     AppModel model; model.engine.state = AudioEngine::Ready;
@@ -142,6 +147,7 @@ TEST_CASE("W7 visible synthetic programme CPU measurement", "[app][show][cpu]") 
     running = false; feeder.join(); model.analysis.stop(); panel->removeFromDesktop();
     REQUIRE(stored); REQUIRE(steadyStatus.startsWith("Monitoring:")); REQUIRE(driftStatus.startsWith("DRIFT ALERT:"));
     REQUIRE(missingStatus.startsWith("Waiting:")); REQUIRE(cpu < 10);
+#endif
 }
 
 TEST_CASE("Show mode exposes W7 even with an older saved workspace", "[app][show][workspace]") {

@@ -44,9 +44,11 @@ public:
         shown.onClick = band.onClick = [this] { changed(); };
         offset.onValueChange = [this] { changed(); };
         import.onClick = [this] {
-            chooser = std::make_unique<FileChooser>("Import Smaart target", File{}, "*.txt;*.asc;*.csv");
+            chooser = std::make_unique<juce::FileChooser>(juce::String("Import Smaart target"),
+                juce::File(), juce::String("*.txt;*.asc;*.csv"));
+            const juce::Component::SafePointer<TargetControls> safe(this);
             chooser->launchAsync(FileBrowserComponent::openMode | FileBrowserComponent::canSelectFiles,
-                [safe = Component::SafePointer<TargetControls>(this)](const FileChooser& fc) {
+                [safe](const juce::FileChooser& fc) {
                     if (!safe || fc.getResult() == File{}) return;
                     std::string text;
                     try { text = foh::input::read(fc.getResult().getFullPathName().toStdString()); }

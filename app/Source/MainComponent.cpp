@@ -126,8 +126,8 @@ void MainComponent::openFloatingWindows() {
         win->addKeyListener(this);
         auto window = SafePointer<FloatingPanelWindow>(win);
         // Ignore queued actions if a workspace switch or reset has already destroyed the window.
-        win->onDock = [this, id, window] { MessageManager::callAsync([sp = SafePointer<MainComponent>(this), id, window] { if (sp && window) sp->dockPanel(id); }); };
-        win->onClose = [this, id, window] { MessageManager::callAsync([sp = SafePointer<MainComponent>(this), id, window] { if (sp && window) { // close = hide; Workspace > Show Panels brings it back
+        win->onDock = [self = SafePointer<MainComponent>(this), id, window] { MessageManager::callAsync([sp = self, id, window] { if (sp && window) sp->dockPanel(id); }); };
+        win->onClose = [self = SafePointer<MainComponent>(this), id, window] { MessageManager::callAsync([sp = self, id, window] { if (sp && window) { // close = hide; Workspace > Show Panels brings it back
             auto* w2 = sp->view.workspace(); if (!w2) return;
             // Erasing from the state vector invalidates references held by every later window.
             sp->closeFloatingWindows();
