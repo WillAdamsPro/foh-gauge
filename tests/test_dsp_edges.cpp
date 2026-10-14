@@ -81,7 +81,8 @@ TEST_CASE("RTA calibration and averaging cannot inject nonfinite band levels", "
     REQUIRE(octaveBands(0).empty()); REQUIRE(octaveBands(-3).empty());
 }
 TEST_CASE("Mic calibration handles invalid queries and extreme corrections", "[edges]") {
-    auto cal = parseMicCal("100 -1e300 0\n1000 -1e300 0\n");
+    REQUIRE_FALSE(parseMicCal("100 -1e300 0\n1000 -1e300 0\n").ok()); // #87: absurd values are rejected
+    auto cal = parseMicCal("100 -60 0\n1000 -60 0\n");
     REQUIRE(cal.ok()); REQUIRE(std::isfinite(cal.dbAt(qnan)));
     REQUIRE(cal.correctionDb(-1, 1).empty());
     TransferFunction tf(64); std::vector<float> x(128, 1); tf.process(x.data(), x.data(), 128);
