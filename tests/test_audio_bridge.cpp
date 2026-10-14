@@ -760,9 +760,16 @@ TEST_CASE("Stereo overflow drops both channels and requests a history reset", "[
 // Count C++ heap allocations only inside the audited callback, on this thread.
 #include <cstdlib>
 #include <new>
+#if defined(_WIN32)
+#include <malloc.h>
+#endif
 namespace {
 thread_local bool auditAllocations = false;
 thread_local int callbackAllocations = 0;
+struct CallbackAllocationAudit {
+    CallbackAllocationAudit() { callbackAllocations = 0; auditAllocations = true; }
+    ~CallbackAllocationAudit() { auditAllocations = false; }
+};
 }
 void* operator new(std::size_t n) {
     if (auditAllocations) ++callbackAllocations;
@@ -771,36 +778,103 @@ void* operator new(std::size_t n) {
 }
 void operator delete(void* p) noexcept { std::free(p); }
 void operator delete(void* p, std::size_t) noexcept { std::free(p); }
+void* operator new[](std::size_t n) { return ::operator new(n); }
+void operator delete[](void* p) noexcept { ::operator delete(p); }
+void operator delete[](void* p, std::size_t) noexcept { ::operator delete(p); }
+void* operator new(std::size_t n, std::align_val_t alignment) {
+    if (auditAllocations) ++callbackAllocations;
+    void* p = nullptr;
+#if defined(_WIN32)
+    p = _aligned_malloc(n ? n : 1, static_cast<std::size_t>(alignment));
+#else
+    if (posix_memalign(&p, static_cast<std::size_t>(alignment), n ? n : 1) != 0) p = nullptr;
+#endif
+    if (p) return p;
+    throw std::bad_alloc();
+}
+void operator delete(void* p, std::align_val_t) noexcept {
+#if defined(_WIN32)
+    _aligned_free(p);
+#else
+    std::free(p);
+#endif
+}
+void operator delete(void* p, std::size_t, std::align_val_t alignment) noexcept { ::operator delete(p, alignment); }
+void* operator new[](std::size_t n, std::align_val_t alignment) { return ::operator new(n, alignment); }
+void operator delete[](void* p, std::align_val_t alignment) noexcept { ::operator delete(p, alignment); }
+void operator delete[](void* p, std::size_t, std::align_val_t alignment) noexcept { ::operator delete(p, alignment); }
+
+TEST_CASE("Callback allocation audit detects scalar, array and aligned forbidden paths", "[app][audio][rt]") {
+    // Explicit calls cannot be elided as new-expressions can in an optimized build.
+    void *scalar, *array, *aligned, *alignedArray;
+    {
+        CallbackAllocationAudit audit;
+        scalar = ::operator new(32);
+        array = ::operator new[](32);
+        aligned = ::operator new(64, std::align_val_t{64});
+        alignedArray = ::operator new[](64, std::align_val_t{64});
+    }
+    ::operator delete(scalar); ::operator delete[](array);
+    ::operator delete(aligned, std::align_val_t{64});
+    ::operator delete[](alignedArray, std::align_val_t{64});
+    CHECK(callbackAllocations == 4);
+}
 
 TEST_CASE("Audio callback is allocation free across generators, tests and variable blocks", "[app][audio][rt]") {
     AudioEngine engine; SyntheticDevice device;
+    engine.outB = -1; // Configure routing before the restart acknowledgement.
     engine.audioDeviceAboutToStart(&device); engine.analysisEpoch = engine.captureEpoch.load();
     float input[8192] {}, output[8192];
+    for (int i = 0; i < 8192; ++i) input[i] = 0.1f * std::sin(float(i) * 0.13f);
     const float* inputs[] {input, input}; float* outputs[] {output};
-    engine.outB = -1;
+    float drained[8192];
+    auto processBlock = [&](int n) {
+        {
+            CallbackAllocationAudit audit;
+            engine.audioDeviceIOCallbackWithContext(inputs, 2, outputs, 1, n, {});
+        }
+        REQUIRE(callbackAllocations == 0);
+        // Prove the audited call reaches capture, rather than returning at the
+        // epoch handshake. Drain on the synthetic consumer, outside the audit.
+        REQUIRE(engine.micRing.available() == n);
+        REQUIRE(engine.refRing.available() == n);
+        REQUIRE(engine.micRing.pop(drained, n) == n);
+        REQUIRE(engine.refRing.pop(drained, n) == n);
+        for (int i = 0; i < n; ++i) REQUIRE(std::isfinite(output[i]));
+    };
+    // Move both SPSC cursors near the boundary, exercising the split-copy push
+    // in an audited callback without allocating its backing storage on I/O.
+    std::vector<float> padding(size_t(engine.micRing.capacity() - 1), 0.f);
+    for (auto* ring : {&engine.micRing, &engine.refRing}) {
+        const int advance = ring->capacity() - 1;
+        REQUIRE(ring->push(padding.data(), advance));
+        REQUIRE(ring->pop(padding.data(), advance) == advance);
+    }
+    processBlock(8192);
     for (int mode : {AudioEngine::Off, AudioEngine::Pink, AudioEngine::Sweep}) {
         engine.gen = mode; engine.genGainDb = -30.0f + float(mode);
         for (int n : {1, 16, 256, 4096, 8192}) {
             // First exercise the generator, then exercise chime/detection on the same block.
             engine.cancelConnectionTest();
-            callbackAllocations = 0; auditAllocations = true;
-            engine.audioDeviceIOCallbackWithContext(inputs, 2, outputs, 1, n, {});
-            auditAllocations = false;
-            REQUIRE(callbackAllocations == 0);
-            for (int i = 0; i < n; ++i) REQUIRE(std::isfinite(output[i]));
+            processBlock(n);
             engine.testConnection(0, 1);
-            callbackAllocations = 0; auditAllocations = true;
-            engine.audioDeviceIOCallbackWithContext(inputs, 2, outputs, 1, n, {});
-            auditAllocations = false;
-            REQUIRE(callbackAllocations == 0);
-            for (int i = 0; i < n; ++i) REQUIRE(std::isfinite(output[i]));
+            processBlock(n);
         }
     }
+    engine.cancelConnectionTest();
+    engine.startSweepMeasurement(); // worker-to-callback one-shot request
+    processBlock(8192);
+    engine.monitoringSilent = true;
+    processBlock(256);
+    for (int i = 0; i < 256; ++i) CHECK(output[i] == 0);
+    engine.monitoringSilent = false;
+
     engine.refCh = 100;
-    callbackAllocations = 0; auditAllocations = true;
-    engine.audioDeviceIOCallbackWithContext(nullptr, 0, outputs, 1, 256, {});
-    engine.audioDeviceStopped();
-    auditAllocations = false;
+    {
+        CallbackAllocationAudit audit;
+        engine.audioDeviceIOCallbackWithContext(nullptr, 0, outputs, 1, 256, {});
+        engine.audioDeviceStopped();
+    }
     CHECK(callbackAllocations == 0);
 }
 
