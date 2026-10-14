@@ -114,6 +114,14 @@ void PlotComponent::paint(Graphics& g) {
             g.setColour(C::textSecondary()); g.setFont(FohLookAndFeel::font(T::axisTick)); g.drawText("Likely a reflection at the mic", (int) box.getX() + 32, (int) box.getY() + 21, 172, 14, Justification::left);
             g.setFont(FohLookAndFeel::font(T::axisTick)); } }
     Graphics::ScopedSaveState ss(g); g.reduceClipRegion(pr.toNearestInt());
+    for (const auto& band : toleranceBands) {
+        if (band.f.size() < 2) continue;
+        Path area;
+        area.startNewSubPath(xOf(band.f.front()), yOf(band.upper.front()));
+        for (size_t i = 1; i < band.f.size(); ++i) area.lineTo(xOf(band.f[i]), yOf(band.upper[i]));
+        for (size_t i = band.f.size(); i-- > 0;) area.lineTo(xOf(band.f[i]), yOf(band.lower[i]));
+        area.closeSubPath(); g.setColour(band.colour.withAlpha(0.15f)); g.fillPath(area);
+    }
     if (bars) for (auto& s : series) { if (s.dash) continue; g.setColour(C::rtaBar());
         for (size_t i = 0; i < s.v.size() && i < barLo.size(); ++i) { float a = xOf(barLo[i]) + 1, b = xOf(barHi[i]) - 1, y = yOf(s.v[i]); g.fillRect(a, y, std::max(1.f, b - a), pr.getBottom() - y); }
         Path p; for (size_t i = 0; i < s.v.size(); ++i) { float x = xOf(s.f[i]), y = yOf(s.v[i]); if (i == 0) p.startNewSubPath(x, y); else p.lineTo(x, y); }
