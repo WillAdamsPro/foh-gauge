@@ -83,6 +83,6 @@ protected:
     juce::Label microphoneNotice;
     juce::TextButton microphoneSettingsBtn { "Open System Settings" };
     juce::Label toolbarTitle; SegmentedControl switcher {{"Setup", "Alignment", "Tuning", "RTA/Show"}};
-    StatusPills status; juce::TextButton pauseBtn;
+    StatusPills status; juce::TextButton pauseBtn, outputOn;
     SegmentedControl appearance {{"Dark", "Sunlight"}}; juce::ComboBox scaleBox;
 };

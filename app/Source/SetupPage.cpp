@@ -31,7 +31,10 @@ SetupPage::SetupPage(AppModel& m, bool showDone) : model(m) {
     addAndMakeVisible(loopbackInstructions); addAndMakeVisible(loopbackStatus);
     addAndMakeVisible(measureLoopback); addAndMakeVisible(clearLoopback);
     measureLoopback.onClick = [this] {
-        if (!model.beginLoopback()) notice.setText("Select two separate inputs and both outputs before measuring.", dontSendNotification);
+        SafePointer<SetupPage> safe(this);
+        model.confirmGeneratorStart("Pink noise", [safe] {
+            if (safe && !safe->model.beginLoopback()) safe->notice.setText("Select two separate inputs and both outputs before measuring.", dontSendNotification);
+        }, -20.f);
     };
     clearLoopback.onClick = [this] { model.clearLoopback(); };
     splInstructions.setText("SPL calibration: fit a 1 kHz calibrator to the mic, or play a steady signal and enter its known level. Keep input gain unchanged after calibration.", dontSendNotification);

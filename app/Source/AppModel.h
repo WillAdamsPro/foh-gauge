@@ -35,6 +35,23 @@ public:
     void setPaused(bool p) { paused = p; analysis.paused = p; notify(Levels); }
     bool paused = false;
 
+    // Application-session safety state; never saved in preferences or workspaces.
+    bool allowsFullGeneratorLevel() const { return fullGeneratorLevel; }
+    void allowFullGeneratorLevel(bool allow) {
+        fullGeneratorLevel = allow;
+        setGeneratorLevel(engine.genGainDb.load());
+    }
+    void setGeneratorLevel(float db) {
+        engine.genGainDb = juce::jlimit(-60.f, fullGeneratorLevel ? 0.f : -6.f, db);
+        notify(Settings);
+    }
+    void confirmGeneratorStart(const juce::String& signal, std::function<void()> start, std::optional<float> level = {});
+    void stopGenerator() {
+        generatorConfirmation.close(); generatorConfirmationPending = false;
+        if (loopbackMeasuring) { savedGenerator = AudioEngine::Off; finishLoopback(); }
+        engine.cancelGeneratedPlayback(); notify(Settings);
+    }
+
     // ---- copied from the latest AnalysisSnapshot (latest() is only valid until the next call)
     foh::SweepResult sweep; bool sweepCapturing = false;
     foh::TFResult multiPosition; int positionCount = 0; uint8_t positionMask = 0;
@@ -154,6 +171,8 @@ public:
     void setInspector(const juce::String& title, const juce::String& text) { inspectorTitle = title; inspectorText = text; notify(Overlay); }
 
 private:
+    bool fullGeneratorLevel = false, generatorStartConfirmed = false, generatorConfirmationPending = false;
+    juce::ScopedMessageBox generatorConfirmation;
     std::array<std::optional<juce::Colour>, foh::TraceStore::kMax> traceColours;
     void syncLoopback();
     void finishLoopback(const foh::TFResult* raw = nullptr);
