@@ -11,6 +11,13 @@ MainComponent::MainComponent() {
     foh::theme::ThemeManager::get().addChangeListener(this); model.addListener(this);
 
     addAndMakeVisible(content);
+    addChildComponent(microphoneNotice);
+    microphoneNotice.setText("Microphone access is blocked. Enable it in System Settings.", dontSendNotification);
+    microphoneNotice.setFont(FohLookAndFeel::font(T::small));
+    addChildComponent(microphoneSettingsBtn);
+    microphoneSettingsBtn.onClick = [] {
+        URL("x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone").launchInDefaultBrowser();
+    };
     content.addAndMakeVisible(toolbarTitle); toolbarTitle.setFont(FohLookAndFeel::font(T::small + 1, true));
     content.addAndMakeVisible(switcher); switcher.onChange = [this](int i) { selectWorkspace(i); };
     content.addAndMakeVisible(status);
@@ -229,10 +236,24 @@ void MainComponent::fitSavedScale() {
             fit = percent;
     setUiScale(fit);
 }
+void MainComponent::setMicrophoneAccessBlocked(bool blocked) {
+    // Called only on the message thread, including before the window becomes visible.
+    if (microphoneNotice.isVisible() == blocked) return;
+    microphoneNotice.setVisible(blocked);
+    microphoneSettingsBtn.setVisible(blocked);
+    resized();
+}
 void MainComponent::resized() {
+    const int consentHeight = microphoneNotice.isVisible() ? 36 : 0;
+    auto consent = getLocalBounds().removeFromTop(consentHeight).reduced(12, 0);
+    microphoneSettingsBtn.setBounds(consent.removeFromRight(156).withSizeKeepingCentre(156, 28));
+    consent.removeFromRight(8);
+    microphoneNotice.setBounds(consent);
+    microphoneNotice.setColour(Label::textColourId, C::textPrimary());
+    microphoneNotice.setColour(Label::backgroundColourId, C::background());
     const float scale = (float) uiScale / 100.0f;
-    content.setTransform(AffineTransform::scale(scale));
-    content.setBounds(0, 0, jmax(1, (int) std::ceil(getWidth() / scale)), jmax(1, (int) std::ceil(getHeight() / scale)));
+    content.setTransform(AffineTransform::scale(scale).translated(0.0f, (float) consentHeight));
+    content.setBounds(0, 0, jmax(1, (int) std::ceil(getWidth() / scale)), jmax(1, (int) std::ceil((getHeight() - consentHeight) / scale)));
     layoutContent();
     content.repaint();
 }

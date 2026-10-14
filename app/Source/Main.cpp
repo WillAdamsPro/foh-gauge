@@ -28,13 +28,14 @@ public:
         window.reset(new Window());
     }
     void shutdown() override { shuttingDown = true; window = nullptr; }
-    struct Window : juce::DocumentWindow, juce::MenuBarModel, juce::ApplicationCommandTarget {
+    struct Window : juce::DocumentWindow, juce::MenuBarModel, juce::ApplicationCommandTarget, private juce::Timer {
         enum { resetScale = 1, largerScale, smallerScale, scale125, scale150, scale200, darkTheme, sunlightTheme };
         MainComponent* main = nullptr; // owned by DocumentWindow
         juce::ApplicationCommandManager commands;
         Window() : DocumentWindow("FOH Gauge", foh::ui::col::background(), allButtons) {
             setUsingNativeTitleBar(true);
             main = new MainComponent();
+            updateMicrophoneConsent();
             setContentOwned(main, true);
             setResizable(true, true);
             centreWithSize(getWidth(), getHeight());
@@ -50,8 +51,12 @@ public:
             setMenuBar(this);
 #endif
             setVisible(true);
+#if JUCE_MAC
+            startTimer(1000); // Refresh consent after a change in System Settings.
+#endif
         }
         ~Window() override {
+            stopTimer();
 #if JUCE_MAC
             juce::MenuBarModel::setMacMainMenu(nullptr);
 #else
@@ -59,6 +64,14 @@ public:
 #endif
             removeKeyListener(commands.getKeyMappings());
         }
+        void updateMicrophoneConsent() {
+#if JUCE_MAC
+            const auto status = [AVCaptureDevice authorizationStatusForMediaType:AVMediaTypeAudio];
+            main->setMicrophoneAccessBlocked(status == AVAuthorizationStatusDenied
+                                            || status == AVAuthorizationStatusRestricted);
+#endif
+        }
+        void timerCallback() override { updateMicrophoneConsent(); }
         void constrainToDisplay() {
             auto& displays = juce::Desktop::getInstance().getDisplays();
             if (auto* display = displays.getDisplayForRect(getBounds())) {
