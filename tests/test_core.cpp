@@ -262,7 +262,9 @@ TEST_CASE("RingBuffer: wraparound, whole-block drop, pow2 rounding, drop counter
 TEST_CASE("Denormals are flushed inside ScopedFlushDenormals") {
     volatile float tiny = 1e-38f; volatile float scale = 1e-3f;
     float before = tiny * scale; REQUIRE(before != 0.0f); // subnormal without FTZ
-    float inside; { ScopedFlushDenormals fz; inside = tiny * scale; }
+    // Force the result to be stored while FTZ is active. A non-volatile result
+    // lets the optimiser defer the multiply until after the FP state is restored.
+    volatile float inside = 0; { ScopedFlushDenormals fz; inside = tiny * scale; }
     REQUIRE(inside == 0.0f);
     float after = tiny * scale; REQUIRE(after != 0.0f); // restored
 }
