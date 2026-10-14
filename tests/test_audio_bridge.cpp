@@ -16,8 +16,8 @@ void capture(AudioEngine& engine, const float* mic, const float* ref, int n) {
     engine.audioDeviceIOCallbackWithContext(inputs, 2, nullptr, 0, n, {});
 }
 template <typename Predicate>
-bool waitFor(Predicate predicate) {
-    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+bool waitFor(Predicate predicate, std::chrono::milliseconds timeout = std::chrono::seconds(3)) {
+    const auto deadline = std::chrono::steady_clock::now() + timeout;
     while (std::chrono::steady_clock::now() < deadline) {
         if (predicate()) return true;
         std::this_thread::sleep_for(std::chrono::milliseconds(5));
@@ -602,16 +602,30 @@ public:
     explicit ConcurrentCapture(AudioEngine& e) : engine(e), worker([this] { run(); }) {}
     ~ConcurrentCapture() { done.store(true); worker.join(); }
     std::atomic<double> requestedRate{48000}, runningRate{0};
-    std::atomic<uint64_t> blocks{0};
+    std::atomic<bool> requestedRunning{true}, running{false};
+    std::atomic<uint64_t> blocks{0}, allocations{0}, audibleBlocks{0}, silentBlocks{0};
+    std::atomic<bool> finiteOutput{true};
 private:
     void run() {
         SyntheticDevice device;
-        float signal[1024];
+        float signal[1024], left[1024], right[1024];
+        const float* inputs[] {signal, signal};
+        float* outputs[] {left, right};
         foh::PinkNoise noise(43);
         noise.process(signal, 1024);
         engine.audioDeviceAboutToStart(&device);
         runningRate.store(device.rate);
+        running.store(true);
         while (!done.load()) {
+            if (!requestedRunning.load()) {
+                if (running.exchange(false)) engine.audioDeviceStopped();
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                continue;
+            }
+            if (!running.load()) {
+                engine.audioDeviceAboutToStart(&device);
+                running.store(true);
+            }
             const auto rate = requestedRate.load();
             if (rate != device.rate) {
                 engine.audioDeviceStopped();
@@ -624,7 +638,17 @@ private:
             // so repeated overflow resets cannot starve snapshot publication.
             // This pacing belongs only to the test producer, never the callback.
             if (engine.micRing.available() < 4096 && engine.refRing.available() < 4096) {
-                capture(engine, signal, signal, 1024);
+                callbackAllocations = 0; auditAllocations = true;
+                engine.audioDeviceIOCallbackWithContext(inputs, 2, outputs, 2, 1024, {});
+                auditAllocations = false;
+                allocations.fetch_add(uint64_t(callbackAllocations));
+                bool audible = false;
+                for (int i = 0; i < 1024; ++i) {
+                    if (!std::isfinite(left[i]) || !std::isfinite(right[i])) finiteOutput.store(false);
+                    audible |= left[i] != 0 || right[i] != 0;
+                }
+                if (audible) audibleBlocks.fetch_add(1);
+                else silentBlocks.fetch_add(1);
                 blocks.fetch_add(1);
             }
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
@@ -692,6 +716,8 @@ TEST_CASE("Settings and calibration changes overlap a synthetic measurement", "[
         const int fraction = id % 2 ? 6 : 12;
         engine.genGainDb.store(-30.f + float(id));
         analysis.setCal(id % 2 ? calibration : nullptr, "Synthetic");
+        // SPL/mic calibration changes invalidate Leq through this same atomic handoff.
+        analysis.leqRevision.store(id);
         REQUIRE(analysis.send(foh::Command::smoothing(fraction)));
         REQUIRE(analysis.send(foh::Command::rtaFraction(fraction)));
         REQUIRE(analysis.send(foh::Command::averages(4)));
@@ -702,10 +728,11 @@ TEST_CASE("Settings and calibration changes overlap a synthetic measurement", "[
             const auto& s = analysis.latest();
             return s.resetSeq == id && s.smoothingFraction == fraction
                 && s.rtaFraction == fraction && s.calApplied == bool(id % 2)
-                && s.tf.averages > 0;
+                && s.leqRevision == id && s.leq.seconds > 0 && s.tf.averages > 0;
         }));
         const auto snapshot = analysis.latest();
         REQUIRE(snapshot.refDelaySamples == double(id));
+        for (double level : snapshot.leq.level) CHECK(std::isfinite(level));
         REQUIRE(snapshot.rtaDb.size() == snapshot.rtaBands.size());
         REQUIRE(snapshot.inputEpoch == engine.captureEpoch.load());
     }
@@ -841,7 +868,9 @@ TEST_CASE("Sweep measurement captures loopback and publishes impulse and ETC", "
         engine.audioDeviceIOCallbackWithContext(inputs, 2, outputs, 2, block, {});
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
-    REQUIRE(waitFor([&] { return !analysis.latest().sweepCapturing; }));
+    // Full-length deconvolution runs on the worker and can exceed the usual
+    // three-second handoff deadline under TSan; retain all impulse assertions.
+    REQUIRE(waitFor([&] { return !analysis.latest().sweepCapturing; }, std::chrono::seconds(30)));
     const auto result = analysis.latest().sweep;
     REQUIRE(result.response.ok());
     CHECK(result.response.arrivals[0].delayMs == Catch::Approx(4.8).margin(0.02));
@@ -884,6 +913,137 @@ TEST_CASE("Pausing cancels a sweep capture and stops playback", "[app][audio][sw
     CHECK(analysis.latest().sweep.response.impulse.empty());
     CHECK(engine.gen.load() == AudioEngine::Off);
     analysis.stop();
+}
+
+TEST_CASE("Device stop and restart during capture discard old analysis and sweep state", "[app][audio][concurrent]") {
+    AudioEngine engine; AnalysisEngine analysis(engine);
+    analysis.start();
+    ConcurrentCapture producer(engine);
+    REQUIRE(waitFor([&] { return analysis.latest().tf.averages > 0; }));
+    for (uint64_t id = 1; id <= 3; ++id) {
+        REQUIRE(analysis.send(foh::Command::resetAverages(id)));
+        REQUIRE(waitFor([&] { return analysis.latest().resetSeq == id && analysis.latest().tf.averages > 0; }));
+        foh::Command sweep; sweep.type = foh::CommandType::MeasureSweep;
+        REQUIRE(analysis.send(sweep));
+        REQUIRE(waitFor([&] { return analysis.latest().sweepCapturing; }));
+        const auto epoch = engine.captureEpoch.load();
+        producer.requestedRunning.store(false);
+        REQUIRE(waitFor([&] {
+            const auto& s = analysis.latest();
+            return engine.state.load() == AudioEngine::Stopped && s.inputEpoch > epoch
+                && !s.sweepCapturing && !s.micLevelValid && s.tf.averages == 0;
+        }));
+        REQUIRE(engine.gen.load() == AudioEngine::Off);
+        REQUIRE(analysis.latest().sweep.response.impulse.empty());
+        producer.requestedRunning.store(true);
+        REQUIRE(waitFor([&] {
+            const auto& s = analysis.latest();
+            return s.inputEpoch == engine.captureEpoch.load() && s.tf.averages > 0 && s.micLevelValid;
+        }));
+    }
+    CHECK(producer.allocations.load() == 0);
+    CHECK(producer.finiteOutput.load());
+}
+
+TEST_CASE("Sample-rate change interrupts an active log sweep before publishing new-rate measurements", "[app][audio][concurrent]") {
+    AudioEngine engine; AnalysisEngine analysis(engine);
+    analysis.start();
+    ConcurrentCapture producer(engine);
+    REQUIRE(waitFor([&] { return analysis.latest().tf.averages > 0; }));
+    for (double rate : {96000.0, 44100.0, 48000.0}) {
+        foh::Command sweep; sweep.type = foh::CommandType::MeasureSweep;
+        REQUIRE(analysis.send(sweep));
+        REQUIRE(waitFor([&] { return analysis.latest().sweepCapturing; }));
+        producer.requestedRate.store(rate);
+        REQUIRE(waitFor([&] {
+            const auto& s = analysis.latest();
+            return s.tf.sampleRate == rate && s.inputEpoch == engine.captureEpoch.load()
+                && s.tf.averages > 0 && !s.sweepCapturing;
+        }));
+        const auto snapshot = analysis.latest();
+        CHECK(snapshot.sweep.response.impulse.empty());
+        CHECK_FALSE(snapshot.sweep.response.error.empty());
+        CHECK(engine.gen.load() == AudioEngine::Off);
+    }
+    CHECK(producer.allocations.load() == 0);
+    CHECK(producer.finiteOutput.load());
+}
+
+TEST_CASE("Generator changes during TF averaging keep playback and worker handoffs RT safe", "[app][audio][concurrent]") {
+    AudioEngine engine; AnalysisEngine analysis(engine);
+    analysis.start();
+    ConcurrentCapture producer(engine);
+    REQUIRE(waitFor([&] { return analysis.latest().tf.averages > 0; }));
+    REQUIRE(analysis.send(foh::Command::averages(0))); // cumulative average across generator changes
+    auto seq = analysis.latest().seq;
+    for (int mode : {AudioEngine::Pink, AudioEngine::Off, AudioEngine::Sweep, AudioEngine::Off,
+                     AudioEngine::Pink, AudioEngine::Sweep, AudioEngine::Off}) {
+        const auto audible = producer.audibleBlocks.load();
+        const auto silent = producer.silentBlocks.load();
+        engine.gen.store(mode);
+        engine.genGainDb.store(-24.f + float(mode));
+        REQUIRE(waitFor([&] {
+            const auto& s = analysis.latest();
+            return s.seq > seq && s.tf.averages > 0
+                && (mode == AudioEngine::Off ? producer.silentBlocks.load() > silent
+                                               : producer.audibleBlocks.load() > audible);
+        }));
+        const auto snapshot = analysis.latest();
+        seq = snapshot.seq;
+        CHECK(snapshot.leq.seconds > 0);
+        CHECK(snapshot.inputEpoch == engine.captureEpoch.load());
+        for (auto level : snapshot.rtaDb) CHECK(std::isfinite(level));
+    }
+    CHECK(producer.allocations.load() == 0);
+    CHECK(producer.finiteOutput.load());
+}
+
+TEST_CASE("Target overlays and stored trace edits stay on the reader while live meters update", "[app][audio][concurrent][traces][target]") {
+    juce::ScopedJuceInitialiser_GUI initialise;
+    // The isolated model supplies UI state only. Start its real analysis worker
+    // and copy snapshots on this sole reader, as the production model timer does.
+    AppModel model;
+    auto panel = PanelRegistry::standard().create("TransferFunction", model);
+    REQUIRE(panel);
+    panel->setSize(800, 600); panel->addToDesktop(0); panel->setVisible(true);
+    model.analysis.start();
+    ConcurrentCapture producer(model.engine);
+    REQUIRE(waitFor([&] { return model.analysis.latest().tf.averages > 0; }));
+    auto seq = model.analysis.latest().seq;
+    for (int i = 0; i < 8; ++i) {
+        REQUIRE(waitFor([&] { return model.analysis.latest().seq > seq; }));
+        const auto snapshot = model.analysis.latest(); // owned copy, never keep a borrowed slot
+        seq = snapshot.seq;
+        model.tf = snapshot.tf; model.leq = snapshot.leq;
+        model.rtaDb = snapshot.rtaDb; model.rtaBands = snapshot.rtaBands;
+        model.micPeak = model.engine.micPeak.exchange(0);
+        CHECK(model.leq.seconds > 0);
+        auto state = fohws::Json::object();
+        state.set("targetChoice", i % 3 + 1); state.set("targetShown", true);
+        state.set("targetBand", bool(i % 2)); state.set("targetOffset", double(i));
+        panel->loadState(state);
+        model.clearTraces();
+        REQUIRE(model.traces.store("Synthetic", snapshot.tf, snapshot.refDelayMs));
+        model.renameTrace(0, "Edited"); model.toggleTrace(0); model.toggleTrace(0);
+        model.selectSum(0, 0);
+        const auto sum = model.sumPreview();
+        REQUIRE(sum.magDb.size() == snapshot.tf.magDb.size());
+        CHECK(sum.magDb[341] == Catch::Approx(snapshot.tf.magDb[341] + 6.0206).margin(0.01));
+        model.notify(AppModel::Snapshot | AppModel::Traces);
+        PlotComponent* plot = nullptr;
+        for (auto* child : panel->getChildren())
+            if (auto* p = dynamic_cast<PlotComponent*>(child)) plot = p;
+        REQUIRE(plot);
+        const auto target = "Target +" + juce::String(6 + (i % 3) * 3);
+        CHECK(std::any_of(plot->series.begin(), plot->series.end(),
+            [&](const auto& s) { return s.label == target; }));
+        CHECK(std::any_of(plot->series.begin(), plot->series.end(),
+            [](const auto& s) { return s.label == "Edited"; }));
+        CHECK(plot->toleranceBands.size() == size_t(i % 2));
+        CHECK(snapshot.tf.H == model.traces.at(0).tf.H);
+    }
+    CHECK(producer.allocations.load() == 0);
+    CHECK(producer.finiteOutput.load());
 }
 
 TEST_CASE("Invalid level input stays finite and cannot calibrate SPL", "[app][audio][splcal][edges]") {

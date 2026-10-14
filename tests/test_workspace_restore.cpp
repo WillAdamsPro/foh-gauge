@@ -4,8 +4,9 @@
 
 namespace {
 struct TemporaryWorkspaces {
+    // CTest processes may start before either fixture creates its directory.
     juce::File folder = juce::File::getSpecialLocation(juce::File::tempDirectory)
-        .getNonexistentChildFile("foh-workspace-restore", "", false);
+        .getChildFile("foh-workspace-restore-" + juce::Uuid().toString());
     ~TemporaryWorkspaces() { folder.deleteRecursively(); }
 };
 }
