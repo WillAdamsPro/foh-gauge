@@ -172,13 +172,16 @@ void MainComponent::showWorkspaceMenu() {
 }
 bool MainComponent::keyPressed(const KeyPress& k) {
     auto m = k.getModifiers(); int code = k.getKeyCode();
+    if (showMode) {
+        if (code == KeyPress::escapeKey) { setShowMode(false); return true; }
+        return false; // Layout shortcuts cannot alter the hidden workspace in Show mode.
+    }
     if (code == KeyPress::tabKey
         && m.withoutFlags(ModifierKeys::shiftModifier).getRawFlags() == ModifierKeys::ctrlModifier) {
         const int count = mgr.count();
         if (count > 0) selectWorkspace((current + (m.isShiftDown() ? count - 1 : 1)) % count);
         return true;
     }
-    if (showMode) return false; // Layout shortcuts cannot alter the hidden workspace in Show mode.
     if (m.isCommandDown() && m.isAltDown() && code == '0') { if (current >= 0) { closeFloatingWindows(); mgr.revert(current); view.setWorkspace(&mgr.at(current)); openFloatingWindows(); updateSwitcher(); } return true; }
     if (m.isCommandDown() && m.isAltDown() && (code == 'I' || code == 'i')) { if (auto* w = view.workspace()) if (!w->root.contains("Inspector")) { fohws::addAsTab(w->root, "Inspector", view.focusedPanel()); view.rebuild(); updateSwitcher(); } return true; }
     if (m.isCommandDown() && !m.isAltDown() && (code == 'W' || code == 'w')) { if (!view.focusedPanel().empty()) view.closePanel(view.focusedPanel()); return true; }
