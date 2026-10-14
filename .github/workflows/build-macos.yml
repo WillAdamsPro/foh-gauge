@@ -55,6 +55,8 @@ jobs:
         run: bash scripts/check-cal-files.sh
       - name: Check public strings
         run: scripts/check-strings.sh
+      - name: Test PR gate scans
+        run: bash scripts/test-pr-gate-scans.sh
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
