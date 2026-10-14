@@ -3,6 +3,10 @@
 #include "Panels.h"
 #include "WorkspaceView.h"
 #include "ShowMonitoring.h"
+#include "ui_panel_window.h"
+#if JUCE_MAC
+#import <AppKit/AppKit.h>
+#endif
 #include <chrono>
 #include <thread>
 #include <random>
@@ -102,7 +106,8 @@ TEST_CASE("W7 visible synthetic programme CPU measurement", "[app][show][cpu]") 
     AppModel model; model.engine.state = AudioEngine::Ready;
     model.analysis.start();
     auto panel = PanelRegistry::standard().create("ShowMonitoring", model);
-    panel->setSize(1000, 700); panel->addToDesktop(juce::ComponentPeer::windowIsTemporary); panel->setVisible(true);
+    panel->setSize(1000, 700);
+    VisiblePanelWindow window(*panel);
     std::atomic<bool> running {true}; std::atomic<float> gain {1};
     std::thread feeder([&] {
         std::mt19937 rng(7); std::uniform_real_distribution<float> noise(-0.1f, 0.1f);
@@ -144,7 +149,7 @@ TEST_CASE("W7 visible synthetic programme CPU measurement", "[app][show][cpu]") 
     const double cpu = 100 * (seconds(after.ru_utime) + seconds(after.ru_stime) - seconds(before.ru_utime) - seconds(before.ru_stime)) / wall;
     std::cout << "W7 process CPU: " << cpu << "% over " << wall << " s, 48 kHz/512, 16384 FFT, visible 1000x700 panel\n"
               << steadyStatus << "\n" << driftStatus << "\n" << missingStatus << "\n";
-    running = false; feeder.join(); model.analysis.stop(); panel->removeFromDesktop();
+    running = false; feeder.join(); model.analysis.stop(); window.get().setVisible(false);
     REQUIRE(stored); REQUIRE(steadyStatus.startsWith("Monitoring:")); REQUIRE(driftStatus.startsWith("DRIFT ALERT:"));
     REQUIRE(missingStatus.startsWith("Waiting:")); REQUIRE(cpu < 10);
 #endif
@@ -168,6 +173,7 @@ TEST_CASE("Show mode exposes W7 even with an older saved workspace", "[app][show
 
 TEST_CASE("W7 timers and plots survive repeated monitoring restarts and destruction", "[app][show][stress]") {
     juce::ScopedJuceInitialiser_GUI initialise;
+    const int desktopCount = juce::Desktop::getInstance().getNumComponents();
     AppModel model;
     REQUIRE(model.traces.store("Synthetic reference", syntheticTF(), 0));
     model.engine.state = AudioEngine::Ready;
@@ -185,17 +191,44 @@ TEST_CASE("W7 timers and plots survive repeated monitoring restarts and destruct
     }
     auto panel = PanelRegistry::standard().create("ShowMonitoring", model);
     selectReference(*panel); click(*panel, "Monitor");
-    panel->setSize(1000, 700); panel->addToDesktop(0); panel->setVisible(true);
+    panel->setSize(1000, 700);
+    auto window = std::make_unique<VisiblePanelWindow>(*panel);
+#if JUCE_MAC
+    auto* peer = window->get().getPeer();
+    REQUIRE(peer != nullptr);
+    NSWindow* native = [(NSView*) peer->getNativeHandle() window];
+    REQUIRE(native != nil);
+    CHECK(native.animationBehavior == NSWindowAnimationBehaviorNone);
+#endif
     model.tf = syntheticTF(); model.micLevelValid = true; model.refPeak = 0.1f;
     juce::MessageManager::getInstance()->runDispatchLoopUntil(1100);
     for (auto* child : panel->getChildren()) if (auto* plot = dynamic_cast<PlotComponent*>(child)) {
         CHECK(plot->series.size() <= 2);
         for (const auto& series : plot->series) CHECK(series.f.size() <= model.tf.freq.size());
     }
+    window.reset();
     panel.reset(); CHECK_FALSE(model.engine.monitoringSilent.load());
     juce::Timer::callPendingTimersSynchronously();
     juce::MessageManager::getInstance()->runDispatchLoopUntil(20);
     CHECK_FALSE(model.engine.monitoringSilent.load());
+    CHECK(juce::Desktop::getInstance().getNumComponents() == desktopCount);
+    // Close immediately after showing, rather than waiting for an automatic
+    // native animation to finish. Use the same owner as a real torn-off panel.
+    for (int i = 0; i < 24; ++i) {
+        auto reopened = PanelRegistry::standard().create("ShowMonitoring", model);
+        reopened->setSize(600, 400);
+        auto owner = std::make_unique<VisiblePanelWindow>(*reopened);
+#if JUCE_MAC
+        NSWindow* reopenedNative = [(NSView*) owner->get().getPeer()->getNativeHandle() window];
+        REQUIRE(reopenedNative != nil);
+        CHECK(reopenedNative.animationBehavior == NSWindowAnimationBehaviorNone);
+#endif
+        selectReference(*reopened); click(*reopened, "Monitor");
+        owner.reset(); reopened.reset();
+        juce::MessageManager::getInstance()->runDispatchLoopUntil(5);
+        CHECK_FALSE(model.engine.monitoringSilent.load());
+        CHECK(juce::Desktop::getInstance().getNumComponents() == desktopCount);
+    }
 }
 
 TEST_CASE("W7 alert counters remain bounded across twelve hours of synthetic updates", "[app][show][stress]") {

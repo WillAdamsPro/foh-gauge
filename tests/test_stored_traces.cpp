@@ -1,4 +1,5 @@
 #include <catch2/catch_test_macros.hpp>
+#include "ui_panel_window.h"
 #include <catch2/catch_approx.hpp>
 #include "Panels.h"
 #if JUCE_MAC
@@ -80,8 +81,7 @@ TEST_CASE("Trace manager controls edit traces and display a +6.02 dB self sum", 
     auto phase = PanelRegistry::standard().create("Phase", model);
     // Plot panels refresh only while showing, as they do in a workspace.
     magnitude->setSize(600, 300); phase->setSize(600, 300);
-    magnitude->addToDesktop(0); phase->addToDesktop(0);
-    magnitude->setVisible(true); phase->setVisible(true);
+    VisiblePanelWindow magnitudeWindow(*magnitude), phaseWindow(*phase);
     model.notify(AppModel::Traces);
     for (auto* chart : {magnitude.get(), phase.get()}) {
         auto chartPlots = children<PlotComponent>(*chart); REQUIRE(chartPlots.size() == 1);
@@ -141,8 +141,8 @@ TEST_CASE("Damaged saved targets clear plot overlays and tolerance bands", "[app
     AppModel model;
     for (auto id : {"TransferFunction", "RTA"}) {
         auto panel = PanelRegistry::standard().create(id, model); REQUIRE(panel);
-        panel->addToDesktop(juce::ComponentPeer::windowIsTemporary);
-        panel->setVisible(true);
+        panel->setSize(600, 300);
+        VisiblePanelWindow window(*panel);
         auto state = foh::Json::object(); state.set("targetChoice", 4);
         state.set("targetText", "20 0\n1000 1"); state.set("targetShown", true); state.set("targetBand", true);
         panel->loadState(state);

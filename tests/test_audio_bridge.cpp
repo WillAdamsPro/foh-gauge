@@ -1,4 +1,5 @@
 #include <catch2/catch_test_macros.hpp>
+#include "ui_panel_window.h"
 #include <catch2/catch_approx.hpp>
 #include <catch2/generators/catch_generators.hpp>
 #include "Widgets.h"
@@ -1044,8 +1045,7 @@ TEST_CASE("Multi-mic TF average overlays the target with controls reachable", "[
     REQUIRE(panel);
     const auto minimum = panel->minSize();
     panel->setBounds(0, 0, minimum.w, minimum.h);
-    panel->addToDesktop(0);
-    panel->setVisible(true);
+    VisiblePanelWindow window(*panel);
     auto state = fohws::Json::object(); state.set("targetShown", true);
     panel->loadState(state);
     PlotComponent* plot = nullptr;
@@ -1456,7 +1456,8 @@ TEST_CASE("Target overlays and stored trace edits stay on the reader while live 
     AppModel model;
     auto panel = PanelRegistry::standard().create("TransferFunction", model);
     REQUIRE(panel);
-    panel->setSize(800, 600); panel->addToDesktop(0); panel->setVisible(true);
+    panel->setSize(800, 600);
+    VisiblePanelWindow window(*panel);
     model.analysis.start();
     ConcurrentCapture producer(model.engine);
     REQUIRE(waitFor([&] { return model.analysis.latest().tf.averages > 0; }));
