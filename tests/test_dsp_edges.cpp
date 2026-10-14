@@ -97,7 +97,17 @@ TEST_CASE("Generators reject invalid preparation and bound extreme gain requests
     sweep.prepare(48000, 20, 20000, 1);
     for (float gain : {(float) qnan, (float) inf, (float) -inf, 1e30f, -1e30f}) {
         pink.setGainDb(gain); sweep.setGainDb(gain);
-        for (int i = 0; i < 128; ++i) { REQUIRE(std::isfinite(pink.next())); REQUIRE(std::isfinite(sweep.next())); }
+        for (int i = 0; i < 128; ++i) {
+            float p = pink.next(), s = sweep.next();
+            REQUIRE(std::isfinite(p)); REQUIRE(std::isfinite(s));
+            if (!std::isfinite(gain)) { REQUIRE(p == 0); REQUIRE(s == 0); }
+        }
+        pink.setGainDb(-12); sweep.setGainDb(-12);
+        double pinkEnergy = 0, sweepEnergy = 0;
+        for (int i = 0; i < 128; ++i) {
+            pinkEnergy += std::pow(pink.next(), 2); sweepEnergy += std::pow(sweep.next(), 2);
+        }
+        REQUIRE(pinkEnergy > 0); REQUIRE(sweepEnergy > 0);
     }
     for (double rate : {0.0, qnan, inf, 48000.0}) {
         sweep.prepare(rate, 0, 20000, 1); REQUIRE(sweep.lengthSamples() == 0);
@@ -252,5 +262,62 @@ TEST_CASE("Sustained full-scale sine clipping is rejected independently on eithe
         REQUIRE(coherenceSummary(result).meanCoherence == 0);
         REQUIRE_FALSE(tf.convergence().settled);
         for (size_t k = 0; k < result.H.size(); ++k) REQUIRE(result.isBlanked(k));
+    }
+}
+
+TEST_CASE("Generator signal paths reject damage and recover without resetting analysis", "[edges][generator][tf][rta]") {
+    constexpr int n = 1024;
+    for (int source : {0, 1, 2}) {
+        INFO("source (pink, sine, sweep): " << source);
+        std::vector<float> good(4 * n);
+        PinkNoise pink(102); LogSweep sweep;
+        sweep.prepare(48000, 200, 10000, 0.1, 0);
+        for (size_t i = 0; i < good.size(); ++i)
+            good[i] = source == 0 ? pink.next() : source == 1
+                ? float(0.5 * std::sin(2 * M_PI * 1000 * i / 48000)) : sweep.next();
+        for (int damage = 0; damage < 7; ++damage) {
+            INFO("damage: " << damage);
+            auto bad = good;
+            for (size_t i = 0; i < bad.size(); ++i) {
+                if (damage == 0) bad[i] = 0;
+                if (damage == 1) bad[i] = i % 2 ? 1.f : -1.f;
+                // Sparse injection crosses both frame and irregular block boundaries.
+                if (damage >= 2 && damage <= 4 && i % 127 == 0)
+                    bad[i] = damage == 2 ? float(qnan) : damage == 3 ? float(inf) : float(-inf);
+                if (damage >= 5) bad[i] = (i % 2 ? 1.f : -1.f) *
+                    (damage == 5 ? std::numeric_limits<float>::denorm_min()
+                                 : std::nextafter(std::numeric_limits<float>::min(), 0.f));
+            }
+            for (bool damageReference : {false, true}) {
+                TransferFunction tf(n); tf.setCoherenceBlankThreshold(0);
+                RTA rta(n);
+                auto feed = [&](const std::vector<float>& ref, const std::vector<float>& meas) {
+                    for (int i = 0; i < int(ref.size()); i += 137) {
+                        int count = std::min(137, int(ref.size()) - i);
+                        tf.process(ref.data() + i, meas.data() + i, count);
+                        rta.process(meas.data() + i, count);
+                    }
+                };
+                feed(good, good);
+                REQUIRE(coherenceSummary(tf.result()).meanCoherence > 0.99);
+                feed(damageReference ? bad : good, damageReference ? good : bad);
+                auto rejected = tf.result(3); finite(rejected);
+                REQUIRE(coherenceSummary(rejected).meanCoherence == 0);
+                for (size_t k = 0; k < rejected.H.size(); ++k) REQUIRE(rejected.isBlanked(k));
+                auto levels = rta.bandsDb(); finite(levels);
+                if (!damageReference && damage >= 1 && damage <= 4) REQUIRE(levels.empty());
+                if (!damageReference && (damage == 0 || damage >= 5)) {
+                    REQUIRE_FALSE(levels.empty());
+                    for (double db : levels) REQUIRE(db < -190);
+                }
+                // The first returning frame overlaps the damaged half-frame;
+                // allow normal Welch averaging to converge rather than resetting it.
+                for (int frame = 0; frame < 8; ++frame) feed(good, good);
+                auto recovered = tf.result(); finite(recovered);
+                REQUIRE(coherenceSummary(recovered).meanCoherence > 0.99);
+                levels = rta.bandsDb(); finite(levels); REQUIRE_FALSE(levels.empty());
+                REQUIRE(*std::max_element(levels.begin(), levels.end()) > -50);
+            }
+        }
     }
 }

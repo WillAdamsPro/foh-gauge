@@ -1850,3 +1850,33 @@ TEST_CASE("Missing reference completes delay requests with an invalid snapshot",
     }
     analysis.stop();
 }
+
+TEST_CASE("Damaged signal callbacks keep generator output and peak meters finite without allocations", "[app][audio][rt][edges][generator]") {
+    AudioEngine engine; SyntheticDevice device;
+    engine.audioDeviceAboutToStart(&device); engine.outB = -1;
+    std::vector<float> input(2048), output(2048), drained(2048);
+    const float* inputs[] {input.data(), input.data()}; float* outputs[] {output.data()};
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+    const float inf = std::numeric_limits<float>::infinity();
+    for (int mode : {AudioEngine::Off, AudioEngine::Pink, AudioEngine::Sweep}) {
+        engine.gen = mode;
+        for (float gain : {-30.f, nan, inf, -inf, -30.f}) {
+            engine.genGainDb = gain;
+            for (float value : {0.f, 1.f, -1.f, nan, inf, -inf, std::numeric_limits<float>::denorm_min()}) {
+                INFO("mode=" << mode << " gain=" << gain << " input=" << value);
+                std::fill(input.begin(), input.end(), value);
+                engine.analysisEpoch = engine.captureEpoch.load();
+                callbackAllocations = 0; auditAllocations = true;
+                engine.audioDeviceIOCallbackWithContext(inputs, 2, outputs, 1, int(input.size()), {});
+                auditAllocations = false;
+                REQUIRE(callbackAllocations == 0);
+                for (float sample : output) REQUIRE(std::isfinite(sample));
+                REQUIRE(std::isfinite(engine.micPeak.exchange(0)));
+                REQUIRE(std::isfinite(engine.refPeak.exchange(0)));
+                engine.micRing.pop(drained.data(), int(drained.size()));
+                engine.refRing.pop(drained.data(), int(drained.size()));
+            }
+        }
+    }
+    engine.audioDeviceStopped();
+}
