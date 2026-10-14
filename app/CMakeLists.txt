@@ -7,7 +7,6 @@ juce_add_gui_app(FOHGauge
     MICROPHONE_PERMISSION_TEXT "FOH Gauge needs audio input to measure your sound system."
     PLIST_TO_MERGE "<plist><dict><key>LSMinimumSystemVersion</key><string>26.0</string></dict></plist>")
 target_sources(FOHGauge PRIVATE Source/console/ConsoleWindow.cpp Source/Main.cpp Source/MainComponent.cpp Source/SetupPage.cpp Source/EasySetup.cpp Source/RoutingWizard.cpp Source/SessionFiles.cpp Source/AudioEngine.cpp Source/AnalysisEngine.cpp Source/AppModelMeasurement.cpp Source/Widgets.cpp Source/AppModel.cpp Source/LayoutModel.cpp Source/Panels.cpp Source/GuidePanel.cpp Source/WorkspaceView.cpp Source/WorkspaceManager.cpp Source/FloatingPanels.cpp Source/Diagrams.cpp)
-(FOHGauge PRIVATE Source/console/ConsoleWindow.cpp Source/Main.cpp Source/MainComponent.cpp Source/SetupPage.cpp Source/EasySetup.cpp Source/RoutingWizard.cpp Source/SessionFiles.cpp Source/AudioEngine.cpp Source/AnalysisEngine.cpp Source/Widgets.cpp Source/AppModel.cpp Source/LayoutModel.cpp Source/Panels.cpp Source/GuidePanel.cpp Source/WorkspaceView.cpp Source/WorkspaceManager.cpp Source/FloatingPanels.cpp Source/Diagrams.cpp)
 # Console network control (X32 writes) is experimental: off by default, so release builds do not expose it.
 option(FOH_ENABLE_CONSOLE_CONTROL "Expose File > Console Control (experimental)" OFF)
 target_compile_definitions(FOHGauge PRIVATE FOH_CONSOLE_CONTROL=$<BOOL:${FOH_ENABLE_CONSOLE_CONTROL}>)
