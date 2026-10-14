@@ -1087,6 +1087,32 @@ TEST_CASE("Pausing cancels a sweep capture and stops playback", "[app][audio][sw
     analysis.stop();
 }
 
+TEST_CASE("Analysis engines join pending sweep and meter work on repeated destruction", "[app][audio][lifetime][stress]") {
+    for (int pass = 0; pass < 12; ++pass) {
+        AudioEngine engine; SyntheticDevice device;
+        device.rate = pass % 3 == 0 ? 44100 : pass % 3 == 1 ? 48000 : 96000;
+        engine.audioDeviceAboutToStart(&device);
+        auto analysis = std::make_unique<AnalysisEngine>(engine);
+        analysis->start();
+        REQUIRE(waitFor([&] { return engine.analysisEpoch.load() == engine.captureEpoch.load(); }));
+        std::array<float, 16384> signal {};
+        for (size_t i = 0; i < signal.size(); ++i)
+            signal[i] = float(0.1 * std::sin(2 * juce::MathConstants<double>::pi * 1000 * i / device.rate));
+        capture(engine, signal.data(), signal.data(), int(signal.size()));
+        REQUIRE(waitFor([&] { return analysis->latest().leq.seconds > 0; }));
+        foh::Command sweep; sweep.type = foh::CommandType::MeasureSweep;
+        REQUIRE(analysis->send(sweep));
+        REQUIRE(waitFor([&] { return analysis->latest().sweepCapturing; }));
+        capture(engine, signal.data(), signal.data(), int(signal.size()));
+        analysis->setCal(std::make_shared<foh::MicCal>(), "Synthetic");
+        REQUIRE(analysis->send(foh::Command::findDelay(false, pass + 1)));
+        // Match JUCE's shutdown order: quiesce I/O before joining the worker.
+        engine.audioDeviceStopped();
+        analysis.reset();
+        CHECK(engine.gen.load() == AudioEngine::Off);
+    }
+}
+
 struct AppModelMeasurementTestAccess {
     static void poll(AppModel& model) { model.timerCallback(); }
 };
