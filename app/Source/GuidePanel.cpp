@@ -26,8 +26,16 @@ static const std::vector<std::vector<Step>> kGuides = {
    {"Fill", "Measure the fill", "Mute the mains, unmute the fill. The app finds the fill's arrival and compares it with the locked mains time.", "Find fill arrival", 10, 7},
    {"Review", "Review the fill delay", "Review the suggested fill delay before changing the DSP. Many engineers add a few ms more so the mains arrive first and the image stays on stage (rule of thumb; trust your ears). Fill only as loud as needed.", "Open transfer function", 4, 6},
    kStore, kApply, kVerify },
- { kStore, kApply, kVerify }, // W4/W5 frame only; their detailed workflows are task 36.
- { kStore, kApply, kVerify },
+ { {"SPL cal", "Calibrate SPL first", "Use SPL Cal on the toolbar or Setup: calibrator at 94 or 114 dB, or a known level. Confirm the selected mic input and gain; changing either requires a calibration check. Without calibration, levels are dBFS, not dB SPL. Remove the calibrator before measuring.", "Calibration checked", 23, 0},
+   {"Time alignment", "Align before EQ", "Complete W1 reference delay, W2 sub-to-mains, then W3 fills if present, including each Verify. Fix routing, polarity and coverage problems first. At each new mic position, establish reference delay; keep it fixed for before/after comparisons. Trust only settled, coherent measurements.", "Alignment checked", 23, 6},
+   {"Tuning order", "Tune one change at a time", "Check mains alone, then mains + subs, then fills and the full system. Check representative listening positions: fix aiming and relative levels before broad EQ. Compare with your target; avoid boosting deep cancellations or chasing low-coherence bins. Choose one change, then Store, Apply in DSP and Verify. Repeat W4 for further changes.", "Ready to store", 23, 6},
+   kStore, kApply, kVerify },
+ { {"0-1 min", "Five-minute check: signal path", "Use the last verified tuning as your baseline. Confirm device, mic/ref channels, sample rate, mic gain and SPL calibration. Check console/DSP preset, mutes and routing. At low level, confirm each main, sub and fill passes signal; watch mic/ref meters for missing signal or clipping.", "Signal path checked", 23, 0},
+   {"1-3 min", "Check response and timing", "Return to the tuning mic position and speaker configuration. Use brief pink noise, check reference delay, then compare the live TF with the stored tuning trace. Check settled response, coherence and crossover summation; listen through main/fill transitions. Stop noise after measuring. Investigate changes before adding EQ.", "Response checked", 23, 6},
+   {"3-5 min", "Symptoms: likely causes", "No signal: mute, patch or wrong channel.\nLow coherence: weak signal, noise or wrong reference.\nLF dip: sub polarity, delay or level.\nComb filtering: overlapping sources or timing.\nHarsh/clipped: gain or limiter.\nClicks/dropouts: clock, rate or buffer.\nCheck one cause at a time; finish with Store, Apply and Verify. Unresolved faults mean Fail, not ready.", "Ready to verify", 23, 6},
+   kStore,
+   {"Apply", "Confirm the DSP state", "For a correction, enter it yourself in your DSP. FOH Gauge never applies it. If all checks passed, leave the DSP unchanged. Keep the mic, routing, speaker configuration and reference delay fixed, then confirm below. If fault isolation takes longer than five minutes, resolve it before declaring ready.", "DSP state confirmed", 21, 6},
+   kVerify },
 };
 static const char* kGuideNames[] = {"Setup + reference delay", "Align sub to mains", "Align fills to mains", "Tuning", "Pre-doors check"};
 class GuidePanel : public Panel {
@@ -159,7 +167,11 @@ private:
         }
         body.setVisible(true); body.setText(u8(st.body) + (verifying && guide == 1 ? "\nThe sum should rise in the crossover band rather than dip. Walk a few seats and listen." : String())
             + (verifying && guide == 2 ? "\nCheck phase overlap through the seam and listen from mains-only to fill-only positions." : String()) + (st.act == 21 && suggestedChange.isNotEmpty() ? "\n" + suggestedChange : String()), dontSendNotification);
-        int bodyH = jmin(jmax(0, c.getHeight() - 80), roundToInt(body.getFont().getHeight() * 1.25f * (2 + body.getFont().getStringWidthFloat(body.getText()) / jmax(1, c.getWidth() - 8))));
+        // Measure wrapped lines, including the explicit W5 symptom list line breaks.
+        GlyphArrangement bodyLayout;
+        bodyLayout.addJustifiedText(body.getFont(), body.getText(), 0, body.getFont().getAscent(),
+            (float) jmax(1, c.getWidth() - 10), Justification::left);
+        int bodyH = jmin(jmax(0, c.getHeight() - 80), (int) std::ceil(bodyLayout.getBoundingBox(0, -1, true).getBottom()) + 4);
         if (st.chart == 3) bodyH = jmin(bodyH, 96);
         body.setBounds(c.removeFromTop(bodyH)); c.removeFromTop(6);
         bool ro = st.chart == 3; readout.setVisible(ro); polarity.setVisible(ro);
@@ -299,8 +311,9 @@ private:
                     p.suggestedChange = o; p.next(); p.say(o); p.refresh(); });
                 return;
 
+            case 23: next(); break; // Manual checklist acknowledgement; no engine or DSP changes.
             case 20: case 22: captureFrame(a == 22); return;
-            case 21: if (baselineValid) { verified = false; note.clear(); out = "Change confirmed by you. Re-measure, compare and record a verdict."; next(); } break;
+            case 21: if (baselineValid) { verified = false; note.clear(); out = "DSP state confirmed by you. Re-measure, compare and record a verdict."; next(); } break;
             default: break;
         }
         say(out); refresh();
@@ -338,7 +351,7 @@ private:
             if (p.guide != captureGuide || p.step != captureStep) { p.refresh(); return; }
             auto* trace = p.model.findTrace(name.toRawUTF8());
             if (!settled || !trace || trace->tf.freq.empty()) { p.say("No settled measurement. Check signal and coherence, then repeat. No verdict recorded."); p.refresh(); return; }
-            if (!verify) { p.baseline = trace->tf; p.baselineDelayMs = trace->refDelayMs; p.baselineEpoch = p.model.engine.captureEpoch.load(); p.baselineValid = true; p.next(); p.say("Before trace stored. Enter the change yourself in your DSP."); }
+            if (!verify) { p.baseline = trace->tf; p.baselineDelayMs = trace->refDelayMs; p.baselineEpoch = p.model.engine.captureEpoch.load(); p.baselineValid = true; p.next(); p.say(p.guide == 4 ? "Before trace stored. Correct the DSP yourself if needed, or confirm it is unchanged." : "Before trace stored. Enter the change yourself in your DSP."); }
             else {
                 if (trace->refDelayMs != p.baselineDelayMs || p.model.engine.captureEpoch.load() != p.baselineEpoch) {
                     p.baselineValid = false;

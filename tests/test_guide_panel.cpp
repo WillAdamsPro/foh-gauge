@@ -171,7 +171,7 @@ TEST_CASE("Every W1-W5 frame requires manual Apply and ends in fresh Verify with
         CHECK(panel->saveState()["step"].asInt() == beforeStep + 1);
         CHECK(labelContains(*panel, "FOH Gauge never applies it"));
         CHECK(capture.calls == 1); // Apply only acknowledges a user's external DSP change.
-        button(*panel, "I entered the change").onClick();
+        button(*panel, guide == 4 ? "DSP state confirmed" : "I entered the change").onClick();
         CHECK(panel->saveState()["step"].asInt() == beforeStep + 2);
         CHECK(labelContains(*panel, "Verify against the stored trace"));
         CHECK_FALSE(button(*panel, "Pass").isEnabled());
@@ -179,8 +179,8 @@ TEST_CASE("Every W1-W5 frame requires manual Apply and ends in fresh Verify with
         button(*panel, "Re-measure to verify").onClick();
         CHECK(capture.calls == 2);
         CHECK_FALSE(button(*panel, "Pass").isEnabled());
-        capture.finish(model, 3);
-        CHECK(labelContains(*panel, "3.00 dB across 2 coherent bins"));
+        capture.finish(model, guide == 4 ? 0 : 3);
+        CHECK(labelContains(*panel, guide == 4 ? "0.00 dB across 2 coherent bins" : "3.00 dB across 2 coherent bins"));
         CHECK_FALSE(button(*panel, "Pass").isEnabled());
         noteEditor(*panel).setText("Improved overlap", false); noteEditor(*panel).onTextChange();
         REQUIRE(button(*panel, "Pass").isEnabled());
@@ -202,14 +202,15 @@ TEST_CASE("Verify rejects reference-delay changes and stale completion after gui
     juce::ScopedJuceInitialiser_GUI gui;
     AppModel model; CaptureStub capture;
     auto panel = makeGuidePanel(model); panel->setSize(260, 660);
-    auto state = fohws::Json::object(); state.set("guide", 3); state.set("step", 0); panel->loadState(state);
+    auto state = fohws::Json::object(); state.set("guide", 3); state.set("step", 100); panel->loadState(state);
+    const int storeStep = panel->saveState()["step"].asInt();
     button(*panel, "Measure before change").onClick(); capture.finish(model);
     button(*panel, "I entered the change").onClick();
     button(*panel, "Re-measure to verify").onClick(); model.refDelayMs = 5; capture.finish(model);
-    CHECK(panel->saveState()["step"].asInt() == 0);
+    CHECK(panel->saveState()["step"].asInt() == storeStep);
     CHECK(labelContains(*panel, "Reference delay or routing changed"));
     button(*panel, "Measure before change").onClick();
-    state.set("guide", 4); panel->loadState(state); capture.finish(model);
+    state.set("guide", 4); state.set("step", 0); panel->loadState(state); capture.finish(model);
     CHECK(panel->saveState()["guide"].asInt() == 4);
     CHECK(panel->saveState()["step"].asInt() == 0);
 }
@@ -218,14 +219,15 @@ TEST_CASE("Guide requires a settled baseline and rejects captures with no compar
     juce::ScopedJuceInitialiser_GUI gui;
     AppModel model; CaptureStub capture;
     auto panel = makeGuidePanel(model); panel->setSize(260, 660);
-    auto state = fohws::Json::object(); state.set("guide", 4); state.set("step", 0); panel->loadState(state);
+    auto state = fohws::Json::object(); state.set("guide", 4); state.set("step", 100); panel->loadState(state);
+    const int storeStep = panel->saveState()["step"].asInt();
     capture.settled = false;
     button(*panel, "Measure before change").onClick(); capture.finish(model);
-    CHECK(panel->saveState()["step"].asInt() == 0);
+    CHECK(panel->saveState()["step"].asInt() == storeStep);
     CHECK(labelContains(*panel, "No settled measurement"));
     capture.settled = true;
     button(*panel, "Measure before change").onClick(); capture.finish(model);
-    button(*panel, "I entered the change").onClick();
+    button(*panel, "DSP state confirmed").onClick();
     button(*panel, "Re-measure to verify").onClick();
     foh::TFResult lowCoherence;
     lowCoherence.freq = {100, 1000}; lowCoherence.magDb = {0, 0}; lowCoherence.coherence = {0.1, 0.1};
@@ -238,6 +240,53 @@ TEST_CASE("Guide requires a settled baseline and rejects captures with no compar
     for (int i = 0; i < panel->getNumChildComponents(); ++i) {
         auto* child = panel->getChildComponent(i);
         if (child->isVisible()) CHECK(panel->getLocalBounds().contains(child->getBounds()));
+    }
+}
+
+TEST_CASE("W4 and W5 checklists advance manually without changing audio settings", "[app][guide]") {
+    juce::ScopedJuceInitialiser_GUI gui;
+    const char* actions[2][3] = {
+        {"Calibration checked", "Alignment checked", "Ready to store"},
+        {"Signal path checked", "Response checked", "Ready to verify"}
+    };
+    const char* instructions[2][3] = {
+        {"Calibrate SPL first", "Align before EQ", "Tune one change at a time"},
+        {"Five-minute check: signal path", "Check response and timing", "Symptoms: likely causes"}
+    };
+    for (int guide = 3; guide <= 4; ++guide) {
+        CAPTURE(guide);
+        AppModel model; CaptureStub capture;
+        model.refDelayMs = model.lockedDelayMs = 4.8;
+        auto panel = makeGuidePanel(model); panel->setSize(260, 660);
+        auto state = fohws::Json::object(); state.set("guide", guide); state.set("step", 0);
+        panel->loadState(state);
+        for (int step = 0; step < 3; ++step) {
+            CAPTURE(step);
+            CHECK(labelContains(*panel, instructions[guide - 3][step]));
+            for (int i = 0; i < panel->getNumChildComponents(); ++i) {
+                auto* child = panel->getChildComponent(i);
+                if (child->isVisible()) CHECK(panel->getLocalBounds().contains(child->getBounds()));
+                if (auto* label = dynamic_cast<juce::Label*>(child)) {
+                    if (label->isVisible() && label->getText().length() > 150) {
+                        juce::GlyphArrangement layout;
+                        layout.addJustifiedText(label->getFont(), label->getText(), 0, label->getFont().getAscent(),
+                            (float) (label->getWidth() - 10), juce::Justification::left);
+                        CHECK(layout.getBoundingBox(0, -1, true).getBottom() <= label->getHeight() - 2);
+                    }
+                }
+            }
+            auto& advance = button(*panel, actions[guide - 3][step]);
+            REQUIRE(advance.isEnabled()); advance.onClick();
+            CHECK(panel->saveState()["step"].asInt() == step + 1);
+            CHECK(capture.calls == 0);
+            CHECK(model.engine.gen.load() == AudioEngine::Off);
+            CHECK(model.refDelayMs == 4.8);
+            CHECK(model.lockedDelayMs == 4.8);
+        }
+        REQUIRE(button(*panel, "Measure before change").isEnabled());
+        button(*panel, "Back").onClick();
+        CHECK(panel->saveState()["step"].asInt() == 2);
+        CHECK(labelContains(*panel, instructions[guide - 3][2]));
     }
 }
 
