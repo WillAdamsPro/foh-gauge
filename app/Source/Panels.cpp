@@ -725,7 +725,8 @@ private:
     HelpPanel help;
 };
 
-// ===================== Placeholder panels (in the preset trees, unavailable) =====================
+// ===================== Unfinished panels (opt-in development builds only) =====================
+#if FOH_SHOW_UNFINISHED
 class PlaceholderPanel : public Panel {
 public:
     PlaceholderPanel(AppModel& m, std::string id, String title, String what) : Panel(m, std::move(id), std::move(title)), text(std::move(what)) { helpText = text; }
@@ -735,6 +736,8 @@ public:
 private:
     String text;
 };
+
+#endif
 
 // Guide panel lives in GuidePanel.cpp
 std::unique_ptr<Panel> makeGuidePanel(AppModel&);
@@ -757,13 +760,15 @@ PanelRegistry& PanelRegistry::standard() {
         add("TraceList", "Traces", [](AppModel& m) { return std::make_unique<TraceListPanel>(m); });
         add("Inspector", "Inspector", [](AppModel& m) { return std::make_unique<InspectorPanel>(m); });
         add("GuideInspector", "Guide", [](AppModel& m) { return makeGuidePanel(m); });
+       #if FOH_SHOW_UNFINISHED
         auto ph = [&add](std::string id, String title, String what) { add(id, title, [id, title, what](AppModel& m) { return std::make_unique<PlaceholderPanel>(m, id, title, what); }); };
         ph("LimitPreset", "Limit preset", "SPL limit preset for exposure monitoring.");
         ph("EQSuggestions", "EQ suggestions", "Suggested EQ moves from the transfer function, coherence-weighted.");
         ph("SPLHistory", "SPL history", "SPL over time with LAeq / LCeq traces.");
-        add("SPLNumbers", "SPL / Leq", [](AppModel& m) { return std::make_unique<SplLeqPanel>(m); });
         ph("Dose", "Dose", "Noise dose against the selected limit.");
         ph("Events", "Events", "Log of clipping, limit breaches and captures.");
+       #endif
+        add("SPLNumbers", "SPL / Leq", [](AppModel& m) { return std::make_unique<SplLeqPanel>(m); });
         return x; }();
     return r;
 }
