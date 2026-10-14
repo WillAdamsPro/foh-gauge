@@ -9,7 +9,8 @@
 
 class MainComponent : public juce::Component, public juce::ApplicationCommandTarget, private juce::Timer, private juce::ChangeListener, private AppModel::Listener {
 public:
-    MainComponent(); ~MainComponent() override;
+    explicit MainComponent(juce::File workspaceFolder = WorkspaceManager::defaultFolder());
+    ~MainComponent() override;
     enum : juce::CommandID { openSessionCommand = 0x3000, saveSessionCommand, saveSessionAsCommand };
     juce::PopupMenu getFileMenu(juce::ApplicationCommandManager&);
     juce::ApplicationCommandTarget* getNextCommandTarget() override { return nullptr; }
@@ -62,6 +63,7 @@ protected:
     juce::TextButton wsMenuBtn, showModeBtn;
     void openFloatingWindows(); void closeFloatingWindows();
     void showWorkspaceMenu(); void updateSwitcher(); void leaveWorkspace();
+    void saveWorkspaceAs(const juce::String& name);
     WorkspaceView view { model, PanelRegistry::standard() };
     juce::Label audioNotice;
     // Keep consent controls in window coordinates so they fit even at 200% UI scale.
