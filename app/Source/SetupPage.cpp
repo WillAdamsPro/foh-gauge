@@ -16,6 +16,11 @@ SetupPage::SetupPage(AppModel& m, bool showDone) : model(m) {
         model.notify(AppModel::Settings);
     };
     for (auto* box : { &mic, &ref, &generator, &loopback }) box->onChange = routing;
+    addAndMakeVisible(easySetup);
+    easySetup.onClick = [this] { wizard.begin(); refresh(); wizard.setVisible(true); wizard.toFront(false); };
+    addChildComponent(wizard);
+    wizard.onApplied = [this] { model.notify(AppModel::Settings); };
+    wizard.onClose = [this] { wizard.setVisible(false); refresh(); };
     addAndMakeVisible(notice);
     addAndMakeVisible(chime); chime.setTooltip("Short chime at -18 dBFS on the selected generator and loopback outputs");
     chime.onClick = [this] { model.engine.playChime(); };
@@ -55,6 +60,7 @@ void SetupPage::refresh() {
         box.setSelectedId(selected >= 0 && selected < names.size() ? selected + 2 : 1, dontSendNotification);
     };
     auto ins = dev ? dev->getInputChannelNames() : StringArray(); auto outs = dev ? dev->getOutputChannelNames() : StringArray();
+    wizard.setChannels(ins, outs);
     channels(mic, ins, model.engine.micCh, "Mic"); channels(ref, ins, model.engine.refCh, "Reference");
     channels(generator, outs, model.engine.outA, "Generator output"); channels(loopback, outs, model.engine.outB, "Loopback output");
     // Enable every physical channel so callback indices match the displayed channel numbers.
@@ -74,7 +80,8 @@ void SetupPage::applyDevice() {
     notice.setText(model.dm.setAudioDeviceSetup(setup, true), dontSendNotification); refresh();
 }
 void SetupPage::resized() {
-    auto r = getLocalBounds().reduced(16); title.setBounds(r.removeFromTop(32));
+    wizard.setBounds(getLocalBounds());
+    auto r = getLocalBounds().reduced(16); auto heading = r.removeFromTop(32); easySetup.setBounds(heading.removeFromRight(110)); title.setBounds(heading);
     auto buttons = r.removeFromBottom(36); done.setBounds(buttons.removeFromRight(90)); chime.setBounds(buttons.removeFromLeft(130));
     notice.setBounds(r.removeFromBottom(32));
     int h = jmin(40, r.getHeight() / 8);
