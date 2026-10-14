@@ -1,5 +1,21 @@
 #include "AnalysisEngine.h"
 #include "Widgets.h" // AudioEngine
+#include <optional>
+
+namespace {
+bool deviceCommand(foh::CommandType type) {
+    using T = foh::CommandType;
+    switch (type) {
+        case T::FindDelay: case T::ResetAverages: case T::SetReferenceDelay:
+        case T::MeasureSweep: case T::StoreMicPosition: case T::ClearMicPositions: return true;
+        default: return false; // presentation/averaging settings survive device rebuilds
+    }
+}
+}
+
+bool AnalysisEngine::send(const foh::Command& c) {
+    return send(c, engine.captureEpoch.load(std::memory_order_acquire));
+}
 
 void AnalysisEngine::setCal(std::shared_ptr<const foh::MicCal> c, const juce::String& name) {
     std::lock_guard<std::mutex> l(calLock); pendingCal = std::move(c); pendingCalName = name; calDirty = true;
@@ -105,12 +121,24 @@ void AnalysisEngine::publish() {
     publisher.publish();
 }
 
-int AnalysisEngine::serviceCommands() {
+int AnalysisEngine::serviceCommands(uint64_t epoch) {
     // A producer replenishing the queue must not keep this worker in commands
     // indefinitely. Each pass services at most the fixed queue capacity.
-    foh::Command c;
     int handled = 0;
-    while (handled < foh::CommandQueue::capacity() && commands.pop(c)) { handle(c); ++handled; }
+    while (handled < decltype(commands)::capacity() && engine.captureEpoch.load(std::memory_order_acquire) == epoch) {
+        if (!pendingCommand) {
+            QueuedCommand queued;
+            if (!commands.pop(queued)) break;
+            pendingCommand = queued;
+        }
+        // A rebuild may begin after the loop condition or the UI's push.
+        // Keep the popped command until the worker catches up; never reset
+        // the queue from its producer or discard a command for the new epoch.
+        if (engine.captureEpoch.load(std::memory_order_acquire) != epoch) break;
+        if (!deviceCommand(pendingCommand->command.type) || pendingCommand->epoch == epoch)
+            handle(pendingCommand->command);
+        pendingCommand.reset(); ++handled;
+    }
     return handled;
 }
 
@@ -166,7 +194,7 @@ bool AnalysisEngine::processPendingAudio(std::vector<float>& m, std::vector<floa
             while (ring->available() > 0) ring->pop(m.data(), std::min(ring->available(), fftN));
         if (tf) cancelSweep("Audio changed; measure the sweep again");
         rebuild(engine.sampleRate.load()); // also clears both delay histories
-        delay = {};
+        delay = {}; delaySeq = 0; delayWasSub = false; resetSeq = 0;
         inputFailed = nextFailed;
         epoch = nextEpoch; inputEpoch = epoch; micChannel = engine.captureMicChannel.load();
         engine.analysisEpoch.store(epoch, std::memory_order_release);
@@ -179,7 +207,8 @@ bool AnalysisEngine::processPendingAudio(std::vector<float>& m, std::vector<floa
       if (calDirty) { positions = {}; positionMask = 0; positionAverage = {}; positionCount = 0;
                       cal = pendingCal; calName = pendingCalName.toStdString(); calDirty = false;
                       rta->setCalibrationDb(cal ? cal->correctionDb(fftN / 2 + 1, fs / fftN) : std::vector<double>{}); } }
-    serviceCommands();
+    serviceCommands(epoch);
+    if (engine.captureEpoch.load(std::memory_order_acquire) != epoch) return false;
     const auto revision = leqRevision.load();
     if (revision != meterRevision) { leq->reset(); meterRevision = revision; }
     if (sweepCapturing && (paused.load() || engine.deviceFailed.load()

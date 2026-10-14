@@ -66,18 +66,29 @@ void FohLookAndFeel::drawButtonBackground(Graphics& g, Button& b, const Colour& 
 void makePrimary(TextButton& b) { b.getProperties().set("primary", true); b.setColour(TextButton::textColourOffId, C::textOnAccent()); }
 
 // ===================== Plot =====================
-float PlotComponent::xOf(double f) const { return (float) (plotX() + plotW() * std::log10(f / fMin) / std::log10(fMax / fMin)); }
+float PlotComponent::xOf(double f) const { return (float) (plotX() + plotW() * (std::log10(std::clamp(f, fMin, fMax)) - std::log10(fMin)) / (std::log10(fMax) - std::log10(fMin))); }
 float PlotComponent::yOf(double v) const { return (float) (plotY() + plotH() * (yMax - jlimit(yMin, yMax, v)) / (yMax - yMin)); }
 void PlotComponent::paint(Graphics& g) {
     // Workspace collapse/reparenting and UI scaling can briefly leave no room
     // after axis/legend padding. Do not submit negative drawing dimensions.
     if (plotW() <= 0 || plotH() <= 0) return;
+    if (!std::isfinite(fMin) || !std::isfinite(fMax) || fMin <= 0 || fMax <= fMin
+        || !(std::log10(fMax) > std::log10(fMin))
+        || !std::isfinite(yMin) || !std::isfinite(yMax) || yMax <= yMin
+        || !std::isfinite(yMax - yMin) || !std::isfinite(yStep) || yStep <= 0) {
+        g.setColour(C::textAxis()); g.drawText("Invalid plot range", getLocalBounds(), Justification::centred); return;
+    }
+    auto validRange = [](double lo, double hi) { return std::isfinite(lo) && std::isfinite(hi) && lo > 0 && hi > lo; };
+    auto validPoint = [this](double f, double v) {
+        return std::isfinite(f) && f >= fMin && f <= fMax && std::isfinite(v)
+            && std::fpclassify(v) != FP_SUBNORMAL;
+    };
     auto pr = Rectangle<float>((float) plotX(), (float) plotY(), (float) plotW(), (float) plotH());
     g.setColour(C::plotWell()); g.fillRect(pr); // A2: darker plot well
     g.setFont(FohLookAndFeel::font(T::axisTick));
-    for (auto& s : shade) { float a = xOf(s.first), b = xOf(s.second); g.setColour(C::accent().withAlpha(C::crossoverBandAlpha())); g.fillRect(a, pr.getY(), b - a, pr.getHeight());
+    for (auto& s : shade) { if (!validRange(s.first, s.second)) continue; float a = xOf(s.first), b = xOf(s.second); g.setColour(C::accent().withAlpha(C::crossoverBandAlpha())); g.fillRect(a, pr.getY(), b - a, pr.getHeight());
         if (shadeLabel.isNotEmpty()) { g.setColour(C::accent()); g.setFont(FohLookAndFeel::font(T::label)); g.drawText(shadeLabel, (int) a - 40, (int) pr.getY() + 10, (int) (b - a) + 80, 14, Justification::centred); g.setFont(FohLookAndFeel::font(T::axisTick)); } }
-    for (auto& a : annotations) { float x0 = xOf(a.lo), x1 = xOf(a.hi); // layout-spec: warning @ annotationBandAlpha, label at band right + 6, y 30
+    for (auto& a : annotations) { if (!validRange(a.lo, a.hi)) continue; float x0 = xOf(a.lo), x1 = xOf(a.hi); // layout-spec: warning @ annotationBandAlpha, label at band right + 6, y 30
         g.setColour(C::warning().withAlpha(C::annotationBandAlpha())); g.fillRect(x0, pr.getY(), x1 - x0, pr.getHeight());
         if (a.label.isNotEmpty()) { g.setColour(C::warning()); g.setFont(FohLookAndFeel::font(T::label)); g.drawText(a.label, (int) x1 + 6, (int) pr.getY() + 30 - 7, 160, 14, Justification::left); g.setFont(FohLookAndFeel::font(T::axisTick)); } }
     if (showLegend) { int x = plotX() + 14; int y = (int) pr.getBottom() + 24 + 4; g.setFont(FohLookAndFeel::font(T::small));
@@ -89,8 +100,9 @@ void PlotComponent::paint(Graphics& g) {
     for (double f : {20., 50., 100., 200., 500., 1000., 2000., 5000., 10000., 20000.}) { if (f < fMin || f > fMax) continue;
         float x = xOf(f); g.drawVerticalLine((int) x, pr.getY(), pr.getBottom());
         g.setColour(C::textAxis()); g.drawText(f >= 1000 ? String((int) (f / 1000)) + "k" : String((int) f), (int) x - 15, (int) pr.getBottom() + 4, 30, 14, Justification::centred); g.setColour(C::border()); }
-    for (double v = yMin; v <= yMax + 1e-9; v += yStep) { float y = yOf(v); g.drawHorizontalLine((int) y, pr.getX(), pr.getRight());
-        g.setColour(C::textAxis()); g.drawText(yStep < 1 ? String(v, 1) : String((int) v), 0, (int) y - 7, plotX() - 6, 14, Justification::right); g.setColour(C::border()); }
+    // Bound tick work even for corrupt saved ranges or a step too small to advance.
+    for (int tick = 0; tick < 256; ++tick) { double v = yMin + tick * yStep; if (!std::isfinite(v) || v > yMax) break; float y = yOf(v); g.drawHorizontalLine((int) y, pr.getX(), pr.getRight());
+        g.setColour(C::textAxis()); g.drawText(yStep < 1 ? String(v, 1) : String(v, 0), 0, (int) y - 7, plotX() - 6, 14, Justification::right); g.setColour(C::border()); }
     if (note.isNotEmpty()) { g.setColour(C::textAxis()); g.drawText(note, (int) pr.getRight() - 300, (int) pr.getY() + 2, 296, 14, Justification::right); }
     if (centreNote.isNotEmpty()) { g.setColour(C::textAxis()); g.setFont(FohLookAndFeel::font(T::small)); g.drawText(centreNote, (int) xOf(1500) - 120, (int) pr.getCentreY() - 8, 240, 16, Justification::centred); }
     if (exampleData) { // top-right, ~103x20, 11 px warning text, 1 px warning border, radius 4 (layout-spec)
@@ -101,10 +113,10 @@ void PlotComponent::paint(Graphics& g) {
         if (hatchTile.isNull() || hatchFor != hc) { hatchFor = hc; hatchTile = Image(Image::ARGB, 8, 8, true); Graphics hg(hatchTile); hg.setColour(hc);
             hg.drawLine(0, 8, 8, 0, 1.0f); hg.drawLine(-4, 4, 4, -4, 1.0f); hg.drawLine(4, 12, 12, 4, 1.0f); }
         Graphics::ScopedSaveState hs(g); g.setTiledImageFill(hatchTile, 0, 0, 1.0f);
-        for (auto& r : lowCoh) { float a = jmax(pr.getX(), xOf(r.first)), b = jmin(pr.getRight(), xOf(r.second)); if (b > a) g.fillRect(a, pr.getY(), b - a, pr.getHeight()); } }
+        for (auto& r : lowCoh) { if (!validRange(r.first, r.second)) continue; float a = jmax(pr.getX(), xOf(r.first)), b = jmin(pr.getRight(), xOf(r.second)); if (b > a) g.fillRect(a, pr.getY(), b - a, pr.getHeight()); } }
     if (showLowCohCallout && !lowCoh.empty()) { // widest hatched region (log width); skipped when it's basically the whole plot (no signal)
         const std::pair<double,double>* best = nullptr; double bw = 0;
-        for (auto& rr : lowCoh) { double w = std::log10(rr.second / rr.first); if (w > bw) { bw = w; best = &rr; } }
+        for (auto& rr : lowCoh) { if (!validRange(rr.first, rr.second)) continue; double w = std::log10(rr.second / rr.first); if (w > bw) { bw = w; best = &rr; } }
         float x0 = best ? jmax(pr.getX(), xOf(best->first)) : 0, x1 = best ? jmin(pr.getRight(), xOf(best->second)) : 0;
         if (best && (x1 - x0) < pr.getWidth() * 0.8f) {
             auto box = Rectangle<float>(0, 0, 210, 40).withCentre({ (x0 + x1) * 0.5f, pr.getBottom() - 34 });
@@ -117,7 +129,12 @@ void PlotComponent::paint(Graphics& g) {
             g.setFont(FohLookAndFeel::font(T::axisTick)); } }
     Graphics::ScopedSaveState ss(g); g.reduceClipRegion(pr.toNearestInt());
     for (const auto& band : toleranceBands) {
-        if (band.f.size() < 2) continue;
+        if (band.f.size() < 2 || band.lower.size() != band.f.size() || band.upper.size() != band.f.size()) continue;
+        bool valid = true;
+        for (size_t i = 0; i < band.f.size(); ++i)
+            if (!std::isfinite(band.f[i]) || band.f[i] <= 0 || (i && band.f[i] <= band.f[i - 1])
+                || !std::isfinite(band.lower[i]) || !std::isfinite(band.upper[i]) || band.lower[i] > band.upper[i]) valid = false;
+        if (!valid) continue;
         Path area;
         area.startNewSubPath(xOf(band.f.front()), yOf(band.upper.front()));
         for (size_t i = 1; i < band.f.size(); ++i) area.lineTo(xOf(band.f[i]), yOf(band.upper[i]));
@@ -125,26 +142,39 @@ void PlotComponent::paint(Graphics& g) {
         area.closeSubPath(); g.setColour(band.colour.withAlpha(0.15f)); g.fillPath(area);
     }
     if (bars) for (auto& s : series) { if (s.dash) continue; g.setColour(C::rtaBar());
-        for (size_t i = 0; i < s.v.size() && i < barLo.size(); ++i) { float a = xOf(barLo[i]) + 1, b = xOf(barHi[i]) - 1, y = yOf(s.v[i]); g.fillRect(a, y, std::max(1.f, b - a), pr.getBottom() - y); }
-        Path p; for (size_t i = 0; i < s.v.size(); ++i) { float x = xOf(s.f[i]), y = yOf(s.v[i]); if (i == 0) p.startNewSubPath(x, y); else p.lineTo(x, y); }
-        g.setColour(s.c); g.strokePath(p, PathStrokeType(D::traceSecondary(), PathStrokeType::curved, PathStrokeType::rounded)); }
+        for (size_t i = 0; i < s.v.size() && i < s.f.size() && i < barLo.size() && i < barHi.size(); ++i) {
+            if (!validPoint(s.f[i], s.v[i]) || !validRange(barLo[i], barHi[i]) || (i < s.gap.size() && s.gap[i])) continue;
+            float a = xOf(std::max(fMin, barLo[i])) + 1, b = xOf(std::min(fMax, barHi[i])) - 1, y = yOf(s.v[i]);
+            if (b > a) g.fillRect(a, y, b - a, pr.getBottom() - y);
+        }
+    }
     for (auto& s : series) {
-        if (bars && !s.dash) continue;
         Path p; bool started = false; double prev = 0;
-        for (size_t i = 0; i < s.f.size(); ++i) { double f = s.f[i]; if (f < fMin || f > fMax || f > s.maxF) continue;
+        for (size_t i = 0; i < s.f.size() && i < s.v.size(); ++i) { double f = s.f[i]; if (!validPoint(f, s.v[i]) || f > s.maxF) { started = false; continue; }
             if (i < s.gap.size() && s.gap[i]) { started = false; continue; } // blanked bin: gap in the trace
             float x = xOf(f), y = yOf(s.v[i]);
             bool jump = started && wrapPhase && std::abs(s.v[i] - prev) > 180;
             if (!started || jump) { p.startNewSubPath(x, y); started = true; } else p.lineTo(x, y); prev = s.v[i]; }
-        if (!s.dash && foh::ui::theme().trace.glow) { g.setColour(s.c.withMultipliedAlpha(0.22f)); g.strokePath(p, PathStrokeType(s.width * 3.5f, PathStrokeType::curved, PathStrokeType::rounded)); } // glow = second wide stroke, no shadow effects
-        g.setColour(s.c); PathStrokeType st(s.width, PathStrokeType::curved, PathStrokeType::rounded);
+        if (!bars && !s.dash && foh::ui::theme().trace.glow) { g.setColour(s.c.withMultipliedAlpha(0.22f)); g.strokePath(p, PathStrokeType(s.width * 3.5f, PathStrokeType::curved, PathStrokeType::rounded)); } // glow = second wide stroke, no shadow effects
+        g.setColour(s.c); PathStrokeType st(bars && !s.dash ? D::traceSecondary() : s.width, PathStrokeType::curved, PathStrokeType::rounded);
         if (s.dash) { Path d; st.createDashedStroke(d, p, s.dash, 2); g.fillPath(d); } else g.strokePath(p, st);
     }
 }
 void logDecimate(const foh::TFResult& r, const std::vector<double>& v, std::vector<double>& fo, std::vector<double>& vo, std::vector<uint8_t>* gap) {
-    fo.clear(); vo.clear(); if (gap) gap->clear(); if (r.fftSize == 0) return; double bin = r.sampleRate / r.fftSize; size_t last = 0;
-    for (double f = 18; f < 22000; f *= std::pow(2.0, 1.0 / 30)) { size_t k = (size_t) std::lround(f / bin); if (k == last || k >= v.size()) continue; last = k; fo.push_back(k * bin); vo.push_back(v[k]);
-        if (gap) gap->push_back(r.isBlanked(k) ? 1 : 0); }
+    fo.clear(); vo.clear(); if (gap) gap->clear();
+    if (r.fftSize < 2 || (r.fftSize & (r.fftSize - 1)) || r.fftSize > (1 << 24)
+        || !std::isfinite(r.sampleRate) || r.sampleRate < 1
+        || v.size() != (size_t) r.fftSize / 2 + 1) return;
+    const double bin = r.sampleRate / r.fftSize; size_t last = 0;
+    for (double f = 18; f < 22000; f *= std::pow(2.0, 1.0 / 30)) {
+        double index = std::round(f / bin);
+        if (!std::isfinite(index) || index <= 0 || index >= (double) v.size()) continue;
+        size_t k = (size_t) index; if (k == last) continue; last = k;
+        bool invalid = !std::isfinite(v[k]) || std::fpclassify(v[k]) == FP_SUBNORMAL;
+        if (invalid && !gap) continue;
+        fo.push_back(k * bin); vo.push_back(invalid ? 0 : v[k]);
+        if (gap) gap->push_back(invalid || r.isBlanked(k) ? 1 : 0);
+    }
 } // ~300 log-spaced points (spec)
 
 // ===================== Impulse =====================

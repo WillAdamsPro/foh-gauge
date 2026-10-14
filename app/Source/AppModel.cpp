@@ -71,7 +71,7 @@ void AppModel::requestDelay(bool sub, std::function<void()> then) {
 }
 void AppModel::lockDelayFromLast() {
     if (!delayLocked()) return;
-    send(foh::Command::referenceDelay(delay.arrivals[0].delaySamples)); lockedDelayMs = delay.arrivals[0].delayMs; notify(Delay);
+    analysis.send(foh::Command::referenceDelay(delay.arrivals[0].delaySamples), lastInputEpoch); lockedDelayMs = delay.arrivals[0].delayMs; notify(Delay);
 }
 bool AppModel::storeTrace(const String& name) {
     bool ok = traces.store(name.toStdString(), tf, refDelayMs);
@@ -162,7 +162,7 @@ bool AppModel::beginLoopback() {
     savedReferenceDelay = refDelaySamples;
     loopbackResetId = ++nextCaptureId;
     if (!analysis.send(foh::Command::resetAverages(loopbackResetId))) {
-        send(foh::Command::referenceDelay(savedReferenceDelay)); return false;
+        analysis.send(foh::Command::referenceDelay(savedReferenceDelay), activeLoopbackEpoch); return false;
     }
     savedGenerator = engine.gen.load(); savedGeneratorGain = engine.genGainDb.load(); savedPaused = paused;
     setPaused(false); engine.genGainDb = -20; engine.gen = AudioEngine::Pink;

@@ -27,7 +27,7 @@ if(FOH_TSAN)
 endif()
 
 if(FOH_BUILD_TESTS)
-    add_executable(fohapp_tests ../tests/test_console_window.cpp ../tests/test_audio_bridge.cpp ../tests/test_workspace_presets.cpp ../tests/test_workspace_restore.cpp ../tests/test_guide_panel.cpp ../tests/test_routing_wizard.cpp ../tests/test_app_lifetime.cpp ../tests/test_easy_setup.cpp ../tests/test_stored_traces.cpp ../tests/test_show_monitoring.cpp ../tests/test_long_session.cpp
+    add_executable(fohapp_tests ../tests/test_console_window.cpp ../tests/test_audio_bridge.cpp ../tests/test_workspace_presets.cpp ../tests/test_workspace_restore.cpp ../tests/test_guide_panel.cpp ../tests/test_routing_wizard.cpp ../tests/test_app_lifetime.cpp ../tests/test_easy_setup.cpp ../tests/test_stored_traces.cpp ../tests/test_show_monitoring.cpp ../tests/test_signal_views.cpp ../tests/test_long_session.cpp
         Source/console/ConsoleWindow.cpp Source/AudioEngine.cpp Source/AnalysisEngine.cpp Source/AppModelMeasurement.cpp Source/LayoutModel.cpp Source/WorkspaceManager.cpp Source/WorkspaceView.cpp Source/FloatingPanels.cpp Source/Widgets.cpp Source/GuidePanel.cpp Source/RoutingWizard.cpp Source/EasySetup.cpp Source/SetupPage.cpp Source/Panels.cpp Source/MainComponent.cpp Source/SessionFiles.cpp Source/Diagrams.cpp Source/SessionFiles.cpp)
     target_include_directories(fohapp_tests PRIVATE Source)
     target_compile_definitions(fohapp_tests PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JUCE_MODAL_LOOPS_PERMITTED=1)

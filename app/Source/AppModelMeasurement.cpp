@@ -13,7 +13,7 @@ void AppModel::syncLoopback() {
 void AppModel::finishLoopback(const foh::TFResult* raw) {
     if (!loopbackMeasuring) return;
     if (measuringLoopbackKey == loopbackKey() && activeLoopbackEpoch == engine.captureEpoch.load())
-        send(foh::Command::referenceDelay(savedReferenceDelay));
+        analysis.send(foh::Command::referenceDelay(savedReferenceDelay), activeLoopbackEpoch);
     loopbackMeasuring = false; engine.gen = savedGenerator; engine.genGainDb = savedGeneratorGain; setPaused(savedPaused);
     auto c = raw ? foh::LoopbackCorrection::measure(*raw) : foh::LoopbackCorrection{};
     if (c.valid() && measuringLoopbackKey == loopbackKey()) {

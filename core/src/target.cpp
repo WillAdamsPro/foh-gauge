@@ -3,12 +3,15 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cctype>
 #include <locale>
 #include <sstream>
 
 namespace foh {
 TargetTrace parseTarget(const std::string& text) {
     TargetTrace target;
+    auto bad = [](const std::string& message) { TargetTrace failed; failed.error = message; return failed; };
+    size_t columns = 0;
     if (!input::validText(text)) { target.error = "Target must be UTF-8 text under 16 MiB"; return target; }
     std::istringstream input(text);
     std::string line;
@@ -34,8 +37,10 @@ TargetTrace parseTarget(const std::string& text) {
         }
         if (line[0] != '+' && line[0] != '-' && line[0] != '.' && (line[0] < '0' || line[0] > '9')) {
             std::string first, second; values >> first >> second;
+            std::string lower = first;
+            std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char ch) { return (char) std::tolower(ch); });
             double numeric;
-            if ((!rows.empty() || first == "nan" || first == "NaN" || first == "inf" || first == "Infinity" || (input::number(second, numeric) && (first.empty() || first.back() != ':')))
+            if ((!rows.empty() || lower == "nan" || lower == "inf" || lower == "infinity" || (input::number(second, numeric) && (first.empty() || first.back() != ':')))
                 && line[0] != '#' && line[0] != ';' && line[0] != '*') target.error = "Invalid target data row";
             continue;
         }
@@ -44,22 +49,30 @@ TargetTrace parseTarget(const std::string& text) {
         double hz; std::string mag, phase, coherence, extra;
         if ((missing >> hz >> mag >> phase >> coherence) && !(missing >> extra)
             && std::isfinite(hz) && hz > 0 && hz <= 1000000 && mag == "*" && phase == "*" && coherence == "*") continue;
-        std::vector<double> row; double value;
-        while (values >> value) { row.push_back(value); if (row.size() > 4) break; }
-        if (!values.eof() || (row.size() != 2 && row.size() != 4)
+        // Parse whole tokens: failed double extraction can set eofbit for a
+        // truncated exponent, which must not look like a complete shorter row.
+        std::vector<double> row; double value; std::string token; bool invalid = false;
+        while (values >> token) {
+            if (!input::number(token, value)) { invalid = true; break; }
+            row.push_back(value); if (row.size() > 4) break;
+        }
+        if (invalid || !values.eof() || (row.size() != 2 && row.size() != 4)
             || !std::all_of(row.begin(), row.end(), [](double v) { return std::isfinite(v); }) || row[0] <= 0 || row[0] > 1000000 || std::abs(row[1]) > 200
             || (row.size() == 4 && (std::abs(row[2]) > 36000 || row[3] < 0 || row[3] > 1))) {
             target.error = "Invalid target data row"; continue;
         }
-        if (rows.size() >= input::maxRows) { target.error = "Too many target rows"; return target; }
+        if (columns && row.size() != columns) return bad("Inconsistent target column count");
+        columns = row.size();
+        if (rows.size() >= input::maxRows) return bad("Too many target rows");
         rows.push_back({row[0], row[1]});
     }
+    if (!target.error.empty()) return bad(target.error);
     std::stable_sort(rows.begin(), rows.end(), [](const auto& a, const auto& b) { return a[0] < b[0]; });
     for (const auto& row : rows) {
         if (!target.hz.empty() && row[0] == target.hz.back()) continue;
         target.hz.push_back(row[0]); target.db.push_back(row[1]);
     }
-    if (target.hz.size() < 2 && target.error.empty()) target.error = "No usable target trace found";
+    if (target.hz.size() < 2) return bad("No usable target trace found");
     return target;
 }
 }
