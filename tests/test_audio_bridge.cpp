@@ -885,3 +885,59 @@ TEST_CASE("Pausing cancels a sweep capture and stops playback", "[app][audio][sw
     CHECK(engine.gen.load() == AudioEngine::Off);
     analysis.stop();
 }
+
+TEST_CASE("Analysis applies stored loopback only to its capture epoch", "[app][audio][loopback]") {
+    AudioEngine engine; AnalysisEngine analysis(engine);
+    engine.captureEpoch.store(1); analysis.start();
+    REQUIRE(waitFor([&] { return engine.analysisEpoch.load() == 1; }));
+    foh::LoopbackCorrection c; c.sampleRate = 48000; c.fftSize = 16384;
+    c.H.assign(8193, foh::cpx(.5, 0)); REQUIRE(c.valid());
+    auto correction = std::make_shared<const foh::LoopbackCorrection>(c);
+    auto revision = analysis.setLoopback(correction, 1);
+    foh::PinkNoise noise(23); std::vector<float> ref(16384), mic(ref.size());
+    for (size_t i = 0; i < ref.size(); ++i) { ref[i] = noise.next(); mic[i] = .5f * ref[i]; }
+    auto feed = [&] {
+        for (int block = 0; block < 4; ++block) {
+            capture(engine, mic.data(), ref.data(), (int)ref.size());
+            REQUIRE(waitFor([&] { return engine.micRing.available() == 0; }));
+        }
+        REQUIRE(waitFor([&] {
+            const auto& snapshot = analysis.latest();
+            return snapshot.inputEpoch == engine.captureEpoch.load() && snapshot.tf.averages >= 3;
+        }));
+    };
+    auto acknowledged = [&] {
+        REQUIRE(waitFor([&] { return analysis.latest().loopbackRevision == revision; }));
+        return analysis.latest(); // copy: latest() only keeps a reference until the next read
+    };
+    feed();
+    auto snapshot = acknowledged();
+    CHECK(snapshot.inputEpoch == 1);
+    CHECK(snapshot.tf.magDb[100] == Catch::Approx(0).margin(.1));
+    CHECK(snapshot.rawTf.magDb[100] == Catch::Approx(-6.0206).margin(.1));
+
+    // Publications can advance without consuming a correction update. A newer seq
+    // alone cannot acknowledge setLoopback (the intermittent failure in #101).
+    auto seq = snapshot.seq;
+    REQUIRE(waitFor([&] { return analysis.latest().seq > seq; }));
+    CHECK(analysis.latest().loopbackRevision == revision);
+    revision = analysis.setLoopback(correction, 0); // stale routing
+    snapshot = acknowledged();
+    CHECK(snapshot.tf.magDb[100] == Catch::Approx(-6.0206).margin(.1));
+
+    revision = analysis.setLoopback(correction, 1);
+    CHECK(acknowledged().tf.magDb[100] == Catch::Approx(0).margin(.1));
+    // A device/capture restart invalidates an already-consumed correction too.
+    engine.captureEpoch.fetch_add(1, std::memory_order_release);
+    REQUIRE(waitFor([&] { return engine.analysisEpoch.load() == 2; }));
+    feed();
+    snapshot = analysis.latest();
+    CHECK(snapshot.inputEpoch == 2);
+    CHECK(snapshot.loopbackRevision == revision);
+    CHECK(snapshot.tf.magDb[100] == Catch::Approx(-6.0206).margin(.1));
+    revision = analysis.setLoopback(correction, 2);
+    CHECK(acknowledged().tf.magDb[100] == Catch::Approx(0).margin(.1));
+    revision = analysis.setLoopback(nullptr, 2);
+    CHECK(acknowledged().tf.magDb[100] == Catch::Approx(-6.0206).margin(.1));
+    analysis.stop();
+}
