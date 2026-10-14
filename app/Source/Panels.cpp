@@ -326,8 +326,8 @@ public:
             int index = reference.getSelectedId() - 1;
             if (index < 0 || index >= model.traces.count()) return;
             baseline = model.traces.at(index); // stable even if the trace store changes
-            active = true; alert = {}; model.engine.gen = AudioEngine::Off;
-            model.engine.monitoringSilent = true; model.engine.cancelConnectionTest();
+            active = true; alert = {};
+            model.engine.monitoringSilent = true; model.engine.cancelGeneratedPlayback();
             model.notify(AppModel::Settings); monitor.setButtonText("Stop monitoring");
             reference.setEnabled(false); status.setText("Monitoring: waiting for coherent programme", dontSendNotification);
             startTimerHz(1);
@@ -337,7 +337,7 @@ public:
         rtaPlot.yLabel = "RTA dBFS"; rtaPlot.yMin = -100; rtaPlot.yMax = 0; rtaPlot.yStep = 20; rtaPlot.showLegend = true;
         styleLabel(status, T::small, C::textPrimary()); refreshReferences(); stopMonitoring();
     }
-    ~ShowMonitoringPanel() override { stopTimer(); if (active) { model.engine.gen = AudioEngine::Off; model.engine.monitoringSilent = false; } }
+    ~ShowMonitoringPanel() override { stopTimer(); if (active) { model.engine.cancelGeneratedPlayback(); model.engine.monitoringSilent = false; } }
     int priority() const override { return 100; }
     void resized() override {
         auto r = getLocalBounds().reduced(pad, 6); auto row = controlRow(r);
@@ -356,7 +356,7 @@ private:
         monitor.setEnabled(active || reference.getSelectedId() > 0);
     }
     void stopMonitoring() {
-        stopTimer(); if (active) { model.engine.gen = AudioEngine::Off; model.engine.monitoringSilent = false; }
+        stopTimer(); if (active) { model.engine.cancelGeneratedPlayback(); model.engine.monitoringSilent = false; }
         active = false; alert = {}; monitor.setButtonText("Monitor"); reference.setEnabled(true); refreshReferences();
         status.setColour(Label::textColourId, C::textPrimary());
         status.setText("W7: select a stored TF and Monitor. Use console programme as reference.", dontSendNotification);

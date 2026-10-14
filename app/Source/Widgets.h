@@ -29,6 +29,12 @@ public:
     void playChime(int output) noexcept;
     void testConnection(int output, int expectedInput) noexcept;
     void cancelConnectionTest() noexcept;
+    // Message-thread cancellation survives a Monitor/Stop pair between callbacks.
+    void cancelGeneratedPlayback() noexcept {
+        gen.store(Off);
+        cancelConnectionTest();
+        playbackResetRequested.store(true, std::memory_order_release);
+    }
     foh::ConnectionResult connectionResult() const noexcept;
     // Analysis-worker request; only atomics cross to the audio callback.
     void startSweepMeasurement() noexcept {
@@ -73,6 +79,7 @@ private:
     int testSamplesRemaining = 0, chimeOutput = -1;
     double chimePosition = 28800;
     std::atomic<bool> sweepRequest {false};
+    std::atomic<bool> playbackResetRequested {false};
     // Audio-thread-owned playback state; reset only with JUCE I/O quiesced.
     int sweepRemaining = 0, previousGen = Off;
     double sweepLevel = 0; bool sweepRestart = false, sweepOneShot = false;

@@ -137,6 +137,10 @@ void AudioEngine::audioDeviceIOCallbackWithContext(const float* const* in, int n
     lastOutputA = oa; lastOutputB = ob;
     const float g = genGainDb.load(); if (g != lastGain) { pink.setGainDb(g + 20.f); sweep.setGainDb(g + 12.f); lastGain = g; }
     const bool silent = monitoringSilent.load(std::memory_order_acquire);
+    // Discard playback, including the sweep ramp/tail and requests made while
+    // monitoring. Merely skipping playback would let a tail resume on Stop.
+    const bool resetRequested = playbackResetRequested.exchange(false, std::memory_order_acquire);
+    if (silent || resetRequested) resetPlayback();
     if (sweepRequest.exchange(false, std::memory_order_acquire)) {
         sweepRestart = true; sweepOneShot = true;
     }
