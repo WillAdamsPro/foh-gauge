@@ -67,7 +67,8 @@ const char* AudioEngine::statusText() const noexcept {
     }
 }
 void AudioEngine::resetPlayback() noexcept {
-    gen.store(Off);
+    gen.store(Off); sweepRequest.store(false); sweepPlaybackDone.store(false);
+    sweepRemaining = 0; sweepLevel = 0; sweepRestart = false; sweepOneShot = false; previousGen = Off;
     lastChimeRequest = chimeRequest.load(std::memory_order_acquire);
     chimePosition = 28800; chimeOutput = -1; testSamplesRemaining = 0;
     connectionDetector.reset(-1);
@@ -117,7 +118,12 @@ void AudioEngine::audioDeviceIOCallbackWithContext(const float* const* in, int n
     }
     lastMicChannel = mc; lastRefChannel = rc; lastInputCount = nIn; lastInputsValid = inputsValid;
     const float g = genGainDb.load(); if (g != lastGain) { pink.setGainDb(g + 20.f); sweep.setGainDb(g + 12.f); lastGain = g; }
+    if (sweepRequest.exchange(false, std::memory_order_acquire)) {
+        sweepRestart = true; sweepOneShot = true;
+    }
     const int mode = gen.load(), oa = outA.load(), ob = outB.load();
+    if (mode == Sweep && previousGen != Sweep) sweepRestart = true;
+    previousGen = mode;
     const auto request = chimeRequest.load(std::memory_order_acquire);
     if (request != lastChimeRequest) {
         lastChimeRequest = request;
@@ -134,8 +140,27 @@ void AudioEngine::audioDeviceIOCallbackWithContext(const float* const* in, int n
     const bool outputsValid = (mode == Off || (outputValid(oa) && (ob < 0 || outputValid(ob))))
         && (chimePosition >= 28800 || outputValid(chimeOutput));
     state.store(!inputsValid ? InvalidInputs : !outputsValid ? InvalidOutputs : Ready, std::memory_order_release);
+    const double rampStep = 1.0 / std::max(1.0, rate * 0.01);
     for (int i = 0; i < n; ++i) {
-        float s = mode == Pink ? pink.next() : mode == Sweep ? sweep.next() : 0.f;
+        const bool wantsSweep = mode == Sweep && gen.load() == Sweep;
+        sweepLevel = wantsSweep && !sweepRestart ? std::min(1.0, sweepLevel + rampStep)
+            : std::max(0.0, sweepLevel - rampStep);
+        if (sweepRestart && sweepLevel == 0) {
+            sweep.reset(); sweepRestart = false;
+            // Stop at the sweep end, so the tail ramp runs in its silent gap
+            // and cannot leak the beginning of the next looping sweep.
+            sweepRemaining = wantsSweep && sweepOneShot ? int(rate * 5) : 0;
+            sweepOneShot = false;
+        }
+        float s = mode == Pink ? pink.next() : 0.f;
+        if (wantsSweep || sweepLevel > 0) s += sweep.next() * float(sweepLevel);
+        if (sweepRemaining > 0) {
+            if (mode != Sweep) sweepRemaining = 0;
+            else if (--sweepRemaining == 0) {
+                sweepPlaybackDone.store(true, std::memory_order_release);
+                int expected = Sweep; gen.compare_exchange_strong(expected, Off);
+            }
+        }
         const bool testing = testSamplesRemaining > 0;
         const bool playingChime = chimePosition < 28800;
         if (playingChime) {

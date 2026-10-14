@@ -313,15 +313,34 @@ private:
 class ImpulsePanel : public Panel {
 public:
     explicit ImpulsePanel(AppModel& m) : Panel(m, "Impulse", "Impulse") {
-        helpText = "The impulse is the delay finder's correlation around the first arrival. The tallest spike is the direct sound; later spikes are reflections.\n\nJudge polarity from the phase traces, not from the impulse.";
-        addAndMakeVisible(imp);
+        helpText = "Measure a 5-second log sweep with a safety ramp, followed by silence for decay. The impulse is deconvolved against the recorded loopback reference. Start at a low generator level and check your routing. ETC shows envelope energy relative to its peak.";
+        addAndMakeVisible(imp); addAndMakeVisible(measure); addAndMakeVisible(etc); addAndMakeVisible(status);
+        measure.onClick = [this] { foh::Command c; c.type = foh::CommandType::MeasureSweep; model.send(c); };
+        etc.onClick = [this] { imp.showEtc = etc.getToggleState(); imp.repaint(); };
     }
-    Json saveState() const override { Json j = Json::object(); j.set("postMs", imp.postMs); return j; }
-    void loadState(const Json& j) override { imp.postMs = j["postMs"].asNumber(45); }
-    void resized() override { imp.setBounds(getLocalBounds().reduced(pad, 6)); }
-    void modelChanged(int w) override { if (w & (AppModel::Delay | AppModel::Theme)) imp.setResult(model.delay, model.sampleRate); }
+    Json saveState() const override { Json j = Json::object(); j.set("postMs", imp.postMs); j.set("etc", etc.getToggleState()); return j; }
+    void loadState(const Json& j) override { imp.postMs = j["postMs"].asNumber(45); etc.setToggleState(j["etc"].asBool(false), dontSendNotification); imp.showEtc = etc.getToggleState(); }
+    fohws::Size minSize() const override { return { 300, 180 }; }
+    void resized() override {
+        auto r = getLocalBounds().reduced(pad, 6); auto row = r.removeFromTop(26);
+        measure.setBounds(row.removeFromLeft(150)); etc.setBounds(row.removeFromLeft(75));
+        status.setBounds(r.removeFromTop(22)); imp.setBounds(r);
+    }
+    void modelChanged(int w) override {
+        if (!(w & (AppModel::Snapshot | AppModel::Delay | AppModel::Theme))) return;
+        measure.setEnabled(!model.sweepCapturing);
+        String note = "Delay correlation";
+        if (model.sweepCapturing) note = "Measuring sweep...";
+        else if (!model.sweep.response.error.empty()) note = String(model.sweep.response.error);
+        else if (model.sweep.response.ok()) note = "Sweep impulse: " + String(model.sweep.response.arrivals[0].delayMs, 2) + " ms";
+        status.setText(note, dontSendNotification);
+        etc.setEnabled(!model.sweep.etcDb.empty());
+        imp.etcDb = model.sweep.etcDb;
+        imp.setResult(model.sweep.response.impulse.empty() ? model.delay : model.sweep.response, model.sampleRate);
+    }
 private:
     ImpulseComponent imp;
+    TextButton measure {"Measure sweep"}; ToggleButton etc {"ETC"}; Label status;
 };
 
 // ===================== Signal meters =====================
@@ -358,7 +377,7 @@ private:
 class GeneratorPanel : public Panel {
 public:
     explicit GeneratorPanel(AppModel& m) : Panel(m, "Generator", "Generator") {
-        helpText = "Pink noise for the transfer function and RTA; the log sweep loops every 5 s.\n\nOut 1 goes to the console, Out 2 loops back to In 2 as the reference.";
+        helpText = "Pink noise for the transfer function and RTA; the log sweep lasts 5 s followed by a 1 s silence gap.\n\nOut 1 goes to the console, Out 2 loops back to In 2 as the reference.";
         type.addItem("Generator off", 1); type.addItem("Pink noise", 2); type.addItem("Log sweep 20 Hz-20 kHz (5 s, loops)", 3);
         type.onChange = [this] { model.engine.gen = type.getSelectedId() - 1; };
         gain.setRange(-60, 0, 0.5); gain.setTextValueSuffix(" dBFS"); gain.setTextBoxStyle(Slider::TextBoxRight, false, 90, 22);

@@ -45,5 +45,9 @@ private:
     std::unique_ptr<foh::TransferFunction> tf; std::unique_ptr<foh::RTA> rta;
     int smoothing = 12, rtaFrac = 3, averages = 16; double blankThr = 0.6;
     std::vector<float> histRef, histMic; int histPos = 0; // last 3 s, including the sub delay window
+    foh::SweepResult sweepResult;
+    std::vector<float> sweepRef, sweepMic;
+    bool sweepCapturing = false; double sweepStartMs = 0;
+    void cancelSweep(const char* reason);
     foh::DelayResult delay; uint64_t delaySeq = 0, resetSeq = 0; bool delayWasSub = false;
 };

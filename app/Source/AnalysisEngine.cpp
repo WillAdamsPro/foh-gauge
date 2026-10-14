@@ -5,6 +5,12 @@ void AnalysisEngine::setCal(std::shared_ptr<const foh::MicCal> c, const juce::St
     std::lock_guard<std::mutex> l(calLock); pendingCal = std::move(c); pendingCalName = name; calDirty = true;
 }
 
+void AnalysisEngine::cancelSweep(const char* reason) {
+    if (sweepCapturing) { int expected = AudioEngine::Sweep; engine.gen.compare_exchange_strong(expected, AudioEngine::Off); }
+    sweepCapturing = false; sweepRef.clear(); sweepMic.clear();
+    sweepResult = {}; sweepResult.response.error = reason;
+}
+
 void AnalysisEngine::rebuild(double newFs) {
     leq = std::make_unique<foh::LeqMeter>(newFs);
     fs = newFs; levelEnergy = 0; levelSamples = 0;
@@ -18,6 +24,23 @@ void AnalysisEngine::rebuild(double newFs) {
 void AnalysisEngine::handle(const foh::Command& c) {
     using T = foh::CommandType;
     switch (c.type) {
+        case T::MeasureSweep: {
+            if (paused.load() || engine.deviceFailed.load() || engine.state.load() != AudioEngine::Ready) {
+                cancelSweep("Open Audio Setup and resume measurement first"); break;
+            }
+            if (sweepCapturing) break;
+            sweepResult = {}; sweepRef.clear(); sweepMic.clear();
+            sweepRef.reserve(size_t(fs * 6.5)); sweepMic.reserve(size_t(fs * 6.5));
+            // Discard queued pre-sweep samples on the sole consumer, never on I/O.
+            std::vector<float> discard(fftN);
+            const int queued = std::min(engine.refRing.available(), engine.micRing.available());
+            for (int left = queued; left > 0;) {
+                int count = std::min(left, fftN);
+                engine.refRing.pop(discard.data(), count); engine.micRing.pop(discard.data(), count); left -= count;
+            }
+            sweepCapturing = true; sweepStartMs = juce::Time::getMillisecondCounterHiRes();
+            engine.startSweepMeasurement(); break;
+        }
         case T::SetSmoothing: smoothing = c.i; break;
         case T::SetRtaFraction: rtaFrac = c.i; rta->setFraction(c.i); break;
         case T::SetBlankThreshold: blankThr = c.d; tf->setCoherenceBlankThreshold(c.d); break;
@@ -38,6 +61,7 @@ void AnalysisEngine::publish() {
     s.tf = tf->result(smoothing); s.smoothingFraction = smoothing;
     if (cal) cal->apply(s.tf);
     s.rtaDb = rta->bandsDb(); s.rtaBands = rta->bands(); s.rtaFraction = rtaFrac;
+    s.sweep = sweepResult; s.sweepCapturing = sweepCapturing;
     s.delay = delay; s.delaySeq = delaySeq; s.delayWasSub = delayWasSub;
     s.refDelaySamples = tf->referenceDelaySamples(); s.refDelayMs = s.refDelaySamples / fs * 1000.0;
     s.calApplied = cal != nullptr; s.setCalName(cal ? calName.c_str() : "");
@@ -63,6 +87,7 @@ void AnalysisEngine::run() {
             // waits for analysisEpoch, so these drains cannot discard new-rate audio.
             for (auto* ring : { &engine.micRing, &engine.refRing })
                 while (ring->available() > 0) ring->pop(m.data(), std::min(ring->available(), fftN));
+            if (tf) cancelSweep("Audio changed; measure the sweep again");
             rebuild(engine.sampleRate.load()); // also clears both delay histories
             delay = {};
             epoch = nextEpoch; inputEpoch = epoch; micChannel = engine.captureMicChannel.load();
@@ -74,12 +99,27 @@ void AnalysisEngine::run() {
         foh::Command c; while (commands.pop(c)) handle(c);
         const auto revision = leqRevision.load();
         if (revision != meterRevision) { leq->reset(); meterRevision = revision; }
+        if (sweepCapturing && (paused.load() || engine.deviceFailed.load()
+            || engine.state.load() != AudioEngine::Ready || engine.gen.load() == AudioEngine::Pink
+            || (engine.gen.load() == AudioEngine::Off && !engine.sweepPlaybackDone.load(std::memory_order_acquire))
+            || juce::Time::getMillisecondCounterHiRes() - sweepStartMs > 10000))
+            cancelSweep("Sweep interrupted; check routing and measure again");
         bool any = false;
         while (engine.captureEpoch.load(std::memory_order_acquire) == epoch
                && engine.micRing.available() >= 512 && engine.refRing.available() >= 512) {
             int n = std::min({ engine.micRing.available(), engine.refRing.available(), fftN });
             engine.micRing.pop(m.data(), n); engine.refRing.pop(r.data(), n); any = true;
             if (paused.load()) continue;
+            if (sweepCapturing) {
+                const size_t count = std::min(size_t(n), size_t(fs * 6.5) - sweepRef.size());
+                sweepRef.insert(sweepRef.end(), r.begin(), r.begin() + count);
+                sweepMic.insert(sweepMic.end(), m.begin(), m.begin() + count);
+                if (sweepRef.size() == size_t(fs * 6.5)) {
+                    sweepCapturing = false;
+                    sweepResult = foh::deconvolveSweep(sweepRef, sweepMic, fs);
+                    sweepRef.clear(); sweepMic.clear();
+                }
+            }
             for (int i = 0; i < n; ++i) levelEnergy += double(m[i]) * m[i];
             levelSamples += n;
             leq->process(m.data(), n);
