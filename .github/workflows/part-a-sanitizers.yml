@@ -1,0 +1,37 @@
+name: part-a-sanitizers
+concurrency:
+  group: part-a-${{ github.ref }}
+  cancel-in-progress: true
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+jobs:
+  core-asan-ubsan:
+    runs-on: ubuntu-latest
+    env:
+      ASAN_OPTIONS: detect_leaks=1:abort_on_error=1
+      UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure (core only, ASan + UBSan)
+        run: >
+          cmake -S . -B build -DFOH_BUILD_APP=OFF -DCMAKE_BUILD_TYPE=RelWithDebInfo
+          -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined,float-cast-overflow -fno-sanitize-recover=all -fno-omit-frame-pointer"
+          -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined"
+      - name: Build
+        run: cmake --build build --parallel
+      - name: ctest (core + Part A + golden)
+        run: ctest --test-dir build --output-on-failure --output-junit "$GITHUB_WORKSPACE/part-a-junit.xml"
+      - name: Part A coverage map
+        if: always()
+        run: python3 tools/part_a_map.py doc part-a-junit.xml && cat docs/qa/part-a-coverage.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: part-a-results
+          path: |
+            part-a-junit.xml
+            build/Testing/Temporary/LastTest.log
+            docs/qa/part-a-coverage.md

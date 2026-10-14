@@ -22,21 +22,21 @@ TEST_CASE("FFT round trip and sine bin") {
     for (int i=0;i<1024;++i) REQUIRE(d[(size_t)i].real()==Approx(o[(size_t)i].real()).margin(1e-9));
     REQUIRE_THROWS(FFT(1000));
 }
-TEST_CASE("Pink noise slope is about -3 dB/oct") {
+TEST_CASE("Pink noise slope is about -3 dB/oct", "[PartA][G1]") {
     auto x = pink(48000*20); RTA r(16384,48000,3); r.avgAlpha=0.02; r.process(x.data(),(int)x.size()); auto b=r.bandsDb(); auto& bands=r.bands();
     double a=0,c=0; for (size_t i=0;i<bands.size();++i){ if (std::fabs(bands[i].fCenter-250)<5) a=b[i]; if (std::fabs(bands[i].fCenter-4000)<50) c=b[i]; }
     // 1/3-oct bands of pink noise: equal energy per band => flat; RTA of pink should be flat within 1.5 dB
     REQUIRE(std::fabs(a-c) < 1.5);
 }
-TEST_CASE("Log sweep stays bounded and has expected length") {
+TEST_CASE("Log sweep stays bounded and has expected length", "[PartA][G2]") {
     LogSweep s; s.prepare(48000,20,20000,2.0,0.1); s.setGainDb(0); REQUIRE(s.lengthSamples()==96000);
     float mx=0; for(int i=0;i<100800;++i) mx=std::max(mx,std::fabs(s.next())); REQUIRE(mx<=0.2501f); REQUIRE(mx>0.24f);
 }
-TEST_CASE("Ring buffer SPSC basic") {
+TEST_CASE("Ring buffer SPSC basic", "[PartA][RT1-4]") {
     RingBuffer rb(1024); std::vector<float> a(600,1.f),b(600); rb.push(a.data(),600); rb.push(a.data(),600); // second dropped
     REQUIRE(rb.available()==600); REQUIRE(rb.pop(b.data(),1000)==600); REQUIRE(rb.available()==0);
 }
-TEST_CASE("Delay finder: integer and fractional known delays") {
+TEST_CASE("Delay finder: integer and fractional known delays", "[PartA][S4][S5]") {
     auto x = pink(48000); for (int d : {0, 37, 599, 2400}) {
         auto y = delayed(x, d, 0.5f); auto r = findDelay(x, y, 48000);
         REQUIRE(!r.arrivals.empty()); REQUIRE(r.arrivals[0].delaySamples == Approx(d).margin(0.1)); REQUIRE(r.confidence > 0.8); }
@@ -44,7 +44,7 @@ TEST_CASE("Delay finder: integer and fractional known delays") {
     REQUIRE(r.arrivals[0].delaySamples == Approx(599).margin(0.5));
     REQUIRE(r.arrivals[0].delayMs == Approx(12.479).margin(0.02));
 }
-TEST_CASE("Delay finder: top-3 arrivals (direct + 2 reflections) in noise") {
+TEST_CASE("Delay finder: top-3 arrivals (direct + 2 reflections) in noise", "[PartA][D-T3]") {
     auto x = pink(48000, 3); auto y = delayed(x, 480); auto r1 = delayed(x, 720, 0.5f), r2 = delayed(x, 1200, 0.3f);
     std::mt19937 g(7); std::normal_distribution<float> n(0, 0.01f);
     for (size_t i=0;i<y.size();++i) y[i]+=r1[i]+r2[i]+n(g);
@@ -57,7 +57,7 @@ TEST_CASE("Delay finder: top-3 arrivals (direct + 2 reflections) in noise") {
     for (size_t i=0;i<wy.size();++i) wy[i]+=wr[i];
     auto lin = findDelay(w, wy, 48000, false); REQUIRE(lin.arrivals.size()>=2); REQUIRE(lin.arrivals[1].relLevelDb==Approx(-6.02).margin(1.5));
 }
-TEST_CASE("Transfer function: pure gain + compensated delay -> flat, zero phase, coherence 1") {
+TEST_CASE("Transfer function: pure gain + compensated delay -> flat, zero phase, coherence 1", "[PartA][S1][S7]") {
     auto x = pink(48000*6); auto y = delayed(x, 300, 0.5f);
     TransferFunction tf(16384, 48000); tf.setReferenceDelaySamples(300); tf.setAverages(0); tf.process(x.data(), y.data(), (int)x.size());
     auto r = tf.result(); REQUIRE(r.averages >= 30);
@@ -70,42 +70,42 @@ TEST_CASE("Transfer function: uncompensated delay shows linear phase slope") {
     REQUIRE(r.phaseDeg[binOf(r,250)]==Approx(-90).margin(3)); // -360*f*t
     REQUIRE(wrapDeg(r.phaseDeg[binOf(r,600)])==Approx(wrapDeg(-216)).margin(3));
 }
-TEST_CASE("Transfer function: lowpass filter recovered (-3 dB @ fc, -90 deg)") {
+TEST_CASE("Transfer function: lowpass filter recovered (-3 dB @ fc, -90 deg)", "[PartA][S3]") {
     auto x = pink(48000*8); auto y = lowpass(x, 1000, 48000);
     TransferFunction tf(16384, 48000); tf.setAverages(0); tf.process(x.data(), y.data(), (int)x.size()); auto r = tf.result();
     REQUIRE(r.magDb[binOf(r,100)]==Approx(0).margin(0.2)); REQUIRE(r.magDb[binOf(r,1000)]==Approx(-3.01).margin(0.3));
     REQUIRE(r.phaseDeg[binOf(r,1000)]==Approx(-90).margin(3)); REQUIRE(r.magDb[binOf(r,4000)]==Approx(-24.1).margin(1.0));
 }
-TEST_CASE("Coherence drops with uncorrelated noise (SNR 0 dB -> ~0.5)") {
+TEST_CASE("Coherence drops with uncorrelated noise (SNR 0 dB -> ~0.5)", "[PartA][S8]") {
     auto x = pink(48000*10, 5); auto nz = pink(48000*10, 99); std::vector<float> y(x.size()); for (size_t i=0;i<y.size();++i) y[i]=x[i]+nz[i];
     TransferFunction tf(16384, 48000); tf.setAverages(0); tf.process(x.data(), y.data(), (int)x.size()); auto r = tf.result(3);
     for (double f : {200.0, 2000.0}) REQUIRE(r.coherence[binOf(r,f)]==Approx(0.5).margin(0.12));
     // clean case for contrast
     TransferFunction t2(16384,48000); t2.setAverages(0); t2.process(x.data(), x.data(), (int)x.size()); REQUIRE(t2.result().coherence[binOf(r,2000)]>0.999);
 }
-TEST_CASE("Smoothing preserves flat and reduces ripple") {
+TEST_CASE("Smoothing preserves flat and reduces ripple", "[PartA][T3]") {
     std::vector<double> p(8193); for (size_t i=0;i<p.size();++i) p[i]= 1.0 + 0.5*((i%2)?1:-1);
     auto s = smoothPower(p, 48000.0/16384, 6); REQUIRE(s[4000]==Approx(1.0).margin(0.01)); REQUIRE(smoothPower(p,1,0)==p);
 }
-TEST_CASE("RTA: 1 kHz full-scale sine reads ~0 dBFS in 1 kHz band (1/3 and 1/6)") {
+TEST_CASE("RTA: 1 kHz full-scale sine reads ~0 dBFS in 1 kHz band (1/3 and 1/6)", "[PartA][S10]") {
     for (int frac : {3, 6}) { RTA r(16384,48000,frac); std::vector<float> s(48000*2); for (size_t i=0;i<s.size();++i) s[i]=(float)std::sin(2*M_PI*1000*i/48000.0);
         r.process(s.data(),(int)s.size()); auto b=r.bandsDb(); auto& bands=r.bands(); size_t k=0; for(size_t i=0;i<bands.size();++i) if(std::fabs(bands[i].fCenter-1000)<1) k=i;
         REQUIRE(b[k]==Approx(0).margin(0.5)); REQUIRE(b[k+2] < -40); }
     REQUIRE(octaveBands(3).size()==31); REQUIRE(octaveBands(6).size()==61);
 }
-TEST_CASE("Mic cal: Will's ECM8000 CSV") {
+TEST_CASE("Mic cal: Will's ECM8000 CSV", "[PartA][C1][C5][C7]") {
     auto c = loadMicCal(std::string(FOH_TEST_DATA) + "/ecm8000-cal.csv");
     REQUIRE(c.ok()); REQUIRE(c.hz.size()==124); REQUIRE(c.hasPhase);
     REQUIRE(c.dbAt(20)==Approx(-0.07)); REQUIRE(c.dbAt(21999)==Approx(-4.92)); REQUIRE(c.dbAt(5)==Approx(-0.07)); REQUIRE(c.dbAt(30000)==Approx(-4.92));
     double mid = c.dbAt(std::sqrt(20.0*25.1785)); REQUIRE(mid==Approx((-0.07+0.137)/2).margin(1e-6));
 }
-TEST_CASE("Mic cal: tolerant parsing of .txt / .frd / headers / comments") {
+TEST_CASE("Mic cal: tolerant parsing of .txt / .frd / headers / comments", "[PartA][C3][C9]") {
     auto c = parseMicCal("\xEF\xBB\xBF\"Sens Factor =-1.5dB, SERNO: 123\"\n* comment\n# another\nFreq(Hz)\tSPL(dB)\tPhase\n\n20\t0.5\n100  0.0\r\n1000;1.0\n50,0.2,10\n");
     REQUIRE(c.ok()); REQUIRE(c.hz.size()==4); REQUIRE(!c.hasPhase); REQUIRE(c.hz[1]==50); REQUIRE(c.sensitivityOffsetDb==Approx(-1.5));
     auto frd = parseMicCal("; FRD file\n10.0 -1.0 5.0\n20000 2.0 -5.0\n"); REQUIRE(frd.ok()); REQUIRE(frd.hasPhase);
     REQUIRE(!parseMicCal("hello\nworld\n").ok());
 }
-TEST_CASE("Mic cal applied to TF removes the mic response") {
+TEST_CASE("Mic cal applied to TF removes the mic response", "[PartA][C10][C14]") {
     auto c = loadMicCal(std::string(FOH_TEST_DATA) + "/ecm8000-cal.csv");
     // synthetic TF equal to the mic response
     TFResult tf; tf.sampleRate=48000; tf.fftSize=16384; size_t M=8193; tf.freq.resize(M); tf.H.resize(M); tf.magDb.resize(M); tf.phaseDeg.resize(M); tf.coherence.assign(M,1);
@@ -113,11 +113,11 @@ TEST_CASE("Mic cal applied to TF removes the mic response") {
     c.apply(tf); for (double f : {30.0, 1000.0, 15000.0}) { REQUIRE(tf.magDb[binOf(tf,f)]==Approx(0).margin(1e-6)); REQUIRE(tf.phaseDeg[binOf(tf,f)]==Approx(0).margin(1e-6)); }
     auto corr = c.correctionDb(8193, 48000.0/16384); REQUIRE(corr[binOf(tf,15000)]==Approx(-c.dbAt(binOf(tf,15000)*48000.0/16384)));
 }
-TEST_CASE("Trace store caps at 8") {
+TEST_CASE("Trace store caps at 8", "[PartA][TR1]") {
     TraceStore s; TFResult t; for (int i=0;i<8;++i) REQUIRE(s.store("T"+std::to_string(i),t,0)); REQUIRE(!s.store("X",t,0));
     REQUIRE(s.remove(0)); REQUIRE(s.count()==7); REQUIRE(s.at(0).name=="T1");
 }
-TEST_CASE("Guide: sub-to-mains phase offset and virtual sum") {
+TEST_CASE("Guide: sub-to-mains phase offset and virtual sum", "[PartA][S14]") {
     // main = 1 (flat), sub = main delayed 2 ms; offset at 100 Hz = -72 deg -> implied +2 ms
     TFResult a; a.sampleRate=48000; a.fftSize=16384; size_t M=8193; a.freq.resize(M); a.H.resize(M); a.magDb.assign(M,0); a.phaseDeg.resize(M); a.coherence.assign(M,1);
     for (size_t k=0;k<M;++k){ a.freq[k]=k*48000.0/16384; a.H[k]=1; } TFResult b=a;
@@ -127,7 +127,7 @@ TEST_CASE("Guide: sub-to-mains phase offset and virtual sum") {
     auto s = virtualSum(a,a); REQUIRE(s.magDb[100]==Approx(6.02).margin(0.01));
     auto t = impulseFromTF(b); size_t pk=0; for(size_t i=0;i<t.size();++i) if(std::fabs(t[i])>std::fabs(t[pk])) pk=i; REQUIRE(pk==96);
 }
-TEST_CASE("Coherence blanking flags noisy bins only") {
+TEST_CASE("Coherence blanking flags noisy bins only", "[PartA][T4]") {
     // DUT passes 0..~1.2 kHz cleanly (lowpass), heavy uncorrelated noise everywhere => HF coherence collapses
     auto x = pink(48000*8, 11); auto y = lowpass(x, 300, 48000); auto nz = pink(48000*8, 77);
     for (size_t i=0;i<y.size();++i) y[i] += 0.05f*nz[i];
@@ -143,7 +143,7 @@ TEST_CASE("Coherence blanking flags noisy bins only") {
     tf.setCoherenceBlankThreshold(2.0); REQUIRE(tf.coherenceBlankThreshold()==1.0);
 }
 #include <thread>
-TEST_CASE("TripleBuffer: latest() returns newest published, never torn") {
+TEST_CASE("TripleBuffer: latest() returns newest published, never torn", "[PartA][RT1-4]") {
     TripleBuffer<std::vector<int>> tb; REQUIRE(!tb.hasNew());
     tb.writeBuffer().assign(4, 1); tb.publish(); REQUIRE(tb.hasNew());
     tb.writeBuffer().assign(4, 2); tb.publish();
@@ -156,12 +156,12 @@ TEST_CASE("TripleBuffer: latest() returns newest published, never torn") {
     while(!done.load()){ auto& b=s.latest(); int v=b[0]; for(int x:b) if(x!=v) ok=false; if(v<last) ok=false; last=v; }
     w.join(); REQUIRE(ok); REQUIRE(s.latest()[0]==20000);
 }
-TEST_CASE("SnapshotPublisher carries TF/RTA and sequence") {
+TEST_CASE("SnapshotPublisher carries TF/RTA and sequence", "[PartA][RT1-4]") {
     SnapshotPublisher p; auto& a=p.beginWrite(); a.rtaDb={-10,-20}; a.tf.fftSize=16384; p.publish();
     auto& r=p.latest(); REQUIRE(r.seq==1); REQUIRE(r.rtaDb.size()==2); REQUIRE(r.tf.fftSize==16384);
     p.beginWrite().rtaDb={-1}; p.publish(); REQUIRE(p.latest().seq==2); REQUIRE(p.latest().rtaDb.size()==1);
 }
-TEST_CASE("Polarity flip: TF phase 180, coherence 1; delay finder flags inverted") {
+TEST_CASE("Polarity flip: TF phase 180, coherence 1; delay finder flags inverted", "[PartA][S6]") {
     auto x = pink(48000*6, 21); auto y = delayed(x, 240, -1.f);
     TransferFunction tf(16384,48000); tf.setAverages(0); tf.setReferenceDelaySamples(240); tf.process(x.data(), y.data(), (int)x.size());
     auto r = tf.result();
@@ -175,7 +175,7 @@ TEST_CASE("Polarity flip: TF phase 180, coherence 1; delay finder flags inverted
     TransferFunction t2(16384,48000); t2.setAverages(0); t2.process(x.data(), lp.data(), (int)x.size());
     REQUIRE(wrapDeg(t2.result().phaseDeg[binOf(r,1000)])==Approx(90).margin(3));
 }
-TEST_CASE("Averaging: infinite = cumulative mean, exponential tracks changes") {
+TEST_CASE("Averaging: infinite = cumulative mean, exponential tracks changes", "[PartA][T2]") {
     // DUT gain steps 1.0 -> 0.5 halfway. Infinite: Sxy/Sxx -> mean gain 0.75. Exponential(4): -> 0.5.
     auto x = pink(48000*12, 4); std::vector<float> y(x.size()); for (size_t i=0;i<y.size();++i) y[i] = x[i] * (i < y.size()/2 ? 1.f : 0.5f);
     TransferFunction inf(16384,48000); inf.setAverages(0); inf.process(x.data(), y.data(), (int)x.size());
@@ -187,7 +187,7 @@ TEST_CASE("Averaging: infinite = cumulative mean, exponential tracks changes") {
     // both modes count every frame; only the weighting differs
     REQUIRE(ri.averages == ex.result().averages); REQUIRE(ri.averages > 60);
 }
-TEST_CASE("Smoothing 1/12 and 1/24: flat preserved, ripple reduced, resolution ordered") {
+TEST_CASE("Smoothing 1/12 and 1/24: flat preserved, ripple reduced, resolution ordered", "[PartA][T3]") {
     double bin = 48000.0/16384; std::vector<double> p(8193);
     for (size_t i=0;i<p.size();++i) p[i] = 1.0 + 0.5*((i%2)?1:-1);
     for (int f : {12, 24}) { auto s = smoothPower(p, bin, f);
@@ -200,7 +200,7 @@ TEST_CASE("Smoothing 1/12 and 1/24: flat preserved, ripple reduced, resolution o
     // complex smoothing at 1/24 keeps a flat TF exact
     std::vector<cpx> h(8193, cpx(0.5, 0.0)); auto hs = smoothComplex(h, bin, 24); REQUIRE(std::abs(hs[3000])==Approx(0.5).margin(1e-12));
 }
-TEST_CASE("Delay finder: plain cross-correlation (no PHAT) on white noise and a biquad DUT") {
+TEST_CASE("Delay finder: plain cross-correlation (no PHAT) on white noise and a biquad DUT", "[PartA][D-PX]") {
     std::mt19937 g(42); std::normal_distribution<float> n(0, 0.3f); std::vector<float> w(48000); for (auto& v : w) v = n(g);
     for (int d : {0, 11, 480, 4800}) { auto r = findDelay(w, delayed(w, d, 0.7f), 48000, false);
         REQUIRE(r.arrivals[0].delaySamples==Approx(d).margin(0.3)); REQUIRE(r.confidence > 0.8); REQUIRE(!r.arrivals[0].inverted); }
@@ -219,7 +219,7 @@ void* operator new(std::size_t n) { if (g_trackAlloc) ++g_allocs; if (void* p = 
 void operator delete(void* p) noexcept { std::free(p); }
 void operator delete(void* p, std::size_t) noexcept { std::free(p); }
 struct AllocGuard { AllocGuard(){ g_allocs=0; g_trackAlloc=true; } ~AllocGuard(){ g_trackAlloc=false; } };
-TEST_CASE("RT safety: audio-thread paths do not allocate (block sizes 16..2048)") {
+TEST_CASE("RT safety: audio-thread paths do not allocate (block sizes 16..2048)", "[PartA][RT1-4]") {
     PinkNoise pn; LogSweep sw; sw.prepare(48000, 20, 20000, 1.0, 0.1); RingBuffer rb(1 << 16);
     TripleBuffer<std::vector<float>> tb; for (int k=0;k<3;++k){ tb.writeBuffer().assign(64,0.f); tb.publish(); }
     std::vector<float> blk(2048), out(2048);
@@ -233,13 +233,13 @@ TEST_CASE("RT safety: audio-thread paths do not allocate (block sizes 16..2048)"
     // sanity: the counter works
     { AllocGuard g; std::vector<int> v(10); allocs = g_allocs; } REQUIRE(allocs >= 1);
 }
-TEST_CASE("RT safety: TF/RTA frames reuse preallocated scratch") {
+TEST_CASE("RT safety: TF/RTA frames reuse preallocated scratch", "[PartA][RT1-4]") {
     auto x = pink(16384*4); TransferFunction tf(16384,48000); RTA rta(16384,48000,3);
     tf.process(x.data(), x.data(), 16384); rta.process(x.data(), 16384); // warm up
     int allocs; { AllocGuard g; tf.process(x.data()+16384, x.data()+16384, 16384*2); rta.process(x.data()+16384, 16384*2); allocs = g_allocs; }
     REQUIRE(allocs == 0); REQUIRE(tf.frames() >= 4);
 }
-TEST_CASE("RingBuffer: wraparound, whole-block drop, pow2 rounding, drop counter") {
+TEST_CASE("RingBuffer: wraparound, whole-block drop, pow2 rounding, drop counter", "[PartA][RT1-4]") {
     RingBuffer rb(1000); REQUIRE(rb.capacity()==1024);
     std::vector<float> a(700), b(700); for (int i=0;i<700;++i) a[(size_t)i]=(float)i;
     REQUIRE(rb.push(a.data(),700)); REQUIRE(rb.pop(b.data(),700)==700);
@@ -255,19 +255,19 @@ TEST_CASE("RingBuffer: wraparound, whole-block drop, pow2 rounding, drop counter
     while (!done.load() || s.available()) { int n=s.pop(o.data(),500); for (int i=0;i<n;++i){ if (o[(size_t)i]!=(float)expect) ok=false; ++expect; } }
     prod.join(); REQUIRE(ok); REQUIRE(expect >= 200000);
 }
-TEST_CASE("Denormals are flushed inside ScopedFlushDenormals") {
+TEST_CASE("Denormals are flushed inside ScopedFlushDenormals", "[PartA][RT1-4]") {
     volatile float tiny = 1e-38f; volatile float scale = 1e-3f;
     float before = tiny * scale; REQUIRE(before != 0.0f); // subnormal without FTZ
     float inside; { ScopedFlushDenormals fz; inside = tiny * scale; }
     REQUIRE(inside == 0.0f);
     float after = tiny * scale; REQUIRE(after != 0.0f); // restored
 }
-TEST_CASE("Generators: gain/reset are thread-safe requests honoured on next sample") {
+TEST_CASE("Generators: gain/reset are thread-safe requests honoured on next sample", "[PartA][G3]") {
     LogSweep sw; sw.prepare(48000, 20, 20000, 1.0, 0.0); std::vector<float> a(1000), b(1000);
     sw.process(a.data(), 1000); sw.reset(); sw.process(b.data(), 1000); REQUIRE(a == b);
     PinkNoise p1(9), p2(9); p2.setGainDb(-20); float x1=p1.next(), x2=p2.next(); REQUIRE(x2==Approx(x1*0.1f).epsilon(1e-4));
 }
-TEST_CASE("Delay finder for subs: 3 s LF-weighted window recovers sub delay under HF noise") {
+TEST_CASE("Delay finder for subs: 3 s LF-weighted window recovers sub delay under HF noise", "[PartA][S15_D-SUB]") {
     const double fs = 48000; int L = recommendedDelayWindowSamples(fs, true);
     REQUIRE(L == 144000); REQUIRE(recommendedDelayWindowSamples(fs, true, 10) == 192000);
     REQUIRE(recommendedDelayWindowSamples(fs, true, 1) == 96000); REQUIRE(recommendedDelayWindowSamples(fs, false) == 48000);
@@ -345,7 +345,7 @@ TEST_CASE("UI bridge: commands drive the analysis objects end to end") {
     auto& r = p.latest(); REQUIRE(r.smoothingFraction==24); REQUIRE(r.tf.blankThreshold==0.8); REQUIRE(r.delaySeq==42);
     REQUIRE(!r.delayWasSub); REQUIRE(r.delay.arrivals[0].delaySamples==Approx(480).margin(0.5));
 }
-TEST_CASE("T6 traffic light: exact thresholds, NaN red") {
+TEST_CASE("T6 traffic light: exact thresholds, NaN red", "[PartA][T6]") {
     REQUIRE(classifyCoherence(1.0)==TrafficLight::Green); REQUIRE(classifyCoherence(0.9)==TrafficLight::Green);
     REQUIRE(classifyCoherence(0.8999)==TrafficLight::Amber); REQUIRE(classifyCoherence(0.75)==TrafficLight::Amber);
     REQUIRE(classifyCoherence(0.6)==TrafficLight::Amber); REQUIRE(classifyCoherence(0.5999)==TrafficLight::Red);
@@ -361,7 +361,7 @@ TEST_CASE("T6 traffic light: exact thresholds, NaN red") {
     REQUIRE(ra.light(binOf(ra,1000))==TrafficLight::Green); REQUIRE(ra.light(999999)==TrafficLight::Red);
     TFResult empty; REQUIRE(coherenceSummary(empty).bins==0); REQUIRE(coherenceSummary(empty).light==TrafficLight::Red);
 }
-TEST_CASE("classifyCoherence(TFResult) band overload matches QaAdapters shape") {
+TEST_CASE("classifyCoherence(TFResult) band overload matches QaAdapters shape", "[PartA][T6]") {
     TFResult t; for (int k=0;k<100;++k){ t.freq.push_back(k*200.0); t.coherence.push_back(k == 0 ? 0.1 : 0.95); }
     auto c = classifyCoherence(t); REQUIRE(c.light==TrafficLight::Green); REQUIRE(c.state()==0); REQUIRE(c.mean()==Approx(0.95)); // 200..10k excludes nothing <200 except bin 0
     t.coherence.assign(100, 0.75); REQUIRE(classifyCoherence(t).state()==1); t.coherence.assign(100, 0.6); REQUIRE(classifyCoherence(t).state()==1);
@@ -369,7 +369,7 @@ TEST_CASE("classifyCoherence(TFResult) band overload matches QaAdapters shape") 
     REQUIRE(classifyCoherence(t, 0, 250).bins==1); // DC bin is never counted
 }
 // ---- Settle rule (QA CAP0-CAP4)
-TEST_CASE("CAP0 settle rule: pure streak counter, strict <, coherent in-band bins only") {
+TEST_CASE("CAP0 settle rule: pure streak counter, strict <, coherent in-band bins only", "[PartA][CAP0]") {
     auto run = [](std::vector<double> d) { SettleDetector s; int at = 0; for (size_t i=0;i<d.size();++i) if (s.update(d[i]) && !at) at = (int)i+1; return at; };
     REQUIRE(run({0.4,0.4,0.4})==3);
     REQUIRE(run({0.4,0.4,0.6,0.4,0.4,0.4})==6);
@@ -397,13 +397,13 @@ static std::vector<float> peq(const std::vector<float>& x, double f0, double g, 
 static ConvergenceState captureUntilFinished(TransferFunction& tf, const std::vector<float>& x, const std::vector<float>& y) {
     const int blk = 512; for (size_t i=0; i+blk<=x.size(); i+=blk) { tf.process(x.data()+i, y.data()+i, blk); if (tf.convergence().finished) break; }
     return tf.convergence(); }
-TEST_CASE("CAP1 stable DUT (+6 dB PEQ @1k Q1) settles well before 10 s; result matches S2") {
+TEST_CASE("CAP1 stable DUT (+6 dB PEQ @1k Q1) settles well before 10 s; result matches S2", "[PartA][CAP1]") {
     auto x = pink(48000*12, 71); auto y = peq(x, 1000, 6, 1, 48000);
     for (int avg : {16, 0}) { TransferFunction tf(16384,48000); tf.setAverages(avg); auto c = captureUntilFinished(tf, x, y);
         REQUIRE(c.settled); REQUIRE(!c.unsettled); REQUIRE(c.elapsedSeconds < 3.0); REQUIRE(c.coherentBins > 1000);
         auto r = tf.result(); REQUIRE(r.magDb[binOf(r,1000)]==Approx(6.0).margin(0.2)); REQUIRE(std::fabs(r.phaseDeg[binOf(r,1000)]) < 3); }
 }
-TEST_CASE("CAP2 drifting DUT (delay 2->4 ms, gain +-3 dB @0.3 Hz) times out at 10 s, unsettled, result returned") {
+TEST_CASE("CAP2 drifting DUT (delay 2->4 ms, gain +-3 dB @0.3 Hz) times out at 10 s, unsettled, result returned", "[PartA][CAP2]") {
     const double fs = 48000; int n = (int)(fs*12); auto x = pink(n, 72); std::vector<float> y((size_t)n);
     for (int i=0;i<n;++i){ double t=i/fs, d=0.002*fs+0.002*fs*std::fmod(t,5.0)/5.0, p=i-d; int i0=(int)std::floor(p); double fr=p-i0;
         float v = (i0>=0 && i0+1<n) ? (float)((1-fr)*x[(size_t)i0]+fr*x[(size_t)i0+1]) : 0.f; y[(size_t)i]=v*(float)std::pow(10.0,3*std::sin(2*M_PI*0.3*t)/20); }
@@ -412,7 +412,7 @@ TEST_CASE("CAP2 drifting DUT (delay 2->4 ms, gain +-3 dB @0.3 Hz) times out at 1
         REQUIRE(c.unsettled); REQUIRE(c.timedOut); REQUIRE(!c.settled); REQUIRE(c.elapsedSeconds==Approx(10.0).margin(0.5));
         REQUIRE(tf.result().magDb.size()==8193); }
 }
-TEST_CASE("CAP3 low coherence (SNR -10 dB) and silent meas: unsettled by 10 s, no NaN/hang") {
+TEST_CASE("CAP3 low coherence (SNR -10 dB) and silent meas: unsettled by 10 s, no NaN/hang", "[PartA][CAP3]") {
     auto x = pink(48000*12, 73); auto nz = pink(48000*12, 74); std::vector<float> y(x.size()), z(x.size(), 0.f);
     for (size_t i=0;i<y.size();++i) y[i] = x[i] + 3.1623f*nz[i];
     for (auto* m : {&y, &z}) for (int avg : {16, 0}) { TransferFunction tf(16384,48000); tf.setAverages(avg); auto c = captureUntilFinished(tf, x, *m);
@@ -421,7 +421,7 @@ TEST_CASE("CAP3 low coherence (SNR -10 dB) and silent meas: unsettled by 10 s, n
     // silent ref too
     TransferFunction tf(16384,48000); auto c = captureUntilFinished(tf, z, z); REQUIRE(c.unsettled); REQUIRE(std::isnan(c.deltaDb)); REQUIRE(c.coherentBins==0);
 }
-TEST_CASE("CAP4 infinite and exponential modes both terminate; reset/reference delay restart the rule") {
+TEST_CASE("CAP4 infinite and exponential modes both terminate; reset/reference delay restart the rule", "[PartA][CAP4]") {
     auto x = pink(48000*12, 75); auto y = lowpass(x, 2000, 48000);
     for (int avg : {0, 4, 16, 64}) { TransferFunction tf(16384,48000); tf.setAverages(avg); auto c = captureUntilFinished(tf, x, y);
         REQUIRE(c.finished); REQUIRE(c.elapsedSeconds <= 10.5); REQUIRE(c.settled);
@@ -429,7 +429,7 @@ TEST_CASE("CAP4 infinite and exponential modes both terminate; reset/reference d
     ConvergenceSettings fast; fast.maxFrames = 5; fast.toleranceDb = 1e-12; TransferFunction tf(16384,48000); tf.setConvergence(fast);
     auto c = captureUntilFinished(tf, x, y); REQUIRE(c.unsettled); REQUIRE(c.frames==5);
 }
-TEST_CASE("setConvergenceTimeout(seconds): default 10 s, configurable") {
+TEST_CASE("setConvergenceTimeout(seconds): default 10 s, configurable", "[PartA][CAP2]") {
     TransferFunction tf(16384,48000); REQUIRE(tf.convergenceTimeout()==10.0);
     tf.setConvergenceTimeout(2.0); REQUIRE(tf.convergenceTimeout()==2.0);
     std::vector<float> x = pink(48000*6, 81), z(x.size(), 0.f);
@@ -444,7 +444,7 @@ static std::vector<float> fdel(const std::vector<float>& x, double d) { // exact
     f.inverse(X); std::vector<float> y((size_t)N); for (int i=0;i<N;++i) y[(size_t)i]=(float)X[(size_t)i].real(); return y; }
 static std::vector<float> mix(const std::vector<float>& a, const std::vector<float>& b, double gDb) { std::vector<float> y(a.size()); float g=(float)std::pow(10.0,gDb/20); for (size_t i=0;i<a.size();++i) y[i]=a[i]+g*b[i]; return y; }
 static std::vector<float> head(const std::vector<float>& v, size_t n) { return std::vector<float>(v.begin(), v.begin()+(long)std::min(n, v.size())); }
-TEST_CASE("D-2S two-spike rule: pure function, exact boundaries") {
+TEST_CASE("D-2S two-spike rule: pure function, exact boundaries", "[PartA][D-2S]") {
     REQUIRE(twoSpikeFlag(0.0, -2.9, 2.0)); REQUIRE(!twoSpikeFlag(0.0, -3.1, 2.0));
     REQUIRE(!twoSpikeFlag(0.0, -0.5, 0.4)); REQUIRE(twoSpikeFlag(0.0, -0.5, 0.6)); REQUIRE(twoSpikeFlag(0.0, -0.5, 1.5));
     REQUIRE(twoSpikeFlag(0.0, -3.0, 2.0)); REQUIRE(!twoSpikeFlag(0.0, -0.5, 0.5)); REQUIRE(twoSpikeFlag(0.0, -0.5, -1.5));
@@ -452,7 +452,7 @@ TEST_CASE("D-2S two-spike rule: pure function, exact boundaries") {
     std::vector<Arrival> a{{144,3,1.029,0}, {240,5,1.715,-2.9}}; REQUIRE(twoSpikeFlag(a)); a[1].relLevelDb=-3.1; REQUIRE(!twoSpikeFlag(a));
     REQUIRE(!twoSpikeFlag(std::vector<Arrival>{})); REQUIRE(!twoSpikeFlag(std::vector<Arrival>{a[0]}));
 }
-TEST_CASE("D-2S/S16/D-CF on Echo's stimuli: PHAT timing, non-PHAT levels, flag + confidence ordering") {
+TEST_CASE("D-2S/S16/D-CF on Echo's stimuli: PHAT timing, non-PHAT levels, flag + confidence ordering", "[PartA][D-2S][S16][S16a][S16b][D-2Sb][D-2Sc][D-CF][S4][S5]") {
     const double fs=48000; auto src = pink(1<<18, 1); auto ref = head(src, 48000);
     auto run = [&](const std::vector<float>& m) { return findDelay(ref, head(m, 48000), fs); };
     struct Case { double d2ms, dB; bool flag; };
@@ -479,7 +479,7 @@ TEST_CASE("D-2S/S16/D-CF on Echo's stimuli: PHAT timing, non-PHAT levels, flag +
     DelayOptions uo; uo.levelMode = DelayOptions::LevelMode::Unweighted;
     auto u = findDelay(ref, head(mix(fdel(src, 0.003*fs), fdel(src, 0.005*fs), -2.9), 48000), fs, uo); REQUIRE(u.arrivals.size()>=2);
 }
-TEST_CASE("Delay finder robustness (Echo crash triage): edge inputs never throw or crash") {
+TEST_CASE("Delay finder robustness (Echo crash triage): edge inputs never throw or crash", "[PartA][D-ERR]") {
     std::vector<float> big(48000); for (size_t i=0;i<big.size();++i) big[i]=std::sin((float)i*0.37f);
     std::vector<float> e0, e63(63,1.f), z(48000,0.f), nanv(48000,NAN), infv(48000,INFINITY), dc(48000,1.f);
     REQUIRE(findDelay(e0,e0,48000).error.size()); REQUIRE(!findDelay(e63,e63,48000).ok());
@@ -496,7 +496,7 @@ TEST_CASE("Delay finder robustness (Echo crash triage): edge inputs never throw 
     REQUIRE(impulseFromTF(TFResult{}).empty()); TFResult bad; bad.fftSize=1000; REQUIRE(impulseFromTF(bad).empty());
     TFResult small; small.fftSize=16384; small.H.resize(10); REQUIRE(impulseFromTF(small).size()==16384);
 }
-TEST_CASE("D-INS fractional reference delay: inserting 230.4 samples leaves < 1 deg at 10 kHz") {
+TEST_CASE("D-INS fractional reference delay: inserting 230.4 samples leaves < 1 deg at 10 kHz", "[PartA][D-INS]") {
     auto src = pink(1<<18, 91); auto meas = fdel(src, 230.4); // mic 4.80 ms later than ref
     auto phaseAt = [&](double d, double f) { TransferFunction tf(16384,48000); tf.setAverages(0); tf.setReferenceDelaySamples(d);
         tf.process(src.data(), meas.data(), (int)src.size()); auto r = tf.result(); return std::pair<double,double>(r.phaseDeg[binOf(r,f)], r.coherence[binOf(r,f)]); };
@@ -518,7 +518,7 @@ static std::vector<float> biquad(const std::vector<float>& x, bool hp, double fc
     for (size_t i=0;i<x.size();++i){ double o=(b0*x[i]+b1*x1+b2*x2-a1*y1-a2*y2)/a0; x2=x1;x1=x[i];y2=y1;y1=o;y[i]=(float)o;} return y; }
 static std::vector<float> bp30_120(const std::vector<float>& x, double fs) { // 4th-order Butterworth HP 30 + LP 120
     auto y = biquad(biquad(x, true, 30, 0.5412, fs), true, 30, 1.3066, fs); return biquad(biquad(y, false, 120, 0.5412, fs), false, 120, 1.3066, fs); }
-TEST_CASE("D-SUBGD: sub delay from XO-band phase = 12.5 ms; alternatives +-1 period; raw peak is only a hint") {
+TEST_CASE("D-SUBGD: sub delay from XO-band phase = 12.5 ms; alternatives +-1 period; raw peak is only a hint", "[PartA][D-SUBGD]") {
     const double fs=48000; std::mt19937 g(7); std::normal_distribution<float> nd(0, 0.25f);
     std::vector<float> rs(1<<19); for (auto& v : rs) v = nd(g);           // broadband reference (~10.9 s)
     auto mainsSig = bp30_120(rs, fs); auto subSig = fdel(mainsSig, 0.0125*fs); // "flat main" in the XO band vs sub 12.5 ms later
@@ -547,7 +547,7 @@ TEST_CASE("D-SUBGD: sub delay from XO-band phase = 12.5 ms; alternatives +-1 per
 }
 // ---- Calibration (QA A4)
 static std::string slurp(const std::string& p) { std::ifstream f(p, std::ios::binary); std::stringstream ss; ss << f.rdbuf(); return ss.str(); }
-TEST_CASE("C4 Sens Factor parsed and exposed, never applied") {
+TEST_CASE("C4 Sens Factor parsed and exposed, never applied", "[PartA][C4]") {
     auto base = slurp(std::string(FOH_TEST_DATA) + "/ecm8000-cal.csv");
     auto with = parseMicCal("\"Sens Factor =-1.5dB, SERNO: 123\"\r\n" + base), without = parseMicCal(base);
     REQUIRE(with.ok()); REQUIRE(with.hasSensFactor); REQUIRE(with.sensitivityOffsetDb==Approx(-1.5)); REQUIRE(with.sensFactorLine=="Sens Factor =-1.5dB, SERNO: 123");
@@ -559,7 +559,7 @@ TEST_CASE("C4 Sens Factor parsed and exposed, never applied") {
     REQUIRE(with.dbAt(1000)==without.dbAt(1000));
     auto ws = parseMicCal("Sens Factor: 2.25\n100 0\n1000 0\n"); REQUIRE(ws.hasSensFactor); REQUIRE(ws.sensitivityOffsetDb==Approx(2.25)); REQUIRE(ws.dbAt(500)==0);
 }
-TEST_CASE("C2/C2b REW .txt and .frd parse identical to the CSV; C10 sign; C12 flipped file detectably wrong") {
+TEST_CASE("C2/C2b REW .txt and .frd parse identical to the CSV; C10 sign; C12 flipped file detectably wrong", "[PartA][C2][C2b][C10][C12]") {
     auto csv = loadMicCal(std::string(FOH_TEST_DATA) + "/ecm8000-cal.csv");
     auto txt = loadMicCal(std::string(FOH_TEST_DATA) + "/ecm8000-cal-rew.txt"), frd = loadMicCal(std::string(FOH_TEST_DATA) + "/ecm8000-cal.frd");
     for (auto* c : {&txt, &frd}) { REQUIRE(c->ok()); REQUIRE(c->hz==csv.hz); REQUIRE(c->db==csv.db); REQUIRE(c->phaseDeg==csv.phaseDeg); REQUIRE(c->hasPhase); }
@@ -577,7 +577,7 @@ TEST_CASE("C2/C2b REW .txt and .frd parse identical to the CSV; C10 sign; C12 fl
     REQUIRE(good.magDb[binOf(good,21000)]==Approx(0).margin(1e-6));
     REQUIRE(bad.magDb[binOf(bad,21999)]==Approx(2*csv.dbAt(21999)).margin(0.05)); REQUIRE(std::fabs(bad.magDb[binOf(bad,20500)]) >= 6.0);
 }
-TEST_CASE("C6/C8 unsorted, duplicate and malformed cal files") {
+TEST_CASE("C6/C8 unsorted, duplicate and malformed cal files", "[PartA][C6][C8]") {
     auto u = parseMicCal("1000 1\n20 0\n1000 5\n100 0.5\n"); REQUIRE(u.ok()); REQUIRE(u.hz==std::vector<double>{20,100,1000}); // sorted, dedup keeps first
     REQUIRE(!parseMicCal("").ok()); REQUIRE(!parseMicCal(std::string("\x00\x01\x02\xff\xfe", 5)).ok());
     REQUIRE(!parseMicCal("abc,def\nfoo bar\n").ok()); REQUIRE(!parseMicCal("20,0\n").ok()); // one point is not a curve
@@ -587,7 +587,7 @@ TEST_CASE("C6/C8 unsorted, duplicate and malformed cal files") {
 }
 // ---- QA Part A: remaining NEW rows
 static std::vector<float> hpf2(const std::vector<float>& x, double fc, double fs) { return biquad(x, true, fc, 0.70710678, fs); }
-TEST_CASE("S2/S3/S7/S12: PEQ, HPF and gain DUTs at 44.1/48/96 kHz") {
+TEST_CASE("S2/S3/S7/S12: PEQ, HPF and gain DUTs at 44.1/48/96 kHz", "[PartA][S2][S3][S7][S12]") {
     for (double fs : {44100.0, 48000.0, 96000.0}) { INFO("fs " << fs);
         int N = fs > 50000 ? 32768 : 16384; auto x = pink((int)(fs*8), 101);
         auto bin = [&](const TFResult& r, double f){ return (size_t)std::lround(f/(fs/N)); };
@@ -602,7 +602,7 @@ TEST_CASE("S2/S3/S7/S12: PEQ, HPF and gain DUTs at 44.1/48/96 kHz") {
             REQUIRE(u.magDb[bin(u,1000)]==Approx(20*std::log10(g)).margin(0.05)); }
     }
 }
-TEST_CASE("T1 defaults and T2 fixed 16-average Welch") {
+TEST_CASE("T1 defaults and T2 fixed 16-average Welch", "[PartA][T1][T2]") {
     TransferFunction tf; auto x = pink(48000*4, 102); tf.process(x.data(), x.data(), (int)x.size()); auto r = tf.result();
     REQUIRE(r.fftSize==16384); REQUIRE(r.sampleRate==48000); REQUIRE(r.averages==tf.frames()); REQUIRE(r.freq.size()==8193);
     REQUIRE(tf.frameSeconds()==Approx(8192/48000.0)); REQUIRE(tf.coherenceBlankThreshold()==0); REQUIRE(tf.convergenceTimeout()==10);
@@ -615,7 +615,7 @@ TEST_CASE("T1 defaults and T2 fixed 16-average Welch") {
         for (size_t k=binOf(q,1000);k<binOf(q,2000);++k){ s+=q.magDb[k]*q.magDb[k]; ++n; } return std::sqrt(s/n); };
     REQUIRE(spread(60) < spread(8));
 }
-TEST_CASE("T5 blanking keeps data and clamps the threshold") {
+TEST_CASE("T5 blanking keeps data and clamps the threshold", "[PartA][T5]") {
     auto x = pink(48000*6, 105), nz = pink(48000*6, 106); std::vector<float> y(x.size()); for (size_t i=0;i<y.size();++i) y[i]=x[i]+nz[i];
     TransferFunction a; a.setAverages(0); a.process(x.data(), y.data(), (int)x.size()); auto off = a.result(3);
     for (double thr : {0.6, 0.9}) { a.setCoherenceBlankThreshold(thr); auto on = a.result(3);
@@ -623,7 +623,7 @@ TEST_CASE("T5 blanking keeps data and clamps the threshold") {
         for (size_t k=1;k<on.freq.size();++k) REQUIRE(on.isBlanked(k)==(on.coherence[k] < thr)); }
     a.setCoherenceBlankThreshold(-1); REQUIRE(a.coherenceBlankThreshold()==0); a.setCoherenceBlankThreshold(7); REQUIRE(a.coherenceBlankThreshold()==1);
 }
-TEST_CASE("S13 long delays 50/200/500 ms: found, or clearly out of range") {
+TEST_CASE("S13 long delays 50/200/500 ms: found, or clearly out of range", "[PartA][S13]") {
     auto src = pink(1<<18, 107);
     for (double ms : {50.0, 200.0, 500.0}) { auto m = fdel(src, ms*48); auto r = findDelay(head(src, 96000), head(m, 96000), 48000);
         REQUIRE(r.ok()); REQUIRE(r.arrivals[0].delayMs==Approx(ms).margin(0.05)); }
@@ -631,7 +631,7 @@ TEST_CASE("S13 long delays 50/200/500 ms: found, or clearly out of range") {
     REQUIRE((!r.ok() || r.confidence < 0.3 || std::fabs(r.arrivals[0].delayMs - 200) > 1)); // beyond the search range: not reported as a confident 200 ms
     for (auto& a : r.arrivals) REQUIRE(a.delayMs <= 100.1);
 }
-TEST_CASE("S9 RTA pink -12 dBFS RMS: flat 1/3 & 1/6 bands, IEC base-10 centres") {
+TEST_CASE("S9 RTA pink -12 dBFS RMS: flat 1/3 & 1/6 bands, IEC base-10 centres", "[PartA][S9]") {
     // exact 1/f pink like gen_stimuli.py (FFT-shaped white noise), not the Kellet generator
     std::mt19937 rg(108); std::normal_distribution<double> nd; int Np=1<<20; FFT F(Np); std::vector<cpx> P((size_t)Np);
     for (auto& v : P) v = nd(rg); F.forward(P); for (int k=0;k<Np;++k){ double kk = k<=Np/2 ? k : Np-k; P[(size_t)k] /= std::sqrt(std::max(kk, 1.0)); } F.inverse(P);
@@ -643,12 +643,12 @@ TEST_CASE("S9 RTA pink -12 dBFS RMS: flat 1/3 & 1/6 bands, IEC base-10 centres")
         bool has1k=false; for (auto& bd : bands) if (std::fabs(bd.fCenter-1000)<1e-9) has1k=true; REQUIRE(has1k);
         REQUIRE(bands[1].fCenter/bands[0].fCenter==Approx(std::pow(10.0, 0.3/frac)).epsilon(1e-9)); }
 }
-TEST_CASE("TR2 trace show/hide keeps data; delete reorders") {
+TEST_CASE("TR2 trace show/hide keeps data; delete reorders", "[PartA][TR2]") {
     TraceStore s; TFResult t; t.magDb={1,2,3}; for (int i=0;i<3;++i) REQUIRE(s.store("T"+std::to_string(i), t, i));
     s.at(1).visible=false; REQUIRE(s.at(1).tf.magDb==t.magDb); s.at(1).visible=true; REQUIRE(s.at(1).tf.magDb==t.magDb);
     REQUIRE(s.remove(1)); REQUIRE(s.count()==2); REQUIRE(s.at(1).name=="T2"); REQUIRE(s.at(1).refDelayMs==2); REQUIRE(!s.remove(5));
 }
-TEST_CASE("P-VS/S14 virtual sum: +6.02 dB coherent, null with inverted copy; INV vs half-period options both available") {
+TEST_CASE("P-VS/S14 virtual sum: +6.02 dB coherent, null with inverted copy; INV vs half-period options both available", "[PartA][P-VS][S14]") {
     TFResult a; a.sampleRate=48000; a.fftSize=16384; size_t M=8193; a.freq.resize(M); a.H.assign(M,1); a.magDb.assign(M,0); a.phaseDeg.assign(M,0); a.coherence.assign(M,1);
     for (size_t k=0;k<M;++k) a.freq[k]=k*48000.0/16384;
     REQUIRE(virtualSum(a,a).magDb[200]==Approx(6.02).margin(0.01));

@@ -2,6 +2,7 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <cstdio>
 namespace foh {
 static int nextPow2(int n) { int p = 1; while (p < n) p <<= 1; return p; }
 // float -> int samples, saturating (no UB for huge/NaN values)
@@ -116,5 +117,13 @@ std::vector<double> impulseFromTF(const TFResult& tf) {
     for (int k = 0; k <= N / 2 && k < (int) tf.H.size(); ++k) { d[(size_t) k] = tf.H[(size_t) k]; if (k > 0 && k < N / 2) d[(size_t) (N - k)] = std::conj(tf.H[(size_t) k]); }
     FFT(N).inverse(d); std::vector<double> out((size_t) N); for (int i = 0; i < N; ++i) out[(size_t) i] = d[(size_t) i].real();
     return out;
+}
+}
+namespace foh {
+std::string formatConsoleDelayMs(double ms) {
+    if (!std::isfinite(ms) || std::fabs(ms) > 1e9) return "--";
+    // snap to 0.1 us first so decimal ties (4.8050, stored as 4.80499999...) round half-up
+    long long t = std::llround(std::fabs(ms) * 10000.0); long long c = (t + 50) / 100;
+    char buf[48]; std::snprintf(buf, sizeof buf, "%s%lld.%02lld", (ms < 0 && c) ? "-" : "", c / 100, c % 100); return buf;
 }
 }

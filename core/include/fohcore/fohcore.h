@@ -267,6 +267,9 @@ DelayResult findDelay(const std::vector<float>& ref, const std::vector<float>& m
 // Options form. lpHz/hpHz apply a zero-phase band weighting (4th-order Butterworth
 // magnitude) to the cross-spectrum, e.g. LF-weighting for subs. maxDelayMs bounds the lag
 // search (0 = whole window). forSubs(): 20-150 Hz, GCC-PHAT, 10 ms arrival separation (> LF main lobe).
+// Console delay display (QA D1/D12, D-DSP): milliseconds rounded to 0.01 ms, round-half-up
+// (away from zero) on the decimal value, e.g. 4.8049 -> "4.80", 4.8050 -> "4.81". Non-finite -> "--".
+std::string formatConsoleDelayMs(double ms);
 struct DelayOptions {
     bool phat = true; int maxArrivals = 3; double minSeparationMs = 0.5;
     double speedOfSound = 343.0; double hpHz = 0, lpHz = 0; double maxDelayMs = 0;

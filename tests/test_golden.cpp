@@ -61,14 +61,14 @@ TEST_CASE("Golden: manifest hashes and headers match the pinned WAVs") {
     for (auto& r : rows) { INFO(r.file); auto b = slurp(std::string(FOH_TEST_DATA) + "/golden/" + r.file);
         REQUIRE(Sha256().hex(b) == r.sha); auto w = parseWav(b); REQUIRE(w.fs == r.fs); REQUIRE(w.ch == r.ch); REQUIRE((int) w.c[0].size() == r.frames); }
 }
-TEST_CASE("Golden: levels (RMS dBFS, peak, DC) on ch0") {
+TEST_CASE("Golden: levels (RMS dBFS, peak, DC) on ch0", "[PartA][S9][S10][G2]") {
     for (auto& r : manifest()) { if (r.check != "level") continue; INFO(r.file);
         auto w = parseWav(slurp(std::string(FOH_TEST_DATA) + "/golden/" + r.file)); auto& x = w.c[0];
         double s = 0, m = 0, pk = 0; for (float v : x) { s += (double) v * v; m += v; pk = std::max(pk, (double) std::fabs(v)); }
         REQUIRE(20 * std::log10(std::sqrt(s / (double) x.size())) == Approx(r.rms).margin(0.01));
         REQUIRE(pk == Approx(r.peak).margin(1e-5)); REQUIRE(m / (double) x.size() == Approx(r.dc).margin(1e-5)); }
 }
-TEST_CASE("Golden: delay pairs via findDelay (Part A tolerances)") {
+TEST_CASE("Golden: delay pairs via findDelay (Part A tolerances)", "[PartA][S4][S5][S6][S8][S13][S15_D-SUB][S16][D-2Sa][D-SGN]") {
     for (auto& r : manifest()) { INFO(r.file << " (" << r.note << ")");
         if (r.check != "delay" && r.check != "delay_neg" && r.check != "silent" && r.check != "edge") continue;
         auto w = parseWav(slurp(std::string(FOH_TEST_DATA) + "/golden/" + r.file));
