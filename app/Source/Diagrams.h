@@ -5,9 +5,10 @@
 class MicPlacementDiagram : public juce::Component {
 public:
     enum class Placement { None, OnAxis, Seam, SubMainCrossover };
-    void setPlacement(Placement);
+    void setPlacement(Placement, bool mainArray = false);
     Placement getPlacement() const noexcept { return placement; }
     void paint(juce::Graphics&) override;
 private:
+    bool array = false;
     Placement placement = Placement::None;
 };

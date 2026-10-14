@@ -3,11 +3,11 @@
 
 namespace C = foh::ui::col;
 
-void MicPlacementDiagram::setPlacement(Placement value) {
-    placement = value;
+void MicPlacementDiagram::setPlacement(Placement value, bool mainArray) {
+    placement = value; array = mainArray;
     const char* description = "";
     switch (placement) {
-        case Placement::OnAxis: description = "Mic on-axis, 1-3 m from one main, at ear height"; break;
+        case Placement::OnAxis: description = array ? "Mic on-axis in one main cluster coverage, where the cabinets combine" : "Mic on-axis, 1-3 m from one main, at ear height"; break;
         case Placement::Seam: description = "Mic in the main/fill seam, inside the fill area, where both are equally loud"; break;
         case Placement::SubMainCrossover: description = "Mic where sub and mains are equally loud in the crossover band"; break;
         case Placement::None: break;
@@ -53,8 +53,8 @@ void MicPlacementDiagram::paint(juce::Graphics& g) {
         speaker(20, 30, "Main");
         pathToMic(44, 44, 184, 44);
         mic(184, 44);
-        label("1-3 m on-axis", 54, 23, 116);
-        label("Ear height; one main on", 12, 82, 208);
+        label(array ? "Array coverage" : "1-3 m on-axis", 54, 23, 116);
+        label(array ? "One main cluster on" : "Ear height; one main on", 12, 82, 208);
     } else {
         speaker(20, 30, "Main");
         speaker(188, 30, placement == Placement::Seam ? "Fill" : "Sub");

@@ -200,7 +200,22 @@ private:
         form.setBounds(getLocalBounds());
         const int width = form.layoutWidth(260);
         const bool verifying = st.act == 22 || st.act == 26;
-        const String bodyText = u8(st.body) + (verifying && guide == 1 ? "\nThe sum should rise in the crossover band rather than dip. Walk a few seats and listen." : String())
+        const bool mainArray = model.rigProfile && std::any_of(model.rigProfile->clusterCabinets.begin(),
+            model.rigProfile->clusterCabinets.end(), [](int n) { return n > 1; });
+        String stepBody = u8(st.body);
+        if (mainArray && guide == 0 && step == 1)
+            stepBody = "Start pink noise at a comfortable level. Both inputs should sit near -20 dBFS, never clipping. Place the mic on-axis in ONE main cluster's coverage, where its cabinets combine, away from walls. Mute the other clusters.";
+        if (model.rigProfile && guide == 3 && step == 1)
+            stepBody = String("Complete W1 reference delay") + (model.rigProfile->subCount ? ", W2 sub-to-mains" : "")
+                + (model.rigProfile->frontFillCount ? ", W3 fills" : "")
+                + ", including each Verify. Fix routing, polarity and coverage first. Establish reference delay at each new mic position and keep it fixed for before/after comparisons. Trust settled, coherent measurements.";
+        if (model.rigProfile && guide == 3 && step == 2)
+            stepBody = "Fix aiming and relative levels before broad EQ. Compare with your target; avoid boosting deep cancellations or chasing low-coherence bins. Choose one change, then Store, Apply in DSP and Verify. Repeat W4 for further changes.";
+        if (model.rigProfile && guide == 4 && step == 1 && !model.rigProfile->frontFillCount)
+            stepBody = "Return to the tuning mic position and speaker configuration. Use brief pink noise, check reference delay, then compare the live TF with the stored tuning trace. Check settled response and coherence"
+                + String(model.rigProfile->subCount ? ", and sub/main crossover summation." : ".")
+                + " Stop noise after measuring. Investigate changes before adding EQ.";
+        const String bodyText = stepBody + (model.rigProfile ? "\n" + String(model.rigProfile->guideGuidance(guide)) : String()) + (verifying && guide == 1 ? "\nThe sum should rise in the crossover band rather than dip. Walk a few seats and listen." : String())
             + (verifying && guide == 2 ? "\nCheck phase overlap through the seam and listen from mains-only to fill-only positions." : String())
             + (st.act == 21 && suggestedChange.isNotEmpty() ? "\n" + suggestedChange : String());
         auto textHeight = [width](const Label& label, const String& text) {
@@ -240,7 +255,7 @@ private:
         updateVerdictButtons();
         // W4/W5 currently contain only the shared frame and prescribe no mic move.
         // Retain the W1-W3 placement through Store / Apply / Verify.
-        micDiagram.setPlacement(placement);
+        micDiagram.setPlacement(placement, mainArray);
         if (placement != Placement::None) {
             micDiagram.setBounds(c.removeFromTop(104)); c.removeFromTop(6);
         }

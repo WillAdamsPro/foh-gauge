@@ -1,17 +1,18 @@
 #include <catch2/catch_test_macros.hpp>
 #include "SetupPage.h"
+#include "ui_form_helpers.h"
 #include <stdexcept>
 
 namespace {
 juce::TextButton& button(juce::Component& parent, const char* text) {
-    for (int i = 0; i < parent.getNumChildComponents(); ++i)
-        if (auto* b = dynamic_cast<juce::TextButton*>(parent.getChildComponent(i)))
+    for (int i = 0; i < formCanvas(parent).getNumChildComponents(); ++i)
+        if (auto* b = dynamic_cast<juce::TextButton*>(formCanvas(parent).getChildComponent(i)))
             if (b->getButtonText() == text) return *b;
     throw std::runtime_error("Missing wizard button");
 }
 juce::ComboBox& choice(RoutingWizard& wizard) {
-    for (int i = 0; i < wizard.getNumChildComponents(); ++i)
-        if (auto* b = dynamic_cast<juce::ComboBox*>(wizard.getChildComponent(i))) return *b;
+    for (int i = 0; i < formCanvas(wizard).getNumChildComponents(); ++i)
+        if (auto* b = dynamic_cast<juce::ComboBox*>(formCanvas(wizard).getChildComponent(i))) return *b;
     throw std::runtime_error("Missing channel selector");
 }
 void select(RoutingWizard& wizard, int physicalIndex) {
@@ -24,8 +25,8 @@ TEST_CASE("Optional routing walkthrough applies physical channels only on Finish
     AudioEngine engine;
     RoutingWizard wizard(engine);
     wizard.setSize(260, 420);
-    for (int i = 0; i < wizard.getNumChildComponents(); ++i)
-        CHECK(wizard.getLocalBounds().contains(wizard.getChildComponent(i)->getBounds()));
+    for (int i = 0; i < formCanvas(wizard).getNumChildComponents(); ++i)
+        CHECK(formCanvas(wizard).getLocalBounds().contains(formCanvas(wizard).getChildComponent(i)->getBounds()));
     CHECK_FALSE(button(wizard, "Back").getBounds().intersects(button(wizard, "Skip").getBounds()));
     CHECK_FALSE(button(wizard, "Skip").getBounds().intersects(button(wizard, "Next").getBounds()));
     wizard.setChannels({"In 1", "In 2", "In 3", "In 4"}, {"Out 1", "Out 2", "Out 3", "Out 4"});
@@ -136,8 +137,8 @@ TEST_CASE("Each wizard connection reports pass or swapped inputs without applyin
     AudioEngine engine; RoutingWizard wizard(engine);
     wizard.setChannels({"In 1", "In 2"}, {"Out 1", "Out 2"});
     auto statusContains = [&](const char* text) {
-        for (int i = 0; i < wizard.getNumChildComponents(); ++i)
-            if (auto* label = dynamic_cast<juce::Label*>(wizard.getChildComponent(i)))
+        for (int i = 0; i < formCanvas(wizard).getNumChildComponents(); ++i)
+            if (auto* label = dynamic_cast<juce::Label*>(formCanvas(wizard).getChildComponent(i)))
                 if (label->getText().contains(text)) return true;
         return false;
     };
@@ -206,7 +207,7 @@ TEST_CASE("Wizard detection edges report failure and allow retry", "[app][routin
     wizard.setChannels({"In 1", "In 2"}, {"Out 1", "Out 2"});
     wizard.setDevices("Unknown USB", "Unknown USB"); wizard.begin();
     auto contains = [&](const char* text) {
-        for (auto* child : wizard.getChildren())
+        for (auto* child : formCanvas(wizard).getChildren())
             if (auto* label = dynamic_cast<juce::Label*>(child))
                 if (label->getText().contains(text)) return true;
         return false;
@@ -275,4 +276,24 @@ TEST_CASE("Re-entering manual routing clamps stale engine channel choices", "[ap
     button(wizard, "Finish").onClick();
     CHECK(engine.micCh == -1); CHECK(engine.refCh == -1);
     CHECK(engine.outA == -1); CHECK(engine.outB == -1);
+}
+
+TEST_CASE("Routing defaults describe every rig control group through the shared PA output", "[app][routing][rig]") {
+    juce::ScopedJuceInitialiser_GUI gui;
+    AudioEngine engine; RoutingWizard wizard(engine); wizard.setSize(260, 420);
+    foh::RigProfile rig; rig.clusterCabinets = {2, 3, 3}; rig.control = foh::RigProfile::Control::Individual;
+    rig.frontFillCount = 12; rig.fillControl = foh::RigProfile::Control::Grouped; rig.fillGroups = 3;
+    rig.subCount = 32; rig.subGroups = 4;
+    wizard.setRigProfile(rig); wizard.begin();
+    for (int i = 0; i < 3; ++i) button(wizard, "Next").onClick();
+    juce::String guidance;
+    for (auto* c : formCanvas(wizard).getChildren()) if (auto* label = dynamic_cast<juce::Label*>(c)) guidance += label->getText();
+    CHECK(guidance.contains("L=2, C=3, R=3 (8 control routes)"));
+    CHECK(guidance.contains("12 fills / 3 routes")); CHECK(guidance.contains("32 subs / 4 routes"));
+    CHECK(guidance.contains("only the first main route unmuted"));
+    for (auto* c : formCanvas(wizard).getChildren()) CHECK(formCanvas(wizard).getLocalBounds().contains(c->getBounds()));
+    // Rig answers never invent extra physical interface channels.
+    CHECK(engine.outA.load() == 0); CHECK(engine.outB.load() == 1);
+    wizard.setRigProfile(std::nullopt);
+    for (auto* c : formCanvas(wizard).getChildren()) if (auto* label = dynamic_cast<juce::Label*>(c)) CHECK_FALSE(label->getText().contains("L=2"));
 }

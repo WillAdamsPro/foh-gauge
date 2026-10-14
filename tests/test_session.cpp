@@ -18,8 +18,8 @@ foh::Session synthetic() {
     foh::SplCal first, second; first.calibrate(-20, 94, -2.1); second.calibrate(-30, 114, 1.5);
     s.splCal->set("Synthetic\nTest Input\n1", first.toJson());
     s.splCal->set("Synthetic\nTest Input\n2", second.toJson());
-    s.rigProfile = foh::RigProfile{}; s.rigProfile->clusters = 3; s.rigProfile->cabinetsPerCluster = 4;
-    s.rigProfile->control = foh::RigProfile::Control::Individual; s.rigProfile->subs = true; s.rigProfile->frontFills = true;
+    s.rigProfile = foh::RigProfile{}; s.rigProfile->clusterCabinets = {2, 3, 3};
+    s.rigProfile->control = foh::RigProfile::Control::Individual; s.rigProfile->subCount = 24; s.rigProfile->frontFillCount = 12;
     s.rigProfile->subArrangement = foh::RigProfile::SubArrangement::Distributed;
     s.targets = foh::Json::object(); s.targets->set("futureField", "preserved");
     s.workspace.set("id", "alignment"); s.measurement.set("averages", 16);
@@ -78,7 +78,7 @@ TEST_CASE("Failed session save preserves existing bundle", "[session]") {
     SECTION("invalid SPL type") { s.splCal = foh::Json::array(); }
     SECTION("invalid SPL value") { auto c = foh::Json::object(); c.set("offsetDb", 1000); c.set("sensitivityDb", 0); s.splCal->set("synthetic", c); }
     SECTION("nonfinite SPL value") { auto c = foh::Json::object(); c.set("offsetDb", std::numeric_limits<double>::infinity()); c.set("sensitivityDb", 0); s.splCal->set("synthetic", c); }
-    SECTION("invalid rig answers") { s.rigProfile->clusters = 0; }
+    SECTION("invalid rig answers") { s.rigProfile->clusterCabinets.clear(); }
     REQUIRE_FALSE(foh::saveSession(bundle.path, s, error));
     foh::Session loaded; REQUIRE(foh::loadSession(bundle.path, loaded, error)); REQUIRE(loaded.captures.size() == 1);
 }
@@ -159,12 +159,12 @@ TEST_CASE("Missing or damaged optional rig answers load with default guides and 
     file.close(); // Windows cannot rename the bundle while its manifest is open.
     auto manifest = foh::Json::parse(text);
     std::vector<foh::Json> bad{foh::Json(), foh::Json::object(), foh::Json::array(), foh::Json(""), foh::Json("{\"clusters\":")};
-    for (const char* key : {"clusters", "cabinetsPerCluster", "control", "frontFills", "subs", "subArrangement"}) {
+    for (const char* key : {"clusterCabinets", "control", "frontFillCount", "fillControl", "fillGroups", "subCount", "subControl", "subGroups", "subArrangement", "subPlacement"}) {
         auto partial = foh::Json::object();
         for (const auto& m : manifest["rigProfile"].members()) if (m.first != key) partial.set(m.first, m.second);
         bad.push_back(partial);
     }
-    for (const char* key : {"clusters", "cabinetsPerCluster", "frontFills", "subs"}) {
+    for (const char* key : {"fillGroups", "subGroups"}) {
         for (auto value : {foh::Json(0), foh::Json(-1), foh::Json(257), foh::Json(1e100), foh::Json(1.5), foh::Json("2")}) {
             auto rig = manifest["rigProfile"]; rig.set(key, value); bad.push_back(rig);
         }
@@ -198,8 +198,8 @@ TEST_CASE("Rig answers round trip session boundaries flags and arrangements", "[
         for (auto control : {foh::RigProfile::Control::Grouped, foh::RigProfile::Control::Individual})
             for (auto arrangement : {foh::RigProfile::SubArrangement::Centre, foh::RigProfile::SubArrangement::LeftRight,
                                      foh::RigProfile::SubArrangement::Distributed, foh::RigProfile::SubArrangement::Other}) {
-                auto& rig = *s.rigProfile; rig.clusters = rig.cabinetsPerCluster = count;
-                rig.subs = subs; rig.frontFills = fills; rig.control = control; rig.subArrangement = arrangement;
+                auto& rig = *s.rigProfile; rig.clusterCabinets.assign((size_t)count, count);
+                rig.subCount = subs ? 256 : 0; rig.frontFillCount = fills ? 12 : 0; rig.control = control; rig.subArrangement = arrangement;
                 REQUIRE(foh::saveSession(bundle.path, s, error));
                 std::ifstream f(bundle.path / "session.json"); std::string text{std::istreambuf_iterator<char>(f), {}};
                 auto j = foh::Json::parse(text), extra = j["rigProfile"];
@@ -395,4 +395,33 @@ TEST_CASE("Maximum synthetic capture set round trips and can be replaced by an e
     s.captures.clear(); REQUIRE(foh::saveSession(bundle.path, s, error));
     REQUIRE(std::filesystem::is_empty(bundle.path / "captures"));
     REQUIRE(foh::loadSession(bundle.path, loaded, error)); CHECK(loaded.captures.empty());
+}
+
+TEST_CASE("Flexible rig session round trip and rc5 shared-count migration", "[session][rig][migration]") {
+    Bundle bundle; auto s = synthetic(); std::string error, notice;
+    for (int fills : {0, 1, 12}) for (int subs : {0, 1, 32, 256}) {
+        auto& rig = *s.rigProfile; rig.clusterCabinets = {2, 3, 3};
+        rig.frontFillCount = fills; rig.subCount = subs;
+        rig.fillControl = foh::RigProfile::Control::Grouped; rig.fillGroups = fills > 1 ? 3 : 1;
+        rig.subGroups = subs > 1 ? 4 : 1;
+        rig.subArrangement = foh::RigProfile::SubArrangement::EndFire;
+        rig.subPlacement = foh::RigProfile::SubPlacement::Flown;
+        REQUIRE(foh::saveSession(bundle.path, s, error));
+        foh::Session loaded; REQUIRE(foh::loadSession(bundle.path, loaded, error, &notice));
+        CHECK(notice.empty()); REQUIRE(loaded.rigProfile);
+        CHECK(loaded.rigProfile->toJson() == rig.toJson());
+    }
+    std::ifstream file(bundle.path / "session.json");
+    auto manifest = foh::Json::parse(std::string{std::istreambuf_iterator<char>(file), {}}); file.close();
+    auto old = foh::Json::object(); old.set("clusters", 3); old.set("cabinetsPerCluster", 4);
+    old.set("control", "individual"); old.set("frontFills", true); old.set("subs", false); old.set("subArrangement", "centre");
+    manifest.set("rigProfile", old); std::ofstream(bundle.path / "session.json") << manifest.dump();
+    foh::Session loaded; REQUIRE(foh::loadSession(bundle.path, loaded, error, &notice));
+    CHECK(notice.empty()); REQUIRE(loaded.rigProfile);
+    CHECK(loaded.rigProfile->clusterCabinets == std::vector<int>{4, 4, 4});
+    CHECK(loaded.rigProfile->frontFillCount == 1); CHECK(loaded.rigProfile->subCount == 0);
+    auto migrated = loaded.rigProfile->toJson(); CHECK(migrated["version"].asInt() == 2);
+    REQUIRE(foh::saveSession(bundle.path, loaded, error));
+    REQUIRE(foh::loadSession(bundle.path, loaded, error, &notice));
+    REQUIRE(loaded.rigProfile); CHECK(loaded.rigProfile->toJson() == migrated);
 }

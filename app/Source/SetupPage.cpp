@@ -86,6 +86,7 @@ void SetupPage::refresh() {
         box.setSelectedId(selected >= 0 && selected < names.size() ? selected + 2 : 1, dontSendNotification);
     };
     auto ins = dev ? dev->getInputChannelNames() : StringArray(); auto outs = dev ? dev->getOutputChannelNames() : StringArray();
+    wizard.setRigProfile(model.rigProfile);
     wizard.setChannels(ins, outs);
     wizard.setDevices(setup.inputDeviceName, setup.outputDeviceName);
     channels(mic, ins, model.engine.micCh, "Mic"); channels(ref, ins, model.engine.refCh, "Reference");

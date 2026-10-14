@@ -977,7 +977,7 @@ TEST_CASE("Rig edits and Skip retire measurements even when the selected W guide
             CAPTURE(change, guide);
             AppModel model; CaptureStub capture;
             model.rigProfile = foh::RigProfile{};
-            model.rigProfile->subs = model.rigProfile->frontFills = true;
+            model.rigProfile->subCount = model.rigProfile->frontFillCount = 1;
             if (change == 1) model.rigProfile->control = foh::RigProfile::Control::Individual;
             auto panel = makeGuidePanel(model); panel->setSize(260, 780);
             auto state = fohws::Json::object(); state.set("guide", guide); state.set("step", 100);
