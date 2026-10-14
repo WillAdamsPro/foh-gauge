@@ -21,7 +21,7 @@ target_link_libraries(FOHGauge PRIVATE fohcore FOHGaugeData juce::juce_audio_uti
 
 if(FOH_BUILD_TESTS)
     add_executable(fohapp_tests ../tests/test_audio_bridge.cpp ../tests/test_workspace_presets.cpp ../tests/test_workspace_restore.cpp ../tests/test_guide_panel.cpp ../tests/test_routing_wizard.cpp
-        Source/AudioEngine.cpp Source/AnalysisEngine.cpp Source/LayoutModel.cpp Source/WorkspaceManager.cpp Source/WorkspaceView.cpp Source/FloatingPanels.cpp Source/Widgets.cpp Source/GuidePanel.cpp Source/RoutingWizard.cpp Source/SetupPage.cpp)
+        Source/AudioEngine.cpp Source/AnalysisEngine.cpp Source/LayoutModel.cpp Source/WorkspaceManager.cpp Source/WorkspaceView.cpp Source/FloatingPanels.cpp Source/Widgets.cpp Source/GuidePanel.cpp Source/RoutingWizard.cpp Source/SetupPage.cpp Source/Panels.cpp)
     target_include_directories(fohapp_tests PRIVATE Source)
     target_compile_definitions(fohapp_tests PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
     target_link_libraries(fohapp_tests PRIVATE fohcore foh_sanitizers FOHGaugeData Catch2::Catch2WithMain juce::juce_audio_utils juce::juce_gui_extra

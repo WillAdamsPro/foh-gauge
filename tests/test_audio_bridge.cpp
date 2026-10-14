@@ -3,6 +3,9 @@
 #include "Widgets.h"
 #include "AnalysisEngine.h"
 #include "SettleStatus.h"
+#include "Panels.h"
+#include "SetupPage.h"
+#include <fohcore/session.h>
 #include <chrono>
 #include <string_view>
 #include <thread>
@@ -321,6 +324,96 @@ public:
     int getOutputLatencyInSamples() override { return 0; }
     int getInputLatencyInSamples() override { return 0; }
 };
+}
+
+namespace {
+class SyntheticDeviceType : public juce::AudioIODeviceType {
+public:
+    SyntheticDeviceType() : AudioIODeviceType("Synthetic") {}
+    void scanForDevices() override {}
+    juce::StringArray getDeviceNames(bool) const override { return {"Synthetic"}; }
+    int getDefaultDeviceIndex(bool) const override { return 0; }
+    int getIndexOfDevice(juce::AudioIODevice*, bool) const override { return 0; }
+    bool hasSeparateInputsAndOutputs() const override { return false; }
+    juce::AudioIODevice* createDevice(const juce::String&, const juce::String&) override {
+        return new SyntheticDevice;
+    }
+};
+
+juce::ComboBox* routingChoice(SetupPage& setup, const juce::String& prefix) {
+    for (int i = 0; i < setup.getNumChildComponents(); ++i)
+        if (auto* box = dynamic_cast<juce::ComboBox*>(setup.getChildComponent(i)))
+            if (box->getItemText(0) == prefix + ": None") return box;
+    return nullptr;
+}
+}
+
+TEST_CASE("Session panel restore updates engine routing and every Setup page", "[app][session][routing]") {
+    juce::ScopedJuceInitialiser_GUI initialise;
+    AppModel model; // Existing isolated test model: no preferences or analysis worker.
+    model.dm.addAudioDeviceType(std::make_unique<SyntheticDeviceType>());
+    model.dm.setCurrentAudioDeviceType("Synthetic", true);
+    auto deviceSetup = model.dm.getAudioDeviceSetup();
+    deviceSetup.inputDeviceName = deviceSetup.outputDeviceName = "Synthetic";
+    deviceSetup.useDefaultInputChannels = deviceSetup.useDefaultOutputChannels = false;
+    deviceSetup.inputChannels = deviceSetup.outputChannels = juce::BigInteger(3);
+    REQUIRE(model.dm.setAudioDeviceSetup(deviceSetup, true).isEmpty());
+    REQUIRE(model.dm.getCurrentAudioDevice() != nullptr);
+
+    auto panel = PanelRegistry::standard().create("InputsAndDevices", model);
+    REQUIRE(panel != nullptr);
+    auto* embedded = dynamic_cast<SetupPage*>(panel->getChildComponent(0));
+    REQUIRE(embedded != nullptr);
+    SetupPage standalone(model);
+    const char* prefixes[] {"Mic", "Reference", "Generator output", "Loopback output"};
+    auto checkSelections = [&](const int (&channels)[4]) {
+        for (auto* setup : {embedded, &standalone})
+            for (int i = 0; i < 4; ++i) {
+                auto* box = routingChoice(*setup, prefixes[i]);
+                REQUIRE(box != nullptr);
+                CHECK(box->getSelectedId() == channels[i] + 2);
+            }
+    };
+    const int defaults[] {0, 1, 0, 1};
+    checkSelections(defaults);
+
+    // Round-trip a synthetic bundle, then restore its InputsAndDevices state as
+    // WorkspaceView does. No other Settings notifications can mask a missing one.
+    struct Bundle {
+        std::filesystem::path path = std::filesystem::temp_directory_path()
+            / ("foh-synthetic-routing-" + juce::Uuid().toString().toStdString() + ".fohsession");
+        ~Bundle() { std::error_code error; std::filesystem::remove_all(path, error); }
+    } bundle;
+    foh::Session session;
+    session.deviceType = session.inputDevice = session.outputDevice = "Synthetic";
+    session.inputChannels = session.outputChannels = "11";
+    session.mic = 1; session.reference = 0; session.outputA = 1; session.outputB = 0;
+    auto routing = fohws::Json::object();
+    routing.set("mic", session.mic); routing.set("ref", session.reference);
+    routing.set("outA", session.outputA); routing.set("outB", session.outputB);
+    auto states = fohws::Json::object(); states.set("InputsAndDevices", routing);
+    session.workspace.set("panelState", states);
+    std::string error;
+    REQUIRE(foh::saveSession(bundle.path, session, error));
+    foh::Session loaded;
+    REQUIRE(foh::loadSession(bundle.path, loaded, error));
+    panel->loadState(loaded.workspace["panelState"]["InputsAndDevices"]);
+    CHECK(model.engine.micCh.load() == loaded.mic);
+    CHECK(model.engine.refCh.load() == loaded.reference);
+    CHECK(model.engine.outA.load() == loaded.outputA);
+    CHECK(model.engine.outB.load() == loaded.outputB);
+    const int restored[] {1, 0, 1, 0};
+    checkSelections(restored);
+    CHECK(panel->saveState() == routing);
+
+    // Explicit None selections must survive restore too.
+    for (const auto* key : {"mic", "ref", "outA", "outB"}) routing.set(key, -1);
+    panel->loadState(routing);
+    CHECK(model.engine.micCh.load() == -1); CHECK(model.engine.refCh.load() == -1);
+    CHECK(model.engine.outA.load() == -1); CHECK(model.engine.outB.load() == -1);
+    const int none[] {-1, -1, -1, -1};
+    checkSelections(none);
+    CHECK(panel->saveState() == routing);
 }
 
 TEST_CASE("Device stop and rate/buffer restarts cancel playback and clear analysis", "[app][audio]") {
