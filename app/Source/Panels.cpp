@@ -205,6 +205,10 @@ public:
         plot.note = "averages " + String(model.tf.averages) + (model.calApplied ? u8(" \xc2\xb7 cal applied") : "")
                     + u8(" \xc2\xb7 ") + u8(fohui::settleStatusText(model.conv, model.capture.active, model.capture.unsettled))
                     + " | Multi-mic: " + String(model.positionCount) + "/3 positions (2 required)";
+        if (model.positionCount >= 2 && (model.multiPosition.H.empty()
+            || std::none_of(model.multiPosition.coherence.begin(), model.multiPosition.coherence.end(),
+                            [](double c) { return std::isfinite(c) && c > 0; })))
+            plot.note += " | No coherent positions; check mic/ref routing and capture again";
         plot.repaint();
     }
 private:
