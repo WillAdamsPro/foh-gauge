@@ -56,7 +56,7 @@ jobs:
           ditto "$APP" "$STAGE/$APP_NAME.app"
           ln -s /Applications "$STAGE/Applications"
           hdiutil create -volname "$APP_NAME" -srcfolder "$STAGE" -ov -format UDZO "$OUT.dmg"
-          shasum -a 256 "$OUT.zip" "$OUT.dmg" | tee SHA256SUMS.txt
+          shasum -a 256 "$OUT.zip" "$OUT.dmg" | tee SHA256SUMS
           echo "OUT=$OUT" >> "$GITHUB_ENV"
       - name: Create GitHub Release
         env:
@@ -64,7 +64,16 @@ jobs:
         run: |
           NOTES="Unsigned test build. Requires macOS 26."
           if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release upload "$TAG" "$OUT.zip" "$OUT.dmg" SHA256SUMS.txt --clobber
+            gh release edit "$TAG" --title "FOH Gauge $TAG" --notes "$NOTES" --prerelease
+            gh release upload "$TAG" "$OUT.zip" "$OUT.dmg" SHA256SUMS --clobber
           else
-            gh release create "$TAG" "$OUT.zip" "$OUT.dmg" SHA256SUMS.txt --title "FOH Gauge $TAG" --notes "$NOTES" --prerelease --verify-tag
+            gh release create "$TAG" "$OUT.zip" "$OUT.dmg" SHA256SUMS --title "FOH Gauge $TAG" --notes "$NOTES" --prerelease --verify-tag
           fi
+      - name: Verify prerelease and assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view "$TAG" --json isPrerelease,assets | jq -e --arg out "$OUT" '
+            .isPrerelease == true and
+            ([.assets[].name] | contains([$out + ".zip", $out + ".dmg", "SHA256SUMS"]))
+          '
