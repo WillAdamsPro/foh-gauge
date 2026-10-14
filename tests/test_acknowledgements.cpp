@@ -9,6 +9,8 @@ TEST_CASE("Acknowledgements exposes complete offline notices in a scrollable rea
     REQUIRE(reader->isReadOnly());
     REQUIRE(reader->isMultiLine());
     const auto text = reader->getText();
+    REQUIRE(text.startsWith(juce::String::fromUTF8(
+        "FOH Gauge \xe2\x80\x94 About / Acknowledgements\n\n")));
     REQUIRE(text.contains("JUCE 8.0.4"));
     REQUIRE(text.contains("Raw Material Software Limited"));
     REQUIRE(text.contains("Smaart, X32, Behringer, SQ and Allen & Heath"));
