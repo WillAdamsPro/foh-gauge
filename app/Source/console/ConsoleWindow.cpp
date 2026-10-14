@@ -38,7 +38,7 @@ void ConsolePanel::Worker::run() {
 ConsolePanel::ConsolePanel() : control([this](const Bytes& b) { return worker && worker->enqueue(b); }) {
     for (auto* c : std::initializer_list<Component*>{&host, &value, &desk, &bus, &number, &output, &parameter, &band, &connect, &write, &status, &instructions}) addAndMakeVisible(c);
     host.setTextToShowWhenEmpty("Console IPv4 address", Colours::grey);
-    desk.addItem("Behringer X32 (OSC)", 1); desk.addItem("SQ-5 1.6.3 — awaiting protocol verification", 2); desk.setSelectedId(1);
+    desk.addItem("Behringer X32 (OSC)", 1); desk.addItem(String::fromUTF8("SQ-5 1.6.3 \xe2\x80\x94 awaiting protocol verification"), 2); desk.setSelectedId(1);
     bus.addItem("Mix bus", 1); bus.addItem("Matrix", 2); bus.setSelectedId(1);
     for (int i = 1; i <= 16; ++i) { number.addItem(String(i), i); output.addItem("Output " + String(i), i); }
     output.addItem("No delay output selected", 17); output.setSelectedId(17); number.setSelectedId(1);
@@ -50,7 +50,7 @@ ConsolePanel::ConsolePanel() : control([this](const Bytes& b) { return worker &&
     instructions.setText("EQ is on the selected mix or matrix. X32 delay is on an output slot: select its routed output. Read does not change the console. Every write requires a separate confirmation.", dontSendNotification);
     status.setText("Disconnected", dontSendNotification);
     connect.onClick = [this] { reconnect(); }; write.onClick = [this] { propose(); };
-    auto changed = [this] { control.cancel(); worker.reset(); status.setText("Selection changed — connect/read again", dontSendNotification); };
+    auto changed = [this] { control.cancel(); worker.reset(); status.setText(String::fromUTF8("Selection changed \xe2\x80\x94 connect/read again"), dontSendNotification); };
     for (auto* box : {&desk, &bus, &number, &output}) box->onChange = changed;
     host.onTextChange = changed;
     parameter.onChange = [this] { control.cancel(); showReadValue(); }; band.onChange = [this] { control.cancel(); showReadValue(); }; value.onTextChange = [this] { control.cancel(); };
@@ -74,7 +74,7 @@ void ConsolePanel::reconnect() {
     for (const auto& part : parts) valid = valid && part.isNotEmpty() && part.containsOnly("0123456789") && part.getIntValue() <= 255;
     if (!valid) { status.setText("Enter a numeric console IPv4 address.", dontSendNotification); return; }
     worker = std::make_unique<Worker>(ip);
-    status.setText(control.read() ? "Read requested — awaiting reply" : "Read request failed", dontSendNotification);
+    status.setText(String::fromUTF8(control.read() ? "Read requested \xe2\x80\x94 awaiting reply" : "Read request failed"), dontSendNotification);
 }
 void ConsolePanel::timerCallback() {
     if (!worker) return;
@@ -101,7 +101,7 @@ void ConsolePanel::propose() {
     const auto preview = control.preview();
     AlertWindow::showOkCancelBox(AlertWindow::WarningIcon, "Confirm console write", String(preview) + "\n\nSend this change to " + host.getText().trim() + "?", "Write", "Cancel", nullptr,
         ModalCallbackFunction::create([safe = Component::SafePointer<ConsolePanel>(this), token = *id](int result) {
-            if (safe) safe->status.setText(safe->control.confirm(token, result == 1) ? "Write queued — read again to verify" : "No write sent", dontSendNotification);
+            if (safe) safe->status.setText(String::fromUTF8(safe->control.confirm(token, result == 1) ? "Write queued \xe2\x80\x94 read again to verify" : "No write sent"), dontSendNotification);
         }));
 }
 void ConsolePanel::resized() {
