@@ -4,6 +4,7 @@
 #pragma once
 #include "Widgets.h"
 #include "AnalysisEngine.h"
+#include "QaAdapters.h"
 
 class AppModel : private juce::Timer {
 public:
@@ -30,7 +31,7 @@ public:
     float micPeak = 0, refPeak = 0; // linear, last timer period
 
     // ---- measurement settings (shared by toolbar pills / TF / RTA panels)
-    int smoothingFraction = 12, averages = 16, rtaFraction = 3; double blankThreshold = 0.6;
+    int smoothingFraction = 12, averages = 16, rtaFraction = 3; double blankThreshold = 0.5; // QA (Vega): default TF coherence-blanking threshold 0.5, adjustable in the TF panel
     void setSmoothing(int f) { smoothingFraction = f; send(foh::Command::smoothing(f)); notify(Settings); }
     void setAverages(int n) { averages = n; send(foh::Command::averages(n)); notify(Settings); }
     void setRtaFraction(int f) { rtaFraction = f; send(foh::Command::rtaFraction(f)); notify(Settings); }
