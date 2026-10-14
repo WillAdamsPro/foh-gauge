@@ -51,7 +51,10 @@ public:
     void setBlankThreshold(double t) { blankThreshold = t; send(foh::Command::blankThreshold(t)); notify(Settings); }
 
     // ---- delay finder
-    bool delayLocked() const { return delay.ok(); }
+    bool delayLocked() const {
+        return delay.ok() && !engine.deviceFailed.load(std::memory_order_acquire)
+            && lastInputEpoch == engine.captureEpoch.load(std::memory_order_acquire);
+    }
     void requestDelay(bool sub, std::function<void()> then = {});
     void lockDelayFromLast();
     void cancelSessionOperations() {
@@ -68,7 +71,7 @@ public:
         sweep = {}; sweepCapturing = false;
         refDelaySamples = 0; refDelayMs = 0;
         lockedDelayMs = ms;
-        send(foh::Command::referenceDelay(ms * engine.sampleRate.load() / 1000.0));
+        analysis.send(foh::Command::referenceDelay(ms * engine.sampleRate.load() / 1000.0), lastInputEpoch);
     }
     double lockedDelayMs = 0; bool delayPending = false;
 

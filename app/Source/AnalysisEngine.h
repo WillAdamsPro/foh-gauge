@@ -2,6 +2,7 @@
 // audio thread -> RingBuffers -> [this thread: fohcore TF / RTA / delay finder] -> SnapshotPublisher -> UI
 // UI -> CommandQueue -> this thread. The UI never runs TF/RTA/delay processing itself.
 #pragma once
+#include <optional>
 #include <juce_core/juce_core.h>
 #include <mutex>
 #include <memory>
@@ -18,7 +19,9 @@ public:
     void stop() { stopThread(-1); }
 
     // UI thread only (single producer / single reader)
-    bool send(const foh::Command& c) { return commands.push(c); }
+    bool send(const foh::Command& c);
+    // Use the originating snapshot epoch for commands carrying measured sample units.
+    bool send(const foh::Command& c, uint64_t epoch) { return commands.push({c, epoch}); }
     const foh::AnalysisSnapshot& latest() { return publisher.latest(); }
     // Cal is not POD, so it is handed over by pointer swap (rare, non-RT). nullptr = cal off.
     void setCal(std::shared_ptr<const foh::MicCal> cal, const juce::String& name);
@@ -40,7 +43,11 @@ private:
 
     AudioEngine& engine;
     foh::SnapshotPublisher publisher;
-    foh::CommandQueue commands;
+    // Capture commands belong to the device epoch in which the UI submitted them.
+    // The same fixed-size SPSC handoff as CommandQueue; no audio-thread producer.
+    struct QueuedCommand { foh::Command command; uint64_t epoch; };
+    foh::SpscQueue<QueuedCommand> commands;
+    std::optional<QueuedCommand> pendingCommand; // worker only: popped, not yet handled
     std::mutex calLock; std::shared_ptr<const foh::MicCal> pendingCal; juce::String pendingCalName; bool calDirty = false;
     std::shared_ptr<const foh::MicCal> cal; std::string calName;
 
