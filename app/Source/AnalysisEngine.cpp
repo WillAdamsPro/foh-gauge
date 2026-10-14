@@ -8,6 +8,7 @@ void AnalysisEngine::setCal(std::shared_ptr<const foh::MicCal> c, const juce::St
 void AnalysisEngine::rebuild(double newFs) {
     fs = newFs;
     tf = std::make_unique<foh::TransferFunction>(fftN, fs); rta = std::make_unique<foh::RTA>(fftN, fs, rtaFrac);
+    tf->setConvergenceTimeout(10.0);
     tf->setAverages(averages); tf->setCoherenceBlankThreshold(blankThr);
     histRef.assign((size_t) (3 * fs), 0.f); histMic.assign(histRef.size(), 0.f); histPos = 0;
     if (cal) rta->setCalibrationDb(cal->correctionDb(fftN / 2 + 1, fs / fftN));
@@ -20,8 +21,8 @@ void AnalysisEngine::handle(const foh::Command& c) {
         case T::SetRtaFraction: rtaFrac = c.i; rta->setFraction(c.i); break;
         case T::SetBlankThreshold: blankThr = c.d; tf->setCoherenceBlankThreshold(c.d); break;
         case T::SetAverages: averages = c.i; tf->setAverages(c.i); break;
-        case T::ResetAverages: tf->reset(); rta->reset(); break;
-        case T::SetReferenceDelay: tf->setReferenceDelaySamples((int) std::lround(c.d)); tf->reset(); break;
+        case T::ResetAverages: tf->reset(); rta->reset(); resetSeq = c.id; break;
+        case T::SetReferenceDelay: tf->setReferenceDelaySamples(c.d); tf->reset(); break;
         case T::FindDelay: { // CommandQueue consumer: allocations / FFT stay on this worker.
             int L = std::min((int) histRef.size(), foh::recommendedDelayWindowSamples(fs, c.sub));
             std::vector<float> r((size_t) L), m((size_t) L); int H = (int) histRef.size();
@@ -39,7 +40,7 @@ void AnalysisEngine::publish() {
     s.delay = delay; s.delaySeq = delaySeq; s.delayWasSub = delayWasSub;
     s.refDelaySamples = tf->referenceDelaySamples(); s.refDelayMs = s.refDelaySamples / fs * 1000.0;
     s.calApplied = cal != nullptr; s.setCalName(cal ? calName.c_str() : "");
-    s.convergence = tf->convergence();
+    s.resetSeq = resetSeq; s.convergence = tf->convergence();
     publisher.publish();
 }
 
