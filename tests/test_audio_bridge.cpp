@@ -2,7 +2,9 @@
 #include <catch2/catch_approx.hpp>
 #include "Widgets.h"
 #include "AnalysisEngine.h"
+#include "SettleStatus.h"
 #include <chrono>
+#include <string_view>
 #include <thread>
 
 namespace {
@@ -19,6 +21,30 @@ bool waitFor(Predicate predicate) {
     }
     return false;
 }
+}
+
+TEST_CASE("TF settle wording warns only on timeout or a completed unsettled capture", "[app][qa]") {
+    foh::ConvergenceState convergence;
+    auto text = [&](bool active = false, bool captureUnsettled = false) {
+        return std::string_view(fohui::settleStatusText(convergence, active, captureUnsettled));
+    };
+    REQUIRE(text() == "averaging...");
+    REQUIRE(text(true) == "averaging...");
+    convergence.unsettled = true;
+    convergence.elapsedSeconds = 9.99;
+    REQUIRE(text(true) == "averaging...");
+    REQUIRE(text(true, true) == "averaging..."); // An active capture has not ended.
+    convergence.timedOut = true;
+    convergence.elapsedSeconds = 10.0;
+    REQUIRE(text() == "\xe2\x96\xb2 unsettled");
+    REQUIRE(text(true) == "\xe2\x96\xb2 unsettled");
+    convergence = {};
+    REQUIRE(text(false, true) == "\xe2\x96\xb2 unsettled");
+    convergence.settled = true;
+    REQUIRE(text() == "settled");
+    REQUIRE(text(false, true) == "\xe2\x96\xb2 unsettled");
+    convergence = {}; // Starting a new capture resets its warning and settle state.
+    REQUIRE(text(true) == "averaging...");
 }
 
 TEST_CASE("Capture waits for the analysis restart acknowledgement", "[app][audio]") {
@@ -81,6 +107,7 @@ TEST_CASE("Capture snapshots acknowledge reset and carry the QA settle decision"
     REQUIRE(analysis.send(foh::Command::resetAverages(1)));
     REQUIRE(waitFor([&] { return analysis.latest().resetSeq == 1; }));
     REQUIRE_FALSE(analysis.latest().convergence.finished);
+    REQUIRE(std::string_view(fohui::settleStatusText(analysis.latest().convergence, true, false)) == "averaging...");
 
     // Synthetic identical broadband channels: coherent, stable transfer function.
     foh::PinkNoise noise(42);
@@ -98,6 +125,7 @@ TEST_CASE("Capture snapshots acknowledge reset and carry the QA settle decision"
     REQUIRE_FALSE(settled.convergence.unsettled);
     REQUIRE(settled.convergence.stableFrames == 3);
     REQUIRE(settled.convergence.deltaDb < 0.5);
+    REQUIRE(std::string_view(fohui::settleStatusText(settled.convergence, false, false)) == "settled");
     REQUIRE(foh::classifyCoherence(settled.tf).light == foh::TrafficLight::Green);
 
     // A new capture must not reuse that finished result. Silence cannot settle,
@@ -106,7 +134,13 @@ TEST_CASE("Capture snapshots acknowledge reset and carry the QA settle decision"
     REQUIRE(waitFor([&] { return analysis.latest().resetSeq == 2; }));
     REQUIRE_FALSE(analysis.latest().convergence.finished);
     std::fill(signal.begin(), signal.end(), 0.0f);
-    for (int i = 0; i < 61; ++i) feed();
+    for (int i = 0; i < 58; ++i) feed();
+    REQUIRE(waitFor([&] { return analysis.latest().convergence.elapsedSeconds >= 9.0; }));
+    const auto averaging = analysis.latest().convergence;
+    REQUIRE(averaging.elapsedSeconds < 10.0);
+    REQUIRE_FALSE(averaging.finished);
+    REQUIRE(std::string_view(fohui::settleStatusText(averaging, true, false)) == "averaging...");
+    for (int i = 0; i < 3; ++i) feed();
     REQUIRE(waitFor([&] { return analysis.latest().convergence.finished; }));
     const auto timedOut = analysis.latest();
     REQUIRE(timedOut.convergence.unsettled);
@@ -114,6 +148,7 @@ TEST_CASE("Capture snapshots acknowledge reset and carry the QA settle decision"
     REQUIRE_FALSE(timedOut.convergence.settled);
     REQUIRE(timedOut.convergence.elapsedSeconds >= 10.0);
     REQUIRE(timedOut.convergence.coherentBins == 0);
+    REQUIRE(std::string_view(fohui::settleStatusText(timedOut.convergence, false, true)) == "\xe2\x96\xb2 unsettled");
     REQUIRE(foh::classifyCoherence(timedOut.tf).light == foh::TrafficLight::Red);
     analysis.stop();
 }
