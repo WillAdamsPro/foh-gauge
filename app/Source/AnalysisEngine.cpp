@@ -110,7 +110,8 @@ void AnalysisEngine::publish() {
 bool AnalysisEngine::processPendingAudio(std::vector<float>& m, std::vector<float>& r,
                                         const std::vector<float>& silence, uint64_t& epoch) {
     const auto nextEpoch = engine.captureEpoch.load(std::memory_order_acquire);
-    if (!tf || nextEpoch != epoch) {
+    const bool nextFailed = engine.deviceFailed.load(std::memory_order_acquire);
+    if (!tf || nextEpoch != epoch || nextFailed != inputFailed) {
         // Only the consumer advances the ring read positions. The producer
         // waits for analysisEpoch, so these drains cannot discard new-rate audio.
         for (auto* ring : { &engine.micRing, &engine.refRing })
@@ -118,6 +119,7 @@ bool AnalysisEngine::processPendingAudio(std::vector<float>& m, std::vector<floa
         if (tf) cancelSweep("Audio changed; measure the sweep again");
         rebuild(engine.sampleRate.load()); // also clears both delay histories
         delay = {};
+        inputFailed = nextFailed;
         epoch = nextEpoch; inputEpoch = epoch; micChannel = engine.captureMicChannel.load();
         engine.analysisEpoch.store(epoch, std::memory_order_release);
     }
@@ -138,7 +140,8 @@ bool AnalysisEngine::processPendingAudio(std::vector<float>& m, std::vector<floa
         || juce::Time::getMillisecondCounterHiRes() - sweepStartMs > 10000))
         cancelSweep("Sweep interrupted; check routing and measure again");
     bool any = false;
-    while (engine.captureEpoch.load(std::memory_order_acquire) == epoch
+    while (!engine.deviceFailed.load(std::memory_order_acquire)
+           && engine.captureEpoch.load(std::memory_order_acquire) == epoch
            && engine.micRing.available() >= 512 && engine.refRing.available() >= 512) {
         int n = std::min({ engine.micRing.available(), engine.refRing.available(), fftN });
         engine.micRing.pop(m.data(), n); engine.refRing.pop(r.data(), n); any = true;
