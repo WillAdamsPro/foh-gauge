@@ -222,14 +222,14 @@ bool MainComponent::keyPressed(const KeyPress& k, Component*) {
     const int code = k.getKeyCode();
     const bool cycle = code == KeyPress::tabKey
         && modifiers.withoutFlags(ModifierKeys::shiftModifier).getRawFlags() == ModifierKeys::ctrlModifier;
-    const bool scale = modifiers.isCommandDown() && !modifiers.isAltDown() && !modifiers.isCtrlDown()
+    const bool scale = modifiers.withoutFlags(ModifierKeys::shiftModifier).getRawFlags() == ModifierKeys::commandModifier
         && (code == '0' || code == '=' || code == '+' || code == '-');
     // Panel-local keys must keep their normal floating-window behavior.
     return (cycle || scale) && keyPressed(k);
 }
 bool MainComponent::keyPressed(const KeyPress& k) {
     auto m = k.getModifiers(); int code = k.getKeyCode();
-    if (m.isCommandDown() && !m.isAltDown() && !m.isCtrlDown()) {
+    if (m.withoutFlags(ModifierKeys::shiftModifier).getRawFlags() == ModifierKeys::commandModifier) {
         if (code == '0') { setUiScale(100); return true; }
         if (code == '=' || code == '+') { stepUiScale(1); return true; }
         if (code == '-') { stepUiScale(-1); return true; }

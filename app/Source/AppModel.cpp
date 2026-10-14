@@ -37,7 +37,7 @@ AppModel::AppModel() {
         || dm.getCurrentAudioDeviceType() != savedDevice->getStringAttribute("deviceType"))) {
         dm.closeAudioDevice();
         if (prefs) {
-            prefs->setValue("setupComplete", false);
+            prefs->setValue("setupComplete", juce::var(false));
             for (const auto* key : {"micChannel", "refChannel", "generatorChannel", "loopbackChannel"}) prefs->setValue(key, -1);
         }
         AlertWindow::showMessageBoxAsync(AlertWindow::WarningIcon, "Audio setup needed", "The saved device is unavailable. Choose devices and channels in Setup.");

@@ -26,7 +26,7 @@ bool WorkspaceManager::readFile(const File& f, Workspace& w) const {
 }
 void WorkspaceManager::writeFile(const File& f, const Workspace& w) const {
     dir.createDirectory(); auto tmp = f.getSiblingFile(f.getFileName() + ".tmp");
-    if (tmp.replaceWithText(String(toJson(w).dump())) ) tmp.moveFileTo(f); // write-then-rename: never leave half a file
+    if (tmp.replaceWithText(String(toJson(w).dump())) ) tmp.replaceFileIn(f); // Install the complete file using the platform replacement operation
 }
 
 WorkspaceManager::WorkspaceManager(File folder) : dir(std::move(folder)) {
