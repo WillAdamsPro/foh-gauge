@@ -45,6 +45,7 @@ void FohLookAndFeel::applyTheme() {
     setColour(ComboBox::arrowColourId, C::textSecondary()); setColour(PopupMenu::textColourId, C::textPrimary()); setColour(PopupMenu::highlightedBackgroundColourId, C::accent()); setColour(PopupMenu::highlightedTextColourId, C::textOnAccent());
     setColour(TextEditor::backgroundColourId, C::controlBackground()); setColour(TextEditor::textColourId, C::textPrimary()); setColour(TextEditor::outlineColourId, C::pillBorder());
     setColour(ListBox::textColourId, C::textPrimary()); setColour(ToggleButton::textColourId, C::textPrimary()); setColour(ToggleButton::tickColourId, C::accent());
+    setColour(ToggleButton::tickDisabledColourId, C::textSecondary());
 }
 AlertWindow* FohLookAndFeel::createAlertWindow(const String& title, const String& message,
     const String& button1, const String& button2, const String& button3,
@@ -109,12 +110,29 @@ void FohLookAndFeel::drawButtonBackground(Graphics& g, Button& b, const Colour& 
     g.fillRoundedRectangle(r, D::radiusButton());
     g.setColour(C::ghostBorder()); g.drawRoundedRectangle(r, D::radiusButton(), D::hairline());
 }
+void FohLookAndFeel::drawCallOutBoxBackground(CallOutBox&, Graphics& g, const Path& path, Image&) {
+    g.setColour(C::cardBackground()); g.fillPath(path);
+    g.setColour(C::border()); g.strokePath(path, PathStrokeType(D::hairline()));
+}
 void makePrimary(TextButton& b) { b.getProperties().set("primary", true); b.setColour(TextButton::textColourOffId, C::textOnAccent()); }
 
 // ===================== Plot =====================
 float PlotComponent::xOf(double f) const { return (float) (plotX() + plotW() * (std::log10(std::clamp(f, fMin, fMax)) - std::log10(fMin)) / (std::log10(fMax) - std::log10(fMin))); }
 float PlotComponent::yOf(double v) const { return (float) (plotY() + plotH() * (yMax - jlimit(yMin, yMax, v)) / (yMax - yMin)); }
+int PlotComponent::legendHeight() const {
+    auto font = FohLookAndFeel::font(T::body);
+    int x = 0, rows = 1, width = jmax(1, plotW());
+    auto item = [&](const String& label, int extra) {
+        int w = jmin(width, GlyphArrangement::getStringWidthInt(font, label) + extra);
+        if (x && x + w > width) { ++rows; x = 0; }
+        x += w + 8;
+    };
+    for (const auto& s : series) if (s.label.isNotEmpty()) item(s.label, 40);
+    for (const auto& chip : legendChips) item(chip, 16);
+    return rows * 24;
+}
 void PlotComponent::paint(Graphics& g) {
+    if (topLegend) legendRowsHeight = legendHeight();
     // Workspace collapse/reparenting and UI scaling can briefly leave no room
     // after axis/legend padding. Do not submit negative drawing dimensions.
     if (plotW() <= 0 || plotH() <= 0) return;
@@ -137,7 +155,7 @@ void PlotComponent::paint(Graphics& g) {
     for (auto& a : annotations) { if (!validRange(a.lo, a.hi)) continue; float x0 = xOf(a.lo), x1 = xOf(a.hi); // layout-spec: warning @ annotationBandAlpha, label at band right + 6, y 30
         g.setColour(C::warning().withAlpha(C::annotationBandAlpha())); g.fillRect(x0, pr.getY(), x1 - x0, pr.getHeight());
         if (a.label.isNotEmpty()) { g.setColour(C::warning()); g.setFont(FohLookAndFeel::font(T::label)); g.drawText(a.label, (int) x1 + 6, (int) pr.getY() + 30 - 7, 160, 14, Justification::left); g.setFont(FohLookAndFeel::font(T::caption)); } }
-    if (showLegend) { int x = plotX() + 14; int y = (int) pr.getBottom() + 24 + 4; g.setFont(FohLookAndFeel::font(T::body));
+    if (showLegend && !topLegend) { int x = plotX() + 14; int y = (int) pr.getBottom() + 24 + 4; g.setFont(FohLookAndFeel::font(T::body));
         for (auto& s : series) { if (s.label.isEmpty()) continue; g.setColour(s.c);
             if (s.dash) { for (int k = 0; k < 18; k += 6) g.fillRect((float) x + k, (float) y + 7, 4.f, s.width); } else g.fillRect((float) x, (float) y + 7, 18.f, s.width);
             int tw = GlyphArrangement::getStringWidthInt(g.getCurrentFont(), s.label); g.setColour(C::textBody()); g.drawText(s.label, x + 24, y, tw + 4, 16, Justification::left); x += 24 + tw + 18; }
@@ -149,8 +167,34 @@ void PlotComponent::paint(Graphics& g) {
     // Bound tick work even for corrupt saved ranges or a step too small to advance.
     for (int tick = 0; tick < 256; ++tick) { double v = yMin + tick * yStep; if (!std::isfinite(v) || v > yMax) break; float y = yOf(v); g.drawHorizontalLine((int) y, pr.getX(), pr.getRight());
         g.setColour(C::textAxis()); g.drawText(yStep < 1 ? String(v, 1) : String(v, 0), 0, (int) y - 7, plotX() - 6, 14, Justification::right); g.setColour(C::border()); }
-    if (note.isNotEmpty()) { g.setColour(C::textSecondary()); g.setFont(FohLookAndFeel::font(T::caption)); g.drawText(note, (int) pr.getRight() - 300, (int) pr.getY() + 2, 296, 14, Justification::right); }
-    if (centreNote.isNotEmpty()) { g.setColour(C::textSecondary()); g.setFont(FohLookAndFeel::font(T::body)); g.drawText(centreNote, (int) xOf(1500) - 120, (int) pr.getCentreY() - 8, 240, 16, Justification::centred); }
+    if (topLegend) {
+        g.setFont(FohLookAndFeel::font(T::body));
+        int x = plotX(), y = 0;
+        auto chip = [&](const String& label, Colour colour, const Series* s) {
+            int width = jmin(plotW(), GlyphArrangement::getStringWidthInt(g.getCurrentFont(), label) + (s ? 40 : 16));
+            if (x > plotX() && x + width > (int) pr.getRight()) { x = plotX(); y += 24; }
+            auto box = Rectangle<int>(x, y, width, 20);
+            g.setColour(C::pillBackground()); g.fillRoundedRectangle(box.toFloat(), D::radiusTag());
+            if (s) {
+                g.setColour(colour);
+                if (s->dash) { for (int k = 0; k < 18; k += 6) g.fillRect(x + 8 + k, y + 9, 4, 2); }
+                else g.fillRect(x + 8, y + 9, 18, 2);
+            }
+            g.setColour(C::textSecondary()); g.drawText(label, box.withTrimmedLeft(s ? 32 : 8).withTrimmedRight(8), Justification::centredLeft);
+            x += width + 8;
+        };
+        for (const auto& s : series) if (s.label.isNotEmpty()) chip(s.label, s.c, &s);
+        for (const auto& label : legendChips) chip(label, C::textSecondary(), nullptr);
+        g.setFont(FohLookAndFeel::font(T::caption));
+    }
+    if (note.isNotEmpty()) {
+        g.setColour(C::textSecondary());
+        auto bounds = topLegend ? Rectangle<int>(plotX(), legendRowsHeight, plotW(), 20)
+                                : Rectangle<int>((int)pr.getX(), (int)pr.getY() + 2, (int)pr.getWidth() - 4, 14);
+        g.drawText(note, bounds, Justification::right);
+    }
+    if (topLegend && yLabel.isNotEmpty()) { g.setColour(C::textSecondary()); g.drawText(yLabel, plotX(), getHeight() - 20, plotW(), 20, Justification::centred); }
+    if (centreNote.isNotEmpty()) { g.setColour(C::textAxis()); g.setFont(FohLookAndFeel::font(T::body)); g.drawText(centreNote, (int) xOf(1500) - 120, (int) pr.getCentreY() - 8, 240, 16, Justification::centred); }
     if (exampleData) { // top-right, ~103x20, 11 px warning text, 1 px warning border, radius 4 (layout-spec)
         auto tag = Rectangle<float>(pr.getRight() - 109, pr.getY() + 6, 103, 20);
         g.setColour(C::warning()); g.drawRoundedRectangle(tag.reduced(0.5f), D::radiusTag(), D::hairline());
@@ -160,51 +204,66 @@ void PlotComponent::paint(Graphics& g) {
             hg.drawLine(0, 8, 8, 0, 1.0f); hg.drawLine(-4, 4, 4, -4, 1.0f); hg.drawLine(4, 12, 12, 4, 1.0f); }
         Graphics::ScopedSaveState hs(g); g.setTiledImageFill(hatchTile, 0, 0, 1.0f);
         for (auto& r : lowCoh) { if (!validRange(r.first, r.second)) continue; float a = jmax(pr.getX(), xOf(r.first)), b = jmin(pr.getRight(), xOf(r.second)); if (b > a) g.fillRect(a, pr.getY(), b - a, pr.getHeight()); } }
-    if (showLowCohCallout && !lowCoh.empty()) { // widest hatched region (log width); skipped when it's basically the whole plot (no signal)
-        const std::pair<double,double>* best = nullptr; double bw = 0;
-        for (auto& rr : lowCoh) { if (!validRange(rr.first, rr.second)) continue; double w = std::log10(rr.second / rr.first); if (w > bw) { bw = w; best = &rr; } }
-        float x0 = best ? jmax(pr.getX(), xOf(best->first)) : 0, x1 = best ? jmin(pr.getRight(), xOf(best->second)) : 0;
-        if (best && (x1 - x0) < pr.getWidth() * 0.8f) {
-            auto box = Rectangle<float>(0, 0, 210, 40).withCentre({ (x0 + x1) * 0.5f, pr.getBottom() - 34 });
-            box.setX(jlimit(pr.getX() + 4, pr.getRight() - box.getWidth() - 4, box.getX()));
-            g.setColour(C::cardBackground()); g.fillRoundedRectangle(box, D::radiusButton());
-            g.setColour(C::warning()); g.drawRoundedRectangle(box.reduced(0.5f), D::radiusButton(), 1.0f);
-            auto ic = Rectangle<float>(box.getX() + 10, box.getCentreY() - 7, 14, 13); Path t; t.addTriangle(ic.getCentreX(), ic.getY(), ic.getRight(), ic.getBottom(), ic.getX(), ic.getBottom()); g.fillPath(t);
-            g.setColour(C::textPrimary()); g.setFont(FohLookAndFeel::font(T::body, true)); g.drawText("Low coherence: don't EQ here", (int) box.getX() + 32, (int) box.getY() + 5, 172, 16, Justification::left);
-            g.setColour(C::textSecondary()); g.setFont(FohLookAndFeel::font(T::caption)); g.drawText("Likely a reflection at the mic", (int) box.getX() + 32, (int) box.getY() + 21, 172, 14, Justification::left);
-            g.setFont(FohLookAndFeel::font(T::caption)); } }
-    Graphics::ScopedSaveState ss(g); g.reduceClipRegion(pr.toNearestInt());
-    for (const auto& band : toleranceBands) {
-        if (band.f.size() < 2 || band.lower.size() != band.f.size() || band.upper.size() != band.f.size()) continue;
-        bool valid = true;
-        for (size_t i = 0; i < band.f.size(); ++i)
-            if (!std::isfinite(band.f[i]) || band.f[i] <= 0 || (i && band.f[i] <= band.f[i - 1])
-                || !std::isfinite(band.lower[i]) || !std::isfinite(band.upper[i]) || band.lower[i] > band.upper[i]) valid = false;
-        if (!valid) continue;
-        Path area;
-        area.startNewSubPath(xOf(band.f.front()), yOf(band.upper.front()));
-        for (size_t i = 1; i < band.f.size(); ++i) area.lineTo(xOf(band.f[i]), yOf(band.upper[i]));
-        for (size_t i = band.f.size(); i-- > 0;) area.lineTo(xOf(band.f[i]), yOf(band.lower[i]));
-        area.closeSubPath(); g.setColour(band.colour.withAlpha(0.15f)); g.fillPath(area);
-    }
-    if (bars) for (auto& s : series) { if (s.dash) continue; g.setColour(C::rtaBar());
-        for (size_t i = 0; i < s.v.size() && i < s.f.size() && i < barLo.size() && i < barHi.size(); ++i) {
-            if (!validPoint(s.f[i], s.v[i]) || !validRange(barLo[i], barHi[i]) || (i < s.gap.size() && s.gap[i])) continue;
-            float a = xOf(std::max(fMin, barLo[i])) + 1, b = xOf(std::min(fMax, barHi[i])) - 1, y = yOf(s.v[i]);
-            if (b > a) g.fillRect(a, y, b - a, pr.getBottom() - y);
+    {
+        Graphics::ScopedSaveState ss(g); g.reduceClipRegion(pr.toNearestInt());
+        for (const auto& band : toleranceBands) {
+            if (band.f.size() < 2 || band.lower.size() != band.f.size() || band.upper.size() != band.f.size()) continue;
+            bool valid = true;
+            for (size_t i = 0; i < band.f.size(); ++i)
+                if (!std::isfinite(band.f[i]) || band.f[i] <= 0 || (i && band.f[i] <= band.f[i - 1])
+                    || !std::isfinite(band.lower[i]) || !std::isfinite(band.upper[i]) || band.lower[i] > band.upper[i]) valid = false;
+            if (!valid) continue;
+            Path area;
+            area.startNewSubPath(xOf(band.f.front()), yOf(band.upper.front()));
+            for (size_t i = 1; i < band.f.size(); ++i) area.lineTo(xOf(band.f[i]), yOf(band.upper[i]));
+            for (size_t i = band.f.size(); i-- > 0;) area.lineTo(xOf(band.f[i]), yOf(band.lower[i]));
+            area.closeSubPath(); g.setColour(band.colour.withAlpha(0.15f)); g.fillPath(area);
+        }
+        if (bars) for (auto& s : series) { if (s.dash) continue; g.setColour(C::rtaBar());
+            for (size_t i = 0; i < s.v.size() && i < s.f.size() && i < barLo.size() && i < barHi.size(); ++i) {
+                if (!validPoint(s.f[i], s.v[i]) || !validRange(barLo[i], barHi[i]) || (i < s.gap.size() && s.gap[i])) continue;
+                float a = xOf(std::max(fMin, barLo[i])) + 1, b = xOf(std::min(fMax, barHi[i])) - 1, y = yOf(s.v[i]);
+                if (b > a) g.fillRect(a, y, b - a, pr.getBottom() - y);
+            }
+        }
+        for (auto& s : series) {
+            Path p; bool started = false; double prev = 0;
+            for (size_t i = 0; i < s.f.size() && i < s.v.size(); ++i) { double f = s.f[i]; if (!validPoint(f, s.v[i]) || f > s.maxF) { started = false; continue; }
+                if (i < s.gap.size() && s.gap[i]) { started = false; continue; } // blanked bin: gap in the trace
+                float x = xOf(f), y = yOf(s.v[i]);
+                bool jump = started && wrapPhase && std::abs(s.v[i] - prev) > 180;
+                if (!started || jump) { p.startNewSubPath(x, y); started = true; } else p.lineTo(x, y); prev = s.v[i]; }
+            if (!bars && !s.dash && foh::ui::theme().trace.glow) { g.setColour(s.c.withMultipliedAlpha(0.22f)); g.strokePath(p, PathStrokeType(s.width * 3.5f, PathStrokeType::curved, PathStrokeType::rounded)); } // glow = second wide stroke, no shadow effects
+            g.setColour(s.c); PathStrokeType st(bars && !s.dash ? D::traceSecondary() : s.width, PathStrokeType::curved, PathStrokeType::rounded);
+            if (s.dash) { Path d; st.createDashedStroke(d, p, s.dash, 2); g.fillPath(d); } else g.strokePath(p, st);
         }
     }
-    for (auto& s : series) {
-        Path p; bool started = false; double prev = 0;
-        for (size_t i = 0; i < s.f.size() && i < s.v.size(); ++i) { double f = s.f[i]; if (!validPoint(f, s.v[i]) || f > s.maxF) { started = false; continue; }
-            if (i < s.gap.size() && s.gap[i]) { started = false; continue; } // blanked bin: gap in the trace
-            float x = xOf(f), y = yOf(s.v[i]);
-            bool jump = started && wrapPhase && std::abs(s.v[i] - prev) > 180;
-            if (!started || jump) { p.startNewSubPath(x, y); started = true; } else p.lineTo(x, y); prev = s.v[i]; }
-        if (!bars && !s.dash && foh::ui::theme().trace.glow) { g.setColour(s.c.withMultipliedAlpha(0.22f)); g.strokePath(p, PathStrokeType(s.width * 3.5f, PathStrokeType::curved, PathStrokeType::rounded)); } // glow = second wide stroke, no shadow effects
-        g.setColour(s.c); PathStrokeType st(bars && !s.dash ? D::traceSecondary() : s.width, PathStrokeType::curved, PathStrokeType::rounded);
-        if (s.dash) { Path d; st.createDashedStroke(d, p, s.dash, 2); g.fillPath(d); } else g.strokePath(p, st);
+    bool adviceVisible = false;
+    if (showLowCohCallout && !lowCohDismissed && !lowCoh.empty()) {
+        double widest = 0;
+        for (auto region : lowCoh) if (validRange(region.first, region.second))
+            widest = jmax(widest, (double)(xOf(region.second) - xOf(region.first)));
+        if (widest > 0 && widest < pr.getWidth() * 0.8f) {
+            const String title = "Low coherence: don't EQ here";
+            const String detail = "Likely a reflection at the mic";
+            auto titleFont = FohLookAndFeel::font(T::body, true);
+            auto detailFont = FohLookAndFeel::font(T::caption);
+            int textWidth = jmax(GlyphArrangement::getStringWidthInt(titleFont, title), GlyphArrangement::getStringWidthInt(detailFont, detail));
+            // Wrap narrow panels instead of clipping the advice.
+            int width = jmin((int)pr.getWidth() - 16, textWidth + 64);
+            int lines = width < textWidth + 64 ? 2 : 1;
+            auto box = Rectangle<int>((int)pr.getRight() - width - 8, (int)pr.getY() + 8, width, lines * 36 + 12);
+            g.setColour(C::cardBackground()); g.fillRoundedRectangle(box.toFloat(), D::radiusButton());
+            g.setColour(C::warning()); g.drawRoundedRectangle(box.toFloat().reduced(0.5f), D::radiusButton(), D::hairline());
+            Path triangle; triangle.addTriangle((float)box.getX() + 16, (float)box.getY() + 12, (float)box.getX() + 23, (float)box.getY() + 25, (float)box.getX() + 9, (float)box.getY() + 25); g.fillPath(triangle);
+            g.setColour(C::textPrimary()); g.setFont(titleFont);
+            g.drawFittedText(title, box.getX() + 32, box.getY() + 6, width - 64, lines * 18, Justification::left, lines, 1.0f);
+            g.setColour(C::textSecondary()); g.setFont(detailFont);
+            g.drawFittedText(detail, box.getX() + 32, box.getY() + 6 + lines * 18, width - 64, lines * 18, Justification::left, lines, 1.0f);
+            dismissLowCoh.setBounds(box.getRight() - 28, box.getY() + 4, 24, 24); adviceVisible = true;
+        }
     }
+    dismissLowCoh.setVisible(adviceVisible);
 }
 void logDecimate(const foh::TFResult& r, const std::vector<double>& v, std::vector<double>& fo, std::vector<double>& vo, std::vector<uint8_t>* gap) {
     fo.clear(); vo.clear(); if (gap) gap->clear();
