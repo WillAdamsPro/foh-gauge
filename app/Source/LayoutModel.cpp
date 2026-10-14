@@ -227,6 +227,10 @@ bool fromJson(const Json& j, Workspace& w, std::string& err) {
             if (!valid) { err = "Invalid panel setting: " + k; return false; }
         }
         if (state.has("yMin") && state["yMax"].asNumber() <= state["yMin"].asNumber()) { err = "Invalid plot range"; return false; }
+        if (state.has("targetChoice") && (state["targetChoice"].asInt() < 1 || state["targetChoice"].asInt() > 4)) { err = "Invalid saved target choice"; return false; }
+        for (const auto* key : {"targetShown", "targetBand"})
+            if (state.has(key) && state[key].type() != Json::Bool) { err = "Invalid target flag"; return false; }
+        if (state.has("targetName") && state["targetName"].type() != Json::String) { err = "Invalid target name"; return false; }
         if (state["targetChoice"].asInt() == 4 && !state.has("targetText")) { err = "Missing saved target"; return false; }
         if (state.has("targetText") && !foh::parseTarget(state["targetText"].asString()).ok()) { err = "Invalid saved target"; return false; }
     }

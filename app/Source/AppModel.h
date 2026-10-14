@@ -12,7 +12,7 @@
 
 class AppModel : private juce::Timer {
 public:
-    enum What { Snapshot = 1, Delay = 2, Traces = 4, Cal = 8, Levels = 16, Capture = 32, Overlay = 64, Settings = 128, Theme = 256, Rig = 512, Expert = 1024 };
+    enum What { Snapshot = 1, Delay = 2, Traces = 4, Cal = 8, Levels = 16, Capture = 32, Overlay = 64, Settings = 128, Theme = 256, Rig = 512, Expert = 1024, Session = 2048 };
     struct Listener { virtual ~Listener() = default; virtual void modelChanged(int what) = 0; };
 
     AppModel();
@@ -51,7 +51,11 @@ public:
     void setBlankThreshold(double t) { blankThreshold = t; send(foh::Command::blankThreshold(t)); notify(Settings); }
 
     // ---- delay finder
-    bool delayLocked() const { return delay.ok(); }
+    uint64_t nextGuideSweepId = 0, sweepSeq = 0; // message-thread sweep ownership
+    bool delayLocked() const {
+        return delay.ok() && !engine.deviceFailed.load(std::memory_order_acquire)
+            && lastInputEpoch == engine.captureEpoch.load(std::memory_order_acquire);
+    }
     void requestDelay(bool sub, std::function<void()> then = {});
     void lockDelayFromLast();
     void cancelSessionOperations() {
@@ -68,7 +72,7 @@ public:
         sweep = {}; sweepCapturing = false;
         refDelaySamples = 0; refDelayMs = 0;
         lockedDelayMs = ms;
-        send(foh::Command::referenceDelay(ms * engine.sampleRate.load() / 1000.0));
+        analysis.send(foh::Command::referenceDelay(ms * engine.sampleRate.load() / 1000.0), lastInputEpoch);
     }
     double lockedDelayMs = 0; bool delayPending = false;
 

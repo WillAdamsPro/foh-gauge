@@ -7,10 +7,14 @@ class EasySetup : public juce::Component {
 public:
     explicit EasySetup(AppModel&);
     void begin();
+    void cancel() { active = false; }
+    void visibilityChanged() override { if (!isVisible()) cancel(); }
+    void parentHierarchyChanged() override { visibilityChanged(); }
     void resized() override;
     void paint(juce::Graphics&) override;
     std::function<void()> onClose;
 private:
+    bool active = false;
     AppModel& model;
     ScrollableForm form;
     juce::Label title, instructions, clusterLabel, cabinetLabel, controlLabel, arrangementLabel, status;

@@ -7,7 +7,9 @@
 #include <thread>
 #include <random>
 #include <iostream>
+#ifndef _WIN32
 #include <sys/resource.h>
+#endif
 
 namespace {
 foh::TFResult syntheticTF(double gain = 0) {
@@ -92,6 +94,9 @@ TEST_CASE("W7 panel owns a stable reference and releases silent mode", "[app][sh
 // Set FOH_W7_CPU=1 to run the optional real-time, visible synthetic acceptance check.
 // Process CPU includes callback feeding, analysis, snapshot copying and chart rendering.
 TEST_CASE("W7 visible synthetic programme CPU measurement", "[app][show][cpu]") {
+#ifdef _WIN32
+    SKIP("Optional process CPU measurement requires POSIX getrusage");
+#else
     if (juce::SystemStats::getEnvironmentVariable("FOH_W7_CPU", "") != "1") return;
     juce::ScopedJuceInitialiser_GUI initialise;
     AppModel model; model.engine.state = AudioEngine::Ready;
@@ -142,6 +147,7 @@ TEST_CASE("W7 visible synthetic programme CPU measurement", "[app][show][cpu]") 
     running = false; feeder.join(); model.analysis.stop(); panel->removeFromDesktop();
     REQUIRE(stored); REQUIRE(steadyStatus.startsWith("Monitoring:")); REQUIRE(driftStatus.startsWith("DRIFT ALERT:"));
     REQUIRE(missingStatus.startsWith("Waiting:")); REQUIRE(cpu < 10);
+#endif
 }
 
 TEST_CASE("Show mode exposes W7 even with an older saved workspace", "[app][show][workspace]") {
@@ -158,6 +164,50 @@ TEST_CASE("Show mode exposes W7 even with an older saved workspace", "[app][show
     view.setShowMode(false);
     REQUIRE(view.panel("RTA")->getParentComponent());
     REQUIRE_FALSE(monitoring->getParentComponent());
+}
+
+TEST_CASE("W7 timers and plots survive repeated monitoring restarts and destruction", "[app][show][stress]") {
+    juce::ScopedJuceInitialiser_GUI initialise;
+    AppModel model;
+    REQUIRE(model.traces.store("Synthetic reference", syntheticTF(), 0));
+    model.engine.state = AudioEngine::Ready;
+    for (int i = 0; i < 200; ++i) {
+        auto panel = PanelRegistry::standard().create("ShowMonitoring", model);
+        selectReference(*panel);
+        for (int restart = 0; restart < 5; ++restart) {
+            click(*panel, "Monitor"); CHECK(model.engine.monitoringSilent.load());
+            click(*panel, "Stop monitoring"); CHECK_FALSE(model.engine.monitoringSilent.load());
+        }
+        click(*panel, "Monitor");
+        // Destroy with its timer still armed; all callbacks must expire.
+        panel.reset();
+        CHECK_FALSE(model.engine.monitoringSilent.load());
+    }
+    auto panel = PanelRegistry::standard().create("ShowMonitoring", model);
+    selectReference(*panel); click(*panel, "Monitor");
+    panel->setSize(1000, 700); panel->addToDesktop(0); panel->setVisible(true);
+    model.tf = syntheticTF(); model.micLevelValid = true; model.refPeak = 0.1f;
+    juce::MessageManager::getInstance()->runDispatchLoopUntil(1100);
+    for (auto* child : panel->getChildren()) if (auto* plot = dynamic_cast<PlotComponent*>(child)) {
+        CHECK(plot->series.size() <= 2);
+        for (const auto& series : plot->series) CHECK(series.f.size() <= model.tf.freq.size());
+    }
+    panel.reset(); CHECK_FALSE(model.engine.monitoringSilent.load());
+    juce::Timer::callPendingTimersSynchronously();
+    juce::MessageManager::getInstance()->runDispatchLoopUntil(20);
+    CHECK_FALSE(model.engine.monitoringSilent.load());
+}
+
+TEST_CASE("W7 alert counters remain bounded across twelve hours of synthetic updates", "[app][show][stress]") {
+    fohui::ShowDriftAlert alert;
+    bool correct = true;
+    for (int second = 0; second < 12 * 3600; ++second) {
+        const int phase = second % 60;
+        const auto drift = phase < 30 ? fohui::ShowDrift{true, 4} : fohui::ShowDrift{};
+        correct &= alert.update(drift) == (phase >= 2 && phase < 30);
+        correct &= alert.consecutive >= 0 && alert.consecutive <= 3;
+    }
+    CHECK(correct);
 }
 
 TEST_CASE("W7 rejects malformed clocks grids silent references and overflow", "[app][show][edges]") {
@@ -181,4 +231,17 @@ TEST_CASE("W7 rejects malformed clocks grids silent references and overflow", "[
     }
     fohui::ShowDriftAlert alert;
     for (int i = 0; i < 3; ++i) CHECK_FALSE(alert.update({true, INFINITY}));
+}
+
+TEST_CASE("W7 session reload releases monitoring and requires a new reference", "[app][show][edges]") {
+    juce::ScopedJuceInitialiser_GUI gui;
+    AppModel model; REQUIRE(model.traces.store("Synthetic reference", syntheticTF(), 0));
+    auto panel = PanelRegistry::standard().create("ShowMonitoring", model);
+    selectReference(*panel); click(*panel, "Monitor");
+    REQUIRE(model.engine.monitoringSilent.load());
+    model.notify(AppModel::Session);
+    CHECK_FALSE(model.engine.monitoringSilent.load());
+    click(*panel, "Monitor"); CHECK_FALSE(model.engine.monitoringSilent.load());
+    selectReference(*panel); click(*panel, "Monitor"); CHECK(model.engine.monitoringSilent.load());
+    click(*panel, "Stop monitoring"); CHECK_FALSE(model.engine.monitoringSilent.load());
 }

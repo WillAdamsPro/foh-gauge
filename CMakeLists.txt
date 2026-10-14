@@ -1,9 +1,16 @@
 cmake_minimum_required(VERSION 3.22)
-# Must precede project(). Will's Mac: M1 Max, macOS 26.6.
-set(CMAKE_OSX_DEPLOYMENT_TARGET "26.0" CACHE STRING "Minimum macOS version")
+# Must precede project(); do not apply macOS settings to Windows.
+if(CMAKE_HOST_APPLE)
+  set(CMAKE_OSX_DEPLOYMENT_TARGET "26.0" CACHE STRING "Minimum macOS version")
+endif()
+# A standalone Windows artifact must not require a separately installed MSVC runtime.
+set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 project(FOHGauge VERSION 0.0.0 LANGUAGES C CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+if(MSVC)
+  add_compile_options(/utf-8)
+endif()
 option(FOH_BUILD_TESTS "Build core unit tests" ON)
 option(FOH_BUILD_APP "Build JUCE app" ON)
 set(FOH_SANITIZE "" CACHE STRING "Opt-in core/app/test sanitizers (address,undefined)")

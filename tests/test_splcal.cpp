@@ -54,3 +54,20 @@ TEST_CASE("SPL JSON preserves calibration and rejects incomplete data", "[splcal
     invalid.set("sensitivityDb", "bad"); REQUIRE_FALSE(foh::SplCal::fromJson(invalid).calibrated);
     REQUIRE(foh::SplCal{}.toJson().isNull());
 }
+
+TEST_CASE("Invalid SPL JSON always yields an uncalibrated safe state", "[splcal][files]") {
+    for (const auto* text : {"", "{", "[]", "null", "{\"offsetDb\":114}",
+                            "{\"offsetDb\":\"bad\",\"sensitivityDb\":0}",
+                            "{\"offsetDb\":NaN,\"sensitivityDb\":0}",
+                            "{\"offsetDb\":1e999,\"sensitivityDb\":0}"}) {
+        auto cal = foh::SplCal::fromJson(foh::Json::parse(text));
+        REQUIRE_FALSE(cal.calibrated); REQUIRE(cal.level(-20) == -20); REQUIRE(cal.toJson().isNull());
+    }
+    for (double invalid : {std::numeric_limits<double>::quiet_NaN(), std::numeric_limits<double>::infinity(),
+                           -std::numeric_limits<double>::infinity(), -1., 0., 260., 1e100}) {
+        auto j = foh::Json::object(); j.set("offsetDb", invalid); j.set("sensitivityDb", 0);
+        REQUIRE_FALSE(foh::SplCal::fromJson(j).calibrated);
+        j.set("offsetDb", 114); j.set("sensitivityDb", invalid);
+        if (!std::isfinite(invalid) || std::abs(invalid) > 200) REQUIRE_FALSE(foh::SplCal::fromJson(j).calibrated);
+    }
+}

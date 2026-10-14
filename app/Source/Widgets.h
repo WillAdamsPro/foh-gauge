@@ -84,6 +84,9 @@ public:
     FohLookAndFeel();
     void applyTheme(); // re-read ColourIds from the current Theme
     juce::Typeface::Ptr getTypefaceForFont(const juce::Font&) override;
+    juce::AlertWindow* createAlertWindow(const juce::String& title, const juce::String& message,
+        const juce::String& button1, const juce::String& button2, const juce::String& button3,
+        juce::MessageBoxIconType icon, int numButtons, juce::Component* associated) override;
     void drawButtonBackground(juce::Graphics&, juce::Button&, const juce::Colour&, bool, bool) override;
     void drawDocumentWindowTitleBar(juce::DocumentWindow&, juce::Graphics&, int w, int h, int titleSpaceX, int titleSpaceW, const juce::Image*, bool drawTitleTextOnLeft) override; // floating panel chrome (ws spec §5)
     static juce::Font font(float size, bool bold = false, bool semibold = false);

@@ -38,6 +38,8 @@ Json LoopbackCorrection::toJson() const {
     j.set("H", std::move(bins)); return j;
 }
 LoopbackCorrection LoopbackCorrection::fromJson(const Json& j) {
+    if (!j.isObject() || j["sampleRate"].type() != Json::Number || j["fftSize"].type() != Json::Number
+        || !std::isfinite(j["fftSize"].asNumber()) || std::floor(j["fftSize"].asNumber()) != j["fftSize"].asNumber()) return {};
     LoopbackCorrection c; c.sampleRate = j["sampleRate"].asNumber(); c.fftSize = j["fftSize"].asInt();
     if (!j["H"].isArray() || j["H"].items().size() > (1 << 17) + 1) return {};
     for (const auto& b : j["H"].items()) {

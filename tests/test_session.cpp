@@ -75,6 +75,9 @@ TEST_CASE("Session rejects damaged bundles without changing output", "[session]"
 TEST_CASE("Failed session save preserves existing bundle", "[session]") {
     Bundle bundle; auto s = synthetic(); std::string error; REQUIRE(foh::saveSession(bundle.path, s, error));
     SECTION("too many captures") { s.captures.resize(foh::TraceStore::kMax + 1); }
+    SECTION("invalid SPL type") { s.splCal = foh::Json::array(); }
+    SECTION("invalid SPL value") { auto c = foh::Json::object(); c.set("offsetDb", 1000); c.set("sensitivityDb", 0); s.splCal->set("synthetic", c); }
+    SECTION("nonfinite SPL value") { auto c = foh::Json::object(); c.set("offsetDb", std::numeric_limits<double>::infinity()); c.set("sensitivityDb", 0); s.splCal->set("synthetic", c); }
     SECTION("invalid rig answers") { s.rigProfile->clusters = 0; }
     REQUIRE_FALSE(foh::saveSession(bundle.path, s, error));
     foh::Session loaded; REQUIRE(foh::loadSession(bundle.path, loaded, error)); REQUIRE(loaded.captures.size() == 1);
@@ -104,10 +107,19 @@ TEST_CASE("Session asset corruption leaves the entire prior session intact", "[s
     SECTION("huge manifest") { std::filesystem::resize_file(bundle.path / "session.json", 17 * 1024 * 1024); }
     SECTION("wrong encoding") { std::ofstream(bundle.path / "session.json", std::ios::binary) << "\xff\xfe{}"; }
     SECTION("empty mic cal") { std::ofstream(bundle.path / "mic-cal.txt"); }
+    SECTION("huge mic cal") { std::filesystem::resize_file(bundle.path / "mic-cal.txt", 17 * 1024 * 1024); }
     SECTION("bad mic row") { std::ofstream(bundle.path / "mic-cal.txt") << "20 0\n1000 1\n2000 nan\n"; }
+    SECTION("missing mic calibration") { std::filesystem::remove(bundle.path / "mic-cal.txt"); }
+    SECTION("huge mic calibration") { std::filesystem::resize_file(bundle.path / "mic-cal.txt", 17 * 1024 * 1024); }
+    SECTION("empty target") { std::ofstream(bundle.path / "targets/targets.json"); }
+    SECTION("huge target") { std::filesystem::resize_file(bundle.path / "targets/targets.json", 17 * 1024 * 1024); }
+    SECTION("truncated SPL calibration") { std::ofstream(bundle.path / "session.json") << "{\"splCal\":{\"offsetDb\":"; }
     SECTION("missing target") { std::filesystem::remove(bundle.path / "targets/targets.json"); }
     SECTION("garbled target") { std::ofstream(bundle.path / "targets/targets.json") << "{x"; }
     SECTION("wrong target type") { std::ofstream(bundle.path / "targets/targets.json") << "[]"; }
+    SECTION("empty target") { std::ofstream(bundle.path / "targets/targets.json"); }
+    SECTION("huge target") { std::filesystem::resize_file(bundle.path / "targets/targets.json", 17 * 1024 * 1024); }
+    SECTION("huge capture") { std::filesystem::resize_file(bundle.path / "captures/0.json", 17 * 1024 * 1024); }
     SECTION("truncated capture") { std::ofstream(bundle.path / "captures/0.json") << "{\"freq\":[0,"; }
     SECTION("bad capture frequencies") { rewrite("captures/0.json", [](auto& j) { auto a = foh::Json::array(); a.push(20); a.push(10); j.set("freq", a); }); }
     SECTION("duplicate capture frequencies") { rewrite("captures/0.json", [](auto& j) { auto a = foh::Json::array(); a.push(0); a.push(0); j.set("freq", a); }); }
@@ -129,6 +141,14 @@ TEST_CASE("Session preserves disabled channel selections", "[session][files]") {
     std::string error; REQUIRE(foh::saveSession(bundle.path, s, error)); foh::Session loaded;
     REQUIRE(foh::loadSession(bundle.path, loaded, error));
     REQUIRE(loaded.mic == -1); REQUIRE(loaded.reference == -1); REQUIRE(loaded.outputA == -1); REQUIRE(loaded.outputB == -1);
+}
+
+TEST_CASE("Missing and empty session paths preserve the output", "[session][files]") {
+    Bundle bundle; auto original = synthetic(); auto out = original; std::string error;
+    for (const auto& path : {std::filesystem::path{}, bundle.path}) {
+        REQUIRE_FALSE(foh::loadSession(path, out, error)); REQUIRE_FALSE(error.empty());
+        REQUIRE(out.micCalText == original.micCalText); REQUIRE(out.targets == original.targets);
+    }
 }
 
 TEST_CASE("Missing or damaged optional rig answers load with default guides and a notice", "[session][rig][regression]") {

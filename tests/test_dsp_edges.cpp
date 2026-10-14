@@ -165,3 +165,92 @@ TEST_CASE("Different source sample clocks remain finite but cannot give a cohere
     std::vector<float> tiny(128, std::numeric_limits<float>::denorm_min());
     REQUIRE_FALSE(findDelay(tiny, tiny, 48000).ok());
 }
+
+TEST_CASE("TF rejects silent DC clipped and nonfinite frames even with blanking disabled", "[edges][tf]") {
+    constexpr int n = 1024;
+    std::vector<float> good(4 * n);
+    PinkNoise noise; noise.process(good.data(), (int) good.size());
+    for (float value : {0.f, 0.5f, 1.f, -1.f, (float) qnan, (float) inf,
+                        std::numeric_limits<float>::denorm_min()}) {
+        TransferFunction tf(n); tf.setCoherenceBlankThreshold(0);
+        tf.process(good.data(), good.data(), (int) good.size());
+        REQUIRE(coherenceSummary(tf.result()).meanCoherence > 0.99);
+        auto bad = good;
+        if (std::isfinite(value) && std::abs(value) < 1) std::fill(bad.begin(), bad.end(), value);
+        else for (int i = 0; i < (int) bad.size(); i += n / 4) { bad[i] = value; bad[i + 1] = value; bad[i + 2] = value; }
+        tf.process(bad.data(), bad.data(), (int) bad.size());
+        for (int smoothing : {0, 3, 6, 48}) {
+            auto r = tf.result(smoothing); finite(r);
+            REQUIRE(coherenceSummary(r).meanCoherence == 0);
+            for (size_t k = 0; k < r.H.size(); ++k) { REQUIRE(r.isBlanked(k)); REQUIRE(r.H[k] == cpx{}); }
+        }
+        REQUIRE_FALSE(tf.convergence().settled);
+        tf.process(good.data(), good.data(), (int) good.size());
+        REQUIRE(coherenceSummary(tf.result()).meanCoherence > 0.99);
+    }
+}
+
+TEST_CASE("RTA discards stale levels for DC silence and invalid frames and recovers", "[edges][rta]") {
+    constexpr int n = 1024;
+    std::vector<float> good(4 * n);
+    for (size_t i = 0; i < good.size(); ++i) good[i] = 0.5f * std::sin(2 * M_PI * 1000 * i / 48000);
+    for (float value : {0.f, 0.5f, 1.f, -1.f, (float) qnan, (float) inf,
+                        std::numeric_limits<float>::denorm_min()}) {
+        RTA rta(n); rta.process(good.data(), (int) good.size());
+        auto initial = rta.bandsDb(); REQUIRE(*std::max_element(initial.begin(), initial.end()) > -10);
+        std::vector<float> bad(4 * n, value); rta.process(bad.data(), (int) bad.size());
+        auto levels = rta.bandsDb(); finite(levels);
+        if (!std::isfinite(value) || std::abs(value) >= 1) REQUIRE(levels.empty());
+        else { REQUIRE_FALSE(levels.empty()); for (auto db : levels) REQUIRE(db < -190); }
+        rta.process(good.data(), (int) good.size());
+        levels = rta.bandsDb(); REQUIRE_FALSE(levels.empty());
+        REQUIRE(*std::max_element(levels.begin(), levels.end()) > -10);
+    }
+}
+
+TEST_CASE("Input block sizes do not change fixed Welch hop TF or RTA results", "[edges][hop]") {
+    constexpr int n = 1024;
+    std::vector<float> signal(5 * n + 31); PinkNoise noise; noise.process(signal.data(), (int) signal.size());
+    TransferFunction baseline(n); RTA baselineRta(n);
+    baseline.process(signal.data(), signal.data(), (int) signal.size()); baselineRta.process(signal.data(), (int) signal.size());
+    auto expected = baseline.result(); auto expectedRta = baselineRta.bandsDb();
+    for (int block : {1, 17, n / 2 - 1, n / 2 + 1, n + 3}) {
+        TransferFunction tf(n); RTA rta(n);
+        for (int i = 0; i < (int) signal.size(); i += block) {
+            int count = std::min(block, (int) signal.size() - i);
+            tf.process(signal.data() + i, signal.data() + i, count); rta.process(signal.data() + i, count);
+        }
+        REQUIRE(tf.frames() == baseline.frames()); REQUIRE(tf.result().H == expected.H);
+        REQUIRE(rta.bandsDb() == expectedRta);
+    }
+}
+
+TEST_CASE("Target validity rejects missing empty mismatched and corrupt public traces", "[edges][target]") {
+    for (auto text : {"", "# header only\n", "20 * * *\n20000 * * *\n", "100 0\n"}) REQUIRE_FALSE(parseTarget(text).ok());
+    auto valid = parseTarget("20 0\n20000 -6\n"); REQUIRE(valid.ok());
+    auto t = valid; t.db.clear(); REQUIRE_FALSE(t.ok());
+    t = valid; t.hz[1] = t.hz[0]; REQUIRE_FALSE(t.ok());
+    for (double bad : {qnan, inf, -inf}) {
+        t = valid; t.db[0] = bad; REQUIRE_FALSE(t.ok());
+        t = valid; t.hz[0] = bad; REQUIRE_FALSE(t.ok());
+        t = valid; t.toleranceDb = bad; REQUIRE_FALSE(t.ok());
+    }
+}
+
+TEST_CASE("Sustained full-scale sine clipping is rejected independently on either TF input", "[edges][tf][rta]") {
+    constexpr int n = 1024;
+    std::vector<float> good(4 * n), clipped(4 * n);
+    for (size_t i = 0; i < good.size(); ++i) {
+        double sine = std::sin(2 * M_PI * 1000 * i / 48000);
+        good[i] = (float) (0.5 * sine); clipped[i] = (float) std::clamp(2 * sine, -1.0, 1.0);
+    }
+    RTA rta(n); rta.process(clipped.data(), (int) clipped.size()); REQUIRE(rta.bandsDb().empty());
+    for (bool reference : {false, true}) {
+        TransferFunction tf(n); tf.setCoherenceBlankThreshold(0);
+        tf.process(reference ? clipped.data() : good.data(), reference ? good.data() : clipped.data(), (int) good.size());
+        auto result = tf.result(); finite(result);
+        REQUIRE(coherenceSummary(result).meanCoherence == 0);
+        REQUIRE_FALSE(tf.convergence().settled);
+        for (size_t k = 0; k < result.H.size(); ++k) REQUIRE(result.isBlanked(k));
+    }
+}

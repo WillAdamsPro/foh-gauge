@@ -226,3 +226,17 @@ TEST_CASE("Workspace preserves disabled routing channels", "[layout][files]") {
     w.panelState.set("InputsAndDevices", routing); Workspace loaded; std::string error;
     REQUIRE(fromJson(toJson(w), loaded, error)); REQUIRE(loaded.panelState == w.panelState);
 }
+
+TEST_CASE("Saved targets reject invalid choices and flags atomically", "[layout][target][regression]") {
+    const auto original = builtInPresets()[1];
+    for (const auto& entry : std::vector<std::pair<std::string, Json>>{{"targetChoice", 0}, {"targetChoice", 5},
+            {"targetShown", "true"}, {"targetBand", Json::array()}, {"targetName", 3},
+            {"targetText", "20 0\n1000"}, {"targetText", ""}, {"targetText", Json::object()}}) {
+        INFO(entry.first);
+        auto candidate = original; auto state = Json::object(); state.set(entry.first, entry.second);
+        candidate.panelState.set("TransferFunction", state);
+        auto out = original; std::string error;
+        REQUIRE_FALSE(fromJson(toJson(candidate), out, error));
+        CHECK_FALSE(error.empty()); CHECK(toJson(out) == toJson(original));
+    }
+}

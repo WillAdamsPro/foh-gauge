@@ -129,7 +129,8 @@ struct TFResult {
     std::vector<double> freq, magDb, phaseDeg, coherence;
     std::vector<cpx> H;
     // Coherence blanking: 1 where coherence (after smoothing) < blankThreshold.
-    // Data is left intact; the UI should hide/gap blanked bins. Empty-safe: all 0 when off.
+    // Data is left intact; the UI should hide/gap blanked bins. Bins without
+    // usable signal remain blanked even when coherence threshold blanking is off.
     std::vector<uint8_t> blanked;
     double blankThreshold = 0.0;
     int averages = 0;
@@ -230,7 +231,8 @@ public:
     // FFT >= 2, finite sample rate >= 1 Hz; invalid configuration throws.
     // Both channels must share this sample clock; resample mismatched sources upstream.
     // Reconstruct on rate change (do not mix samples from different rates).
-    // Non-finite/subnormal samples are treated as silence.
+    // Subnormal samples are treated as silence. Frames containing nonfinite or
+    // sustained full-scale clipping are rejected; DC is removed before windowing.
     // Feed blocks of reference (x) and measurement (y) samples; 50% overlap Welch.
     void process(const float* ref, const float* meas, int n);
     // Delay applied to the reference (positive = ref delayed, compensating acoustic delay).
@@ -280,10 +282,15 @@ private:
 // than 26 dB below #1 on that envelope are dropped (PHAT artefacts).
 struct Arrival { double delaySamples; double delayMs; double distanceM; double relLevelDb; bool inverted = false; // inverted: correlation peak negative (polarity flip)
                  double weightedRelLevelDb = 0; }; // level on the timing (PHAT) correlation, for diagnostics
-// Two-spike rule (QA D4): flag <=> (#1 dB - #2 dB) <= 3 dB AND |t2 - t1| > 0.5 ms.
+// Two-spike rule (QA D4): flag <=> |level1 - level2| <= 3 dB AND |t2 - t1| > 0.5 ms.
 constexpr double kTwoSpikeWithinDb = 3.0, kTwoSpikeMinSeparationMs = 0.5;
 constexpr bool twoSpikeFlag(double level1Db, double level2Db, double dtMs) {
-    return (level1Db - level2Db) <= kTwoSpikeWithinDb && (dtMs < 0 ? -dtMs : dtMs) > kTwoSpikeMinSeparationMs;
+    // Range checks reject NaN and infinity while retaining C++17 constexpr use.
+    constexpr double limit = std::numeric_limits<double>::max();
+    return level1Db >= -limit && level1Db <= limit && level2Db >= -limit && level2Db <= limit
+        && dtMs >= -limit && dtMs <= limit
+        && (level1Db > level2Db ? level1Db - level2Db : level2Db - level1Db) <= kTwoSpikeWithinDb
+        && (dtMs < 0 ? -dtMs : dtMs) > kTwoSpikeMinSeparationMs;
 }
 struct DelayResult {
     std::vector<Arrival> arrivals; double confidence = 0; std::vector<double> impulse;
@@ -293,7 +300,7 @@ struct DelayResult {
     std::string error;              // empty on success; set for unusable input (too short, bad rate, silent, all-NaN)
     bool ok() const { return error.empty() && !arrivals.empty(); }
 };
-bool twoSpikeFlag(const std::vector<Arrival>& arrivals); // applies the rule to arrivals[0] vs arrivals[1]
+bool twoSpikeFlag(const std::vector<Arrival>& arrivals); // compares the primary with every secondary arrival
 // Paired samples require a shared sample clock, as for TransferFunction.
 // Cross-correlation of meas vs ref (meas = ref delayed). Returns top 3 peaks with
 // sub-sample (parabolic) interpolation. phat = GCC-PHAT weighting.
@@ -341,10 +348,11 @@ struct SweepResult {
 SweepResult deconvolveSweep(const std::vector<float>& reference,
                            const std::vector<float>& measurement, double sampleRate);
 
-// Direction of the strongest absolute impulse sample (first on ties).
+// Direction of the strongest absolute impulse sample after DC removal.
 // For an isolated box measured near-field against a loopback reference. This is
 // acoustic impulse direction, not proof of wiring polarity through filters/mic.
-// Empty, silent (peak <= 1e-12), or non-finite impulses are inconclusive.
+// Fewer than 3 samples, silence (peak <= 1e-12), non-finite samples, or
+// opposite directions within 3 dB are inconclusive.
 // No allocations, locks or I/O.
 enum class ImpulsePolarity { Unknown, Normal, Inverted };
 ImpulsePolarity polarityFromImpulse(const std::vector<double>& impulse);
@@ -363,7 +371,9 @@ public:
     void setFraction(int f);
     void process(const float* x, int n);
     void reset();
-    // dBFS per band (sine at full scale ~ 0 dB). Optional cal correction applied (dB per bin added).
+    // dBFS per band (sine approaching full scale ~ 0 dB).
+    // Empty for a clipped/nonfinite latest frame; silence/DC returns the noise floor.
+    // Optional cal correction applied (dB per bin added).
     // Corrections clamp to +/-240 dB; non-finite corrections are ignored.
     std::vector<double> bandsDb() const;
     const std::vector<Band>& bands() const { return bandList; }
@@ -372,7 +382,7 @@ public:
 private:
     void frame();
     FFT fft; int N; double fs; int fraction;
-    std::vector<double> win, power, calDb; std::vector<float> buf; int fill = 0; bool any = false;
+    std::vector<double> win, power, calDb; std::vector<float> buf; int fill = 0; bool any = false, invalidFrame = false;
     std::vector<Band> bandList; double winPowerSum = 0;
     std::vector<cpx> X; // preallocated FFT scratch
 };
@@ -383,7 +393,14 @@ struct TargetTrace {
     double toleranceDb = 0;
     bool useTolerance = false;
     std::string error;
-    bool ok() const { return hz.size() >= 2 && error.empty(); }
+    bool ok() const {
+        if (hz.size() < 2 || hz.size() != db.size() || !error.empty()
+            || !std::isfinite(toleranceDb) || toleranceDb < 0 || toleranceDb > 200) return false;
+        for (size_t i = 0; i < hz.size(); ++i)
+            if (!std::isfinite(hz[i]) || hz[i] <= 0 || hz[i] > 1000000
+                || (i && hz[i] <= hz[i - 1]) || !std::isfinite(db[i]) || std::abs(db[i]) > 200) return false;
+        return true;
+    }
 };
 // Smaart four-column TF export or header + two-column target. Phase and coherence
 // are validated but not used; unavailable Hz * * * bins are skipped. Frequencies are sorted; duplicate frequencies keep
@@ -467,6 +484,7 @@ struct AnalysisSnapshot {
     uint64_t delaySeq = 0;      // id of the FindDelay command that produced `delay` (0 = none)
     bool delayWasSub = false;
     SweepResult sweep; bool sweepCapturing = false;
+    uint64_t sweepSeq = 0; // id of the accepted MeasureSweep command
     double refDelaySamples = 0, refDelayMs = 0; // compensation currently applied to the reference
     bool calApplied = false;
     char calName[64] = {};      // NUL-terminated, truncated; empty when no cal
@@ -496,7 +514,7 @@ private:
 };
 
 // ---------- Commands in (UI -> analysis thread), lock-free SPSC, fixed-size POD ----------
-enum class CommandType : uint8_t { SetSmoothing, SetRtaFraction, FindDelay, SetBlankThreshold, SetAverages, ResetAverages, SetReferenceDelay, MeasureSweep, StoreMicPosition, ClearMicPositions };
+enum class CommandType : uint8_t { SetSmoothing, SetRtaFraction, FindDelay, SetBlankThreshold, SetAverages, ResetAverages, SetReferenceDelay, MeasureSweep, CancelSweep, StoreMicPosition, ClearMicPositions };
 struct Command {
     CommandType type = CommandType::ResetAverages;
     bool sub = false;        // FindDelay: true = subs (LF-weighted, 3 s), false = mains
@@ -583,7 +601,8 @@ struct SubDelayEstimate {
 };
 SubDelayEstimate subDelayFromPhase(const TFResult& mains, const TFResult& sub, double lo, double hi,
                                    double xoHz = 0, const DelayResult* rawPeakHint = nullptr);
-// Virtual (complex) sum of two traces.
+// Virtual (complex) sum of two traces. Returns an empty result for incomplete
+// parallel arrays or mismatched frequency grids.
 TFResult virtualSum(const TFResult& a, const TFResult& b);
 double wrapDeg(double d);
 } // namespace foh

@@ -34,7 +34,8 @@ public:
     void selectWorkspace(const std::string& id);
     bool keyPressed(const juce::KeyPress&) override;
     void floatPanel(const std::string& id);
-    void dockPanel(const std::string& id);
+    // Own the ID before erasing floating state that may contain the caller's string.
+    void dockPanel(std::string id);
 protected:
     bool keyPressed(const juce::KeyPress&, juce::Component*) override;
     void timerCallback() override; void changeListenerCallback(juce::ChangeBroadcaster*) override; void modelChanged(int what) override;
@@ -48,11 +49,20 @@ protected:
     } content { *this };
     void paintContent(juce::Graphics&);
     void layoutContent();
+    // The viewport scrolls a pixel-sized canvas, never the transformed child:
+    // JUCE's scrollbar visibility calculation uses untransformed component bounds.
+    juce::Component contentCanvas;
+    juce::Viewport contentViewport;
+    static constexpr int minimumContentWidth = 1000;
+    static constexpr int minimumContentHeight = 600;
     int uiScale = 100;
     juce::File sessionFolder;
     std::unique_ptr<juce::FileChooser> sessionChooser;
     std::unique_ptr<foh::console::ConsoleWindow> consoleWindow;
     std::optional<foh::Json> sessionTargets;
+    // Session notices must also close when their owning UI is destroyed.
+    juce::ScopedMessageBox sessionNotice;
+    void showSessionNotice(const juce::String& title, const juce::String& message);
     FohLookAndFeel lnf;
     AppModel model;
     WorkspaceManager mgr; int current = -1;

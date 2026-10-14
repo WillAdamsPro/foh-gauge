@@ -13,7 +13,7 @@ void AppModel::syncLoopback() {
 void AppModel::finishLoopback(const foh::TFResult* raw) {
     if (!loopbackMeasuring) return;
     if (measuringLoopbackKey == loopbackKey() && activeLoopbackEpoch == engine.captureEpoch.load())
-        send(foh::Command::referenceDelay(savedReferenceDelay));
+        analysis.send(foh::Command::referenceDelay(savedReferenceDelay), activeLoopbackEpoch);
     loopbackMeasuring = false; engine.gen = savedGenerator; engine.genGainDb = savedGeneratorGain; setPaused(savedPaused);
     auto c = raw ? foh::LoopbackCorrection::measure(*raw) : foh::LoopbackCorrection{};
     if (c.valid() && measuringLoopbackKey == loopbackKey()) {
@@ -58,7 +58,7 @@ void AppModel::timerCallback() {
           levelTimeMs = Time::getMillisecondCounterHiRes();
           micLevelValid = snap.micLevelValid && snap.inputEpoch == engine.captureEpoch.load()
               && snap.micChannel == engine.micCh.load() && engine.micCh.load() >= 0;
-          sweep = snap.sweep; sweepCapturing = snap.sweepCapturing;
+          sweep = snap.sweep; sweepCapturing = snap.sweepCapturing; sweepSeq = snap.sweepSeq;
           if (loopbackMeasuring && snap.resetSeq == loopbackResetId && snap.refDelaySamples == 0 && snap.convergence.settled) finishLoopback(&snap.rawTf);
           multiPosition = snap.multiPosition; positionCount = snap.positionCount; positionMask = snap.positionMask;
           tf = snap.tf; rtaDb = snap.rtaDb; rtaBands = snap.rtaBands; conv = snap.convergence;
@@ -95,4 +95,21 @@ void AppModel::timerCallback() {
 std::string AppModel::splInputKey() const {
     auto setup = dm.getAudioDeviceSetup();
     return (dm.getCurrentAudioDeviceType() + "\n" + setup.inputDeviceName + "\n" + juce::String(engine.micCh.load())).toStdString();
+}
+
+// SPL calibration access and restore are shared with synthetic meter tests.
+foh::SplCal AppModel::splCal() const {
+    auto it = splCals.find(splInputKey()); return it == splCals.end() ? foh::SplCal{} : it->second;
+}
+void AppModel::loadSplCalJson(const foh::Json& j) {
+    if (!j.isObject()) return;
+    decltype(splCals) candidate;
+    for (const auto& entry : j.members()) {
+        auto c = foh::SplCal::fromJson(entry.second);
+        if (!c.calibrated) { AlertWindow::showMessageBoxAsync(AlertWindow::WarningIcon, "SPL calibration load failed", "Invalid saved calibration"); return; }
+        candidate[entry.first] = c;
+    }
+    splCals = std::move(candidate);
+    ++analysis.leqRevision;
+    notify(Cal | Settings);
 }

@@ -3,13 +3,24 @@
 
 namespace foh {
 ImpulsePolarity polarityFromImpulse(const std::vector<double>& impulse) {
-    double peak = 0;
+    if (impulse.size() < 3) return ImpulsePolarity::Unknown;
+    // Online mean avoids overflow for finite, very large samples.
+    double mean = 0; size_t count = 0;
     for (double sample : impulse) {
         if (!std::isfinite(sample)) return ImpulsePolarity::Unknown;
-        if (std::abs(sample) > std::abs(peak)) peak = sample;
+        ++count; mean = mean * (double(count - 1) / count) + sample / count;
     }
-    if (std::abs(peak) <= 1e-12) return ImpulsePolarity::Unknown;
-    return peak < 0 ? ImpulsePolarity::Inverted : ImpulsePolarity::Normal;
+    double positive = 0, negative = 0;
+    for (double sample : impulse) {
+        const double centered = sample - mean;
+        if (!std::isfinite(centered)) return ImpulsePolarity::Unknown;
+        positive = std::max(positive, centered); negative = std::max(negative, -centered);
+    }
+    const double peak = std::max(positive, negative);
+    if (peak <= 1e-12) return ImpulsePolarity::Unknown;
+    if (std::min(positive, negative) / peak >= std::pow(10.0, -3.0 / 20.0))
+        return ImpulsePolarity::Unknown;
+    return negative > positive ? ImpulsePolarity::Inverted : ImpulsePolarity::Normal;
 }
 
 SweepResult deconvolveSweep(const std::vector<float>& ref, const std::vector<float>& mic, double fs) {
@@ -42,14 +53,23 @@ SweepResult deconvolveSweep(const std::vector<float>& ref, const std::vector<flo
     for (int k = 0; k < n; ++k) y[k] = y[k] * std::conj(x[k]) / (std::norm(x[k]) + power * 1e-8);
     x = y; fft.inverse(y);
     const size_t count = std::min(ref.size(), size_t(std::min(fs * 0.5 + 1, double(ref.size()))));
-    auto& response = result.response;
-    response.impulse.resize(count);
+    // The inverse FFT also contains negative lags at its end. Locate the
+    // dominant arrival before cropping, otherwise an invalid reference can
+    // turn a tiny positive-lag sidelobe into a plausible delay/polarity.
     size_t peak = 0;
-    for (size_t i = 0; i < count; ++i) {
-        response.impulse[i] = y[i].real();
+    for (size_t i = 0; i < y.size(); ++i) {
+        if (!std::isfinite(y[i].real()) || !std::isfinite(y[i].imag()))
+            return fail("Non-finite sweep response; measure again");
         if (std::abs(y[i].real()) > std::abs(y[peak].real())) peak = i;
     }
-    if (!(std::abs(y[peak].real()) > 1e-12)) { response.impulse.clear(); return fail("No measurement signal"); }
+    if (peak >= count)
+        return fail("Sweep arrival outside captured impulse window; check loopback alignment and sample rate");
+    if (!(std::abs(y[peak].real()) > 1e-12)) return fail("No measurement signal");
+    auto& response = result.response;
+    response.impulse.resize(count);
+    for (size_t i = 0; i < count; ++i) {
+        response.impulse[i] = y[i].real();
+    }
     double offset = 0;
     if (peak > 0 && peak + 1 < count) {
         double a = std::abs(y[peak-1].real()), b = std::abs(y[peak].real()), c = std::abs(y[peak+1].real());

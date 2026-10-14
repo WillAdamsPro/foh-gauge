@@ -1,6 +1,7 @@
 #include "AppModel.h"
 #include <fohcore/input.h>
 #include "FileValidation.h"
+#include "PreferencesRecovery.h"
 using namespace juce;
 
 AppModel::AppModel() {
@@ -27,9 +28,20 @@ AppModel::AppModel() {
     }
     settings.setStorageParameters(o);
     auto* prefs = settings.getUserSettings();
+    if (prefs && fohapp::recoverAudioPreferences(*prefs))
+        AlertWindow::showMessageBoxAsync(AlertWindow::WarningIcon, "Audio preferences load failed", "The saved audio setup is incomplete or invalid. Choose devices and channels in Setup.");
     auto deviceText = prefs ? prefs->getValue("audioDeviceState").toStdString() : std::string{};
     auto savedDevice = fohapp::boundedXml(deviceText) ? juce::parseXML(String(deviceText)) : nullptr;
-    dm.initialise(4, 4, savedDevice.get(), true);
+    auto deviceError = dm.initialise(4, 4, savedDevice.get(), savedDevice == nullptr);
+    if (savedDevice && (!deviceError.isEmpty() || !dm.getCurrentAudioDevice()
+        || dm.getCurrentAudioDeviceType() != savedDevice->getStringAttribute("deviceType"))) {
+        dm.closeAudioDevice();
+        if (prefs) {
+            prefs->setValue("setupComplete", false);
+            for (const auto* key : {"micChannel", "refChannel", "generatorChannel", "loopbackChannel"}) prefs->setValue(key, -1);
+        }
+        AlertWindow::showMessageBoxAsync(AlertWindow::WarningIcon, "Audio setup needed", "The saved device is unavailable. Choose devices and channels in Setup.");
+    }
     if (!savedDevice) { auto s = dm.getAudioDeviceSetup(); s.sampleRate = 48000; dm.setAudioDeviceSetup(s, true); }
     if (prefs) {
         auto channel = [&](const char* key, int fallback) {
@@ -49,13 +61,9 @@ AppModel::AppModel() {
         if (!error.empty() || !j.isObject()) AlertWindow::showMessageBoxAsync(AlertWindow::WarningIcon, "Preferences load failed", "Invalid SPL calibration preferences");
         else loadSplCalJson(j);
     }
-    if (prefs) loadSplCalJson(foh::Json::parse(prefs->getValue("splCalibration").toStdString()));
-    if (prefs) {
-        auto j = foh::Json::parse(prefs->getValue("interfaceLoopback").toStdString());
-        for (const auto& entry : j.members()) {
-            auto c = foh::LoopbackCorrection::fromJson(entry.second);
-            if (c.valid()) loopbackCals[entry.first] = std::move(c);
-        }
+    if (prefs && prefs->containsKey("interfaceLoopback")) {
+        if (!fohapp::loadLoopbackPreferences(prefs->getValue("interfaceLoopback").toStdString(), loopbackCals))
+            AlertWindow::showMessageBoxAsync(AlertWindow::WarningIcon, "Preferences load failed", "Invalid interface calibration preferences. Using no interface correction.");
     }
     dm.addAudioCallback(&engine);
     if (!dm.getCurrentAudioDevice()) engine.audioDeviceStopped();
@@ -71,7 +79,7 @@ void AppModel::requestDelay(bool sub, std::function<void()> then) {
 }
 void AppModel::lockDelayFromLast() {
     if (!delayLocked()) return;
-    send(foh::Command::referenceDelay(delay.arrivals[0].delaySamples)); lockedDelayMs = delay.arrivals[0].delayMs; notify(Delay);
+    analysis.send(foh::Command::referenceDelay(delay.arrivals[0].delaySamples), lastInputEpoch); lockedDelayMs = delay.arrivals[0].delayMs; notify(Delay);
 }
 bool AppModel::storeTrace(const String& name) {
     bool ok = traces.store(name.toStdString(), tf, refDelayMs);
@@ -103,9 +111,6 @@ void AppModel::setCalEnabled(bool on) {
     notify(Cal);
 }
 
-foh::SplCal AppModel::splCal() const {
-    auto it = splCals.find(splInputKey()); return it == splCals.end() ? foh::SplCal{} : it->second;
-}
 bool AppModel::calibrateSpl(double known) {
     if (!micLevelReady() || micPeak >= 0.99f || micLevelDbfs <= -100 || micLevelDbfs >= 0) return false;
     foh::SplCal c;
@@ -126,19 +131,6 @@ foh::Json AppModel::splCalJson() const {
     for (const auto& entry : splCals) j.set(entry.first, entry.second.toJson());
     return j;
 }
-void AppModel::loadSplCalJson(const foh::Json& j) {
-    if (!j.isObject()) return;
-    decltype(splCals) candidate;
-    for (const auto& entry : j.members()) {
-        auto c = foh::SplCal::fromJson(entry.second);
-        if (!c.calibrated) { AlertWindow::showMessageBoxAsync(AlertWindow::WarningIcon, "SPL calibration load failed", "Invalid saved calibration"); return; }
-        candidate[entry.first] = c;
-    }
-    splCals = std::move(candidate);
-    ++analysis.leqRevision;
-    notify(Cal | Settings);
-}
-
 bool AppModel::micLevelReady() const {
     return micLevelValid && !paused && dm.getCurrentAudioDevice() && levelInputKey == splInputKey()
         && levelInputEpoch == engine.captureEpoch.load() && Time::getMillisecondCounterHiRes() - levelTimeMs < 250;
@@ -162,7 +154,7 @@ bool AppModel::beginLoopback() {
     savedReferenceDelay = refDelaySamples;
     loopbackResetId = ++nextCaptureId;
     if (!analysis.send(foh::Command::resetAverages(loopbackResetId))) {
-        send(foh::Command::referenceDelay(savedReferenceDelay)); return false;
+        analysis.send(foh::Command::referenceDelay(savedReferenceDelay), activeLoopbackEpoch); return false;
     }
     savedGenerator = engine.gen.load(); savedGeneratorGain = engine.genGainDb.load(); savedPaused = paused;
     setPaused(false); engine.genGainDb = -20; engine.gen = AudioEngine::Pink;

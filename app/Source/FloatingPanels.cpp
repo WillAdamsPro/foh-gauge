@@ -59,6 +59,12 @@ void FloatingPanelWindow::restoreToDisplays(const std::vector<fohws::DisplayInfo
     const bool wasReady = ready;
     ready = false;
     auto r = fohws::clampToDisplays(st, connected, WS::floatMinWidth, WS::floatMinHeight);
+    // The constrainer must agree with recovery even when the work area is
+    // smaller than the normal minimum; otherwise the next resize jumps off-screen.
+    for (const auto& display : connected)
+        if (display.id == st.displayId && display.area.w > 0 && display.area.h > 0)
+            setResizeLimits(jmin(WS::floatMinWidth, display.area.w), jmin(WS::floatMinHeight, display.area.h),
+                            display.area.w, display.area.h);
     setBounds(r.x, r.y, r.w, r.h);
     ready = wasReady;
 }
