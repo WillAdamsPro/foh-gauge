@@ -2,10 +2,23 @@
 using foh::RingBuffer;
 using namespace juce;
 
+namespace {
+// C++17 equivalent of atomic::fetch_max (available in C++26). A CAS prevents
+// the UI's exchange(0) from racing with a separate load/max/store sequence.
+void fetch_max(std::atomic<float>& peak, float value) noexcept {
+    float previous = peak.load(std::memory_order_relaxed);
+    while (previous < value && !peak.compare_exchange_weak(previous, value,
+            std::memory_order_relaxed, std::memory_order_relaxed)) {}
+}
+}
+
 // ===================== Audio engine (real-time thread) =====================
 void AudioEngine::audioDeviceAboutToStart(AudioIODevice* d) {
     sampleRate = d->getCurrentSampleRate();
     sweep.prepare(sampleRate, 20.0, 20000.0, 5.0, 1.0);
+    micPeak.store(0, std::memory_order_relaxed);
+    refPeak.store(0, std::memory_order_relaxed);
+    captureEpoch.fetch_add(1, std::memory_order_release);
 }
 void AudioEngine::audioDeviceIOCallbackWithContext(const float* const* in, int nIn, float* const* out, int nOut, int n,
                                                    const AudioIODeviceCallbackContext&) {
@@ -17,15 +30,21 @@ void AudioEngine::audioDeviceIOCallbackWithContext(const float* const* in, int n
         if (oa >= 0 && oa < nOut && out[oa]) out[oa][i] = s;
         if (ob >= 0 && ob < nOut && ob != oa && out[ob]) out[ob][i] = s;
     }
+    if (analysisEpoch.load(std::memory_order_acquire) != captureEpoch.load(std::memory_order_acquire))
+        return; // generator output continues while the worker resets capture
     const int mc = micCh.load(), rc = refCh.load();
     for (int off = 0; off < n; off += 4096) {
         int m = std::min(4096, n - off);
-        const float* mp = (mc < nIn && in[mc]) ? in[mc] + off : nullptr;
-        const float* rp = (rc < nIn && in[rc]) ? in[rc] + off : nullptr;
+        const float* mp = (mc >= 0 && mc < nIn && in[mc]) ? in[mc] + off : nullptr;
+        const float* rp = (rc >= 0 && rc < nIn && in[rc]) ? in[rc] + off : nullptr;
         if (mp) micRing.push(mp, m); else { std::fill(scratch, scratch + m, 0.f); micRing.push(scratch, m); }
         if (rp) refRing.push(rp, m); else { std::fill(scratch, scratch + m, 0.f); refRing.push(scratch, m); }
-        if (mp) micPeak.store(std::max(micPeak.load(), FloatVectorOperations::findMaximum(mp, m) ));
-        if (rp) refPeak.store(std::max(refPeak.load(), FloatVectorOperations::findMaximum(rp, m) ));
+        auto peakOf = [m](const float* data) {
+            auto range = FloatVectorOperations::findMinAndMax(data, m);
+            return std::max(std::abs(range.getStart()), std::abs(range.getEnd()));
+        };
+        if (mp) fetch_max(micPeak, peakOf(mp));
+        if (rp) fetch_max(refPeak, peakOf(rp));
     }
 }
 

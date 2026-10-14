@@ -151,7 +151,7 @@ private:
     String delayText() const {
         auto& d = model.delay; if (!model.delayLocked()) return {}; auto& a0 = d.arrivals[0];
         return u8("\xe2\x89\x88 ") + String(a0.distanceM, 2) + u8(" m \xc2\xb7 confidence ") + (d.confidence > 0.7 ? "high" : d.confidence > 0.35 ? "medium" : "LOW") + u8(" \xc2\xb7 polarity ") + (a0.inverted ? "INVERTED" : "normal")
-             + (qa::twoSimilarArrivals(d) ? u8(" \xc2\xb7 \xe2\x96\xb2 two similar arrivals: is only one speaker on?") : "");
+             + (d.twoSimilarArrivals ? u8(" \xc2\xb7 \xe2\x96\xb2 two similar arrivals: is only one speaker on?") : "");
     }
     void action(int a) {
         String out; SafePointer<GuidePanel> safe(this);
@@ -161,7 +161,7 @@ private:
                     out = "Pink noise on at " + String(model.engine.genGainDb.load(), 1) + " dBFS. Watch the signal meters."; next(); break;
             case 3: say("Finding the delay...");
                     model.requestDelay(false, [safe] { if (!safe) return; auto& p = *safe; String o;
-                        if (p.model.delayLocked()) { p.model.lockDelayFromLast(); o = "Locked reference delay " + String(qa::consoleMs(p.model.lockedDelayMs), 2) + " ms. " + p.delayText(); p.next(); }
+                        if (p.model.delayLocked()) { p.model.lockDelayFromLast(); o = "Locked reference delay " + String(consoleMs(p.model.lockedDelayMs), 2) + " ms. " + p.delayText(); p.next(); }
                         else o = "No lock. Is pink noise playing and are both inputs showing level?";
                         p.say(o); p.refresh(); });
                     return;
@@ -169,39 +169,43 @@ private:
             case 5: if (model.storeTrace("Position 1")) out = "Stored 'Position 1'."; break;
             case 12: say("Finding the sub/mains delay (LF-weighted, 3 s window)...");
                      model.requestDelay(true, [safe] { if (!safe) return; auto& p = *safe;
-                         if (!p.model.delayLocked()) { p.say("No lock (confidence 0). Is pink noise playing, and only the mains on?"); return; }
-                         p.model.lockDelayFromLast(); p.model.send(foh::Command::resetAverages());
-                         p.say("Locked delay " + String(qa::consoleMs(p.model.lockedDelayMs), 2) + " ms. Averaging until the trace settles...");
+                         if (!p.model.delayLocked()) { p.say("No valid delay result. Is pink noise playing, and only the mains on?"); return; }
+                         p.model.lockDelayFromLast();
+                         p.say("Locked delay " + String(consoleMs(p.model.lockedDelayMs), 2) + " ms. Averaging until the trace settles...");
                          p.model.beginCapture("Main", [safe](bool settled) { if (!safe) return; auto& q = *safe;
-                             q.say("Stored 'Main' (ref delay " + String(qa::consoleMs(q.model.lockedDelayMs), 2) + " ms)." + String(settled ? "" : u8(" \xe2\x96\xb2 Unsettled: the average did not settle within 20 s."))); q.next(); q.refresh(); }); });
+                             q.say("Stored 'Main' (ref delay " + String(consoleMs(q.model.lockedDelayMs), 2) + " ms)." + String(settled ? "" : u8(" \xe2\x96\xb2 Unsettled: the average did not settle within 10 s."))); q.next(); q.refresh(); }); });
                      return;
-            case 7: model.send(foh::Command::resetAverages()); say("Averaging the sub until the trace settles...");
+            case 7: say("Averaging the sub until the trace settles...");
                     model.beginCapture("Sub", [safe](bool settled) { if (!safe) return; auto& q = *safe;
-                        q.say("Stored 'Sub' (same locked delay " + String(qa::consoleMs(q.model.lockedDelayMs), 2) + " ms)." + String(settled ? "" : u8(" \xe2\x96\xb2 Unsettled: the average did not settle within 20 s.")));
+                        q.say("Stored 'Sub' (same locked delay " + String(consoleMs(q.model.lockedDelayMs), 2) + " ms)." + String(settled ? "" : u8(" \xe2\x96\xb2 Unsettled: the average did not settle within 10 s.")));
                         auto* m = q.model.findTrace("Main"); auto* s = q.model.findTrace("Sub"); if (m && s) q.xover = foh::acousticCrossover(m->tf, s->tf, 10.0);
                         q.next(); q.refresh(); });
                     return;
             case 8: { auto* m = model.findTrace("Main"); auto* s = model.findTrace("Sub"); if (!m || !s) { out = "Capture mains and sub first."; break; }
                 xover = foh::acousticCrossover(m->tf, s->tf, 10.0); if (!xover.found) { out = "No overlap within 10 dB between 30-300 Hz. Check levels."; break; }
-                auto po = foh::phaseOffset(m->tf, s->tf, xover.lo, xover.hi);
-                double period = 1000.0 / po.centerHz, inv = foh::wrapDeg(po.meanDeg + 180.0), invMs = -inv / 360.0 / po.centerHz * 1000.0;
+                auto estimate = foh::subDelayFromPhase(m->tf, s->tf, xover.lo, xover.hi, 0,
+                    model.delayLocked() && model.delayWasSub ? &model.delay : nullptr);
+                if (!estimate.valid) { out = "No reliable phase estimate in the crossover band. Check signal and coherence."; break; }
+                double period = estimate.periodMs;
+                // A polarity flip shifts the primary candidate by half a period; prefer the smaller change.
+                double invMs = estimate.primaryMs > 0 ? estimate.primaryMs - period / 2 : estimate.primaryMs + period / 2;
                 // QA (Vega): the W2 delay comes from the crossover-band phase offset; +/-1 period are the alternatives.
                 // The raw impulse peak is only a hint (it is dominated by the mains HF energy).
-                String who = po.impliedMs > 0 ? "Mains" : "Sub"; double d = qa::consoleMs(std::abs(po.impliedMs));
-                auto alt = [&](double ms) { double v = qa::consoleMs(ms); return (v >= 0 ? String("Mains +") : String("Sub +")) + String(std::abs(v), 2) + " ms"; };
-                String alts = alt(po.impliedMs - period) + "  /  " + alt(po.impliedMs + period);
-                String hint; if (model.delayLocked() && model.delayWasSub) hint = "Impulse peak hint: sub arrives " + String(qa::consoleMs(model.delay.arrivals[0].delayMs - model.lockedDelayMs), 2) + " ms vs mains (hint only).";
+                String who = estimate.primaryMs > 0 ? "Mains" : "Sub"; double d = consoleMs(std::abs(estimate.primaryMs));
+                auto alt = [&](double ms) { double v = consoleMs(ms); return (v >= 0 ? String("Mains +") : String("Sub +")) + String(std::abs(v), 2) + " ms"; };
+                String alts = alt(estimate.alternativesMs[0]) + "  /  " + alt(estimate.alternativesMs[1]);
+                String hint; if (estimate.hasHint) hint = "Impulse peak hint: sub arrives " + String(consoleMs(estimate.hintMs - model.lockedDelayMs), 2) + " ms vs mains (hint only).";
                 readout.setText("Suggested: " + who + " +" + String(d, 2) + " ms\n" + u8("\xc2\xb1" "1 period: ") + alts, dontSendNotification);
-                { double halfMs = 500.0 / po.centerHz; bool flipLess = std::abs(invMs) < std::abs(po.impliedMs);
-                  polarity.setText(u8("Or flip sub polarity + ") + (invMs > 0 ? "mains " : "sub ") + String(qa::consoleMs(std::abs(invMs)), 2) + u8(" ms. A flip = 180\xc2\xb0 \xe2\x89\x88 ") + String(halfMs, 2) + " ms at " + String(po.centerHz, 0) + " Hz. "
+                { double halfMs = 500.0 / estimate.xoHz; bool flipLess = std::abs(invMs) < std::abs(estimate.primaryMs);
+                  polarity.setText(u8("Or flip sub polarity + ") + (invMs > 0 ? "mains " : "sub ") + String(consoleMs(std::abs(invMs)), 2) + u8(" ms. A flip = 180\xc2\xb0 \xe2\x89\x88 ") + String(halfMs, 2) + " ms at " + String(estimate.xoHz, 0) + " Hz. "
                       + (flipLess ? "Flipping needs less delay; check the slopes still match." : "Normal polarity needs less delay; prefer it if the slopes match.")
-                      + (model.delayLocked() && model.delayWasSub ? String(model.delay.arrivals[0].inverted ? " Delay finder: sub correlation INVERTED." : " Delay finder: polarity normal.") : String())
+                      + (estimate.hasHint ? String(estimate.hintInverted ? " Delay finder: sub correlation INVERTED." : " Delay finder: polarity normal.") : String())
                       + (hint.isNotEmpty() ? " " + hint : String()), dontSendNotification); }
-                out << "Crossover " << String(xover.lo, 0) << "-" << String(xover.hi, 0) << " Hz (centre ~" << String(po.centerHz, 0) << " Hz). Sub vs main phase " << String(po.meanDeg, 0) << u8("\xc2\xb0 = ") << String(d, 2) << " ms ("
-                    << (po.impliedMs > 0 ? "sub LATE" : "sub EARLY") << "). Other answers differ by whole cycles (" << String(period, 2) << u8(" ms). Target: within ~60\xc2\xb0 and parallel across the band.");
+                out << "Crossover " << String(xover.lo, 0) << "-" << String(xover.hi, 0) << " Hz (centre ~" << String(estimate.xoHz, 0) << " Hz). Sub vs main phase " << String(estimate.phaseDeg, 0) << u8("\xc2\xb0 = ") << String(d, 2) << " ms ("
+                    << (estimate.primaryMs > 0 ? "sub LATE" : "sub EARLY") << "). Other answers differ by whole cycles (" << String(period, 2) << u8(" ms). Target: within ~60\xc2\xb0 and parallel across the band.");
                 summaryRows = { {"Crossover", String(xover.lo, 0) + "-" + String(xover.hi, 0) + " Hz"}, {"Suggested", who + " +" + String(d, 2) + " ms"},
                                 {u8("\xc2\xb1" "1 period"), alts},
-                                {"Alternative", "Flip sub polarity, " + String(invMs > 0 ? "mains " : "sub ") + String(qa::consoleMs(std::abs(invMs)), 2) + " ms"}, {"Reference delay", String(qa::consoleMs(model.lockedDelayMs), 2) + " ms"} };
+                                {"Alternative", "Flip sub polarity, " + String(invMs > 0 ? "mains " : "sub ") + String(consoleMs(std::abs(invMs)), 2) + " ms"}, {"Reference delay", String(consoleMs(model.lockedDelayMs), 2) + " ms"} };
                 next(); break; }
             case 9: { if (model.storeTrace("Both")) { auto* m = model.findTrace("Main"); auto* s = model.findTrace("Sub"); auto* b = model.findTrace("Both");
                         if (m && s && b && xover.found) { auto vs = foh::virtualSum(m->tf, s->tf); double gain = 0, ref = 0; int n = 0;
@@ -210,12 +214,12 @@ private:
                         out = "Stored 'Both'."; next(); } break; }
             case 10: say("Finding the fill arrival...");
                 model.requestDelay(false, [safe] { if (!safe) return; auto& p = *safe;
-                    if (!p.model.delayLocked()) { p.say("No lock (confidence 0). Is only the fill on?"); return; }
+                    if (!p.model.delayLocked()) { p.say("No valid delay result. Is only the fill on?"); return; }
                     // findDelay works on the raw (uncompensated) reference, so arrivals are absolute
                     double fillMs = p.model.delay.arrivals[0].delayMs, diff = p.model.lockedDelayMs - fillMs; String o;
-                    o << "Fill arrives at " << String(qa::consoleMs(fillMs), 2) << " ms; mains at " << String(qa::consoleMs(p.model.lockedDelayMs), 2) << " ms. "
-                      << (diff > 0 ? "Fill arrives " + String(qa::consoleMs(diff), 2) + " ms BEFORE the mains here. Suggested: delay the fill by ~" + String(qa::consoleMs(diff), 2) + " ms (optionally a few ms more)."
-                                   : "Fill already arrives after the mains (" + String(qa::consoleMs(-diff), 2) + " ms). Check the seam position and which speaker is on.");
+                    o << "Fill arrives at " << String(consoleMs(fillMs), 2) << " ms; mains at " << String(consoleMs(p.model.lockedDelayMs), 2) << " ms. "
+                      << (diff > 0 ? "Fill arrives " + String(consoleMs(diff), 2) + " ms BEFORE the mains here. Suggested: delay the fill by ~" + String(consoleMs(diff), 2) + " ms (optionally a few ms more)."
+                                   : "Fill already arrives after the mains (" + String(consoleMs(-diff), 2) + " ms). Check the seam position and which speaker is on.");
                     p.next(); p.say(o); p.refresh(); });
                 return;
             case 11: if (model.storeTrace("Main+Fill")) out = "Stored 'Main+Fill'. Compare with 'Main' in the Traces panel."; break;

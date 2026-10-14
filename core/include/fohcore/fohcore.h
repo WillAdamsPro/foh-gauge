@@ -58,8 +58,8 @@ bool isPowerOfTwo(int n);
 class PinkNoise {   // Paul Kellet refined filter on white noise, ~-3 dB/oct
 public:
     explicit PinkNoise(uint32_t seed = 12345) : state(seed ? seed : 1) {}
-    FOH_RT float next() noexcept;
-    FOH_RT void process(float* out, int n) noexcept { for (int i = 0; i < n; ++i) out[i] = next(); }
+    float next() noexcept FOH_RT;
+    void process(float* out, int n) noexcept FOH_RT { for (int i = 0; i < n; ++i) out[i] = next(); }
     void setGainDb(float db) noexcept;
 private:
     float white() noexcept;
@@ -73,8 +73,8 @@ private:
 class LogSweep {    // exponential sine sweep (Farina), loops with silence gap
 public:
     void prepare(double sampleRate, double f1, double f2, double seconds, double gapSeconds = 0.5);
-    FOH_RT float next() noexcept;
-    FOH_RT void process(float* out, int n) noexcept { for (int i = 0; i < n; ++i) out[i] = next(); }
+    float next() noexcept FOH_RT;
+    void process(float* out, int n) noexcept FOH_RT { for (int i = 0; i < n; ++i) out[i] = next(); }
     void reset() noexcept { resetReq.store(true, std::memory_order_release); }
     void setGainDb(float db) noexcept;
     long lengthSamples() const { return sweepLen; }
@@ -89,7 +89,7 @@ private:
 class RingBuffer {
 public:
     explicit RingBuffer(int capacityPow2 = 1 << 18);
-    FOH_RT bool push(const float* data, int n) noexcept;   // audio thread; false = dropped
+    bool push(const float* data, int n) noexcept FOH_RT;   // audio thread; false = dropped
     int available() const noexcept;
     int capacity() const noexcept { return (int) buf.size(); }
     int pop(float* dest, int n) noexcept;             // analysis thread
@@ -378,6 +378,7 @@ struct AnalysisSnapshot {
     double refDelaySamples = 0, refDelayMs = 0; // compensation currently applied to the reference
     bool calApplied = false;
     char calName[64] = {};      // NUL-terminated, truncated; empty when no cal
+    uint64_t resetSeq = 0;      // id of the last ResetAverages command, acknowledges a fresh capture
     ConvergenceState convergence; // progress (0..1), settled, deltaDb, frames...
     double inputPeakDbRef = -120, inputPeakDbMeas = -120;
     void setCalName(const char* n) { size_t i = 0; if (n) for (; n[i] && i + 1 < sizeof(calName); ++i) calName[i] = n[i]; calName[i] = 0; }
@@ -403,13 +404,13 @@ struct Command {
     bool sub = false;        // FindDelay: true = subs (LF-weighted, 3 s), false = mains
     int32_t i = 0;           // SetSmoothing/SetRtaFraction: fraction; SetAverages: N (0 = infinite)
     double d = 0;            // SetBlankThreshold: 0..1; SetReferenceDelay: samples
-    uint64_t id = 0;         // caller tag, echoed in AnalysisSnapshot::delaySeq for FindDelay
+    uint64_t id = 0;         // caller tag, echoed in delaySeq (FindDelay) or resetSeq (ResetAverages)
     static Command smoothing(int frac) { Command c; c.type = CommandType::SetSmoothing; c.i = frac; return c; }
     static Command rtaFraction(int frac) { Command c; c.type = CommandType::SetRtaFraction; c.i = frac; return c; }
     static Command findDelay(bool sub, uint64_t id = 0) { Command c; c.type = CommandType::FindDelay; c.sub = sub; c.id = id; return c; }
     static Command blankThreshold(double t) { Command c; c.type = CommandType::SetBlankThreshold; c.d = t; return c; }
     static Command averages(int n) { Command c; c.type = CommandType::SetAverages; c.i = n; return c; }
-    static Command resetAverages() { Command c; c.type = CommandType::ResetAverages; return c; }
+    static Command resetAverages(uint64_t id = 0) { Command c; c.type = CommandType::ResetAverages; c.id = id; return c; }
     static Command referenceDelay(double samples) { Command c; c.type = CommandType::SetReferenceDelay; c.d = samples; return c; }
 };
 static_assert(std::is_trivially_copyable<Command>::value, "Command must be POD");
