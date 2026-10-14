@@ -257,33 +257,51 @@ public:
         helpText = "The delay finder lines up the reference with the mic (cross-correlation in fohcore).\n\nInsert delay applies it to the reference so the transfer function phase flattens.\n\nTwo similar spikes: arrivals within 3 dB and more than 0.5 ms apart. Check that only one speaker is on.\n\nConfidence 0 means no lock: check signal and that only one speaker is on.";
         value.setFont(FohLookAndFeel::numeric(34)); value.setText("--", dontSendNotification);
         styleLabel(detail, T::small, C::textSecondary()); detail.setJustificationType(Justification::topLeft); detail.setText("Press Find", dontSendNotification);
+        styleLabel(twoSpikeBadge, T::small, C::warning(), true);
+        twoSpikeBadge.setText(u8("\xe2\x96\xb2 Two similar spikes"), dontSendNotification);
+        twoSpikeBadge.setColour(Label::backgroundColourId, C::warning().withAlpha(0.12f));
+        twoSpikeBadge.setColour(Label::outlineColourId, C::warning());
+        twoSpikeBadge.setTooltip("Two arrivals within 3 dB and more than 0.5 ms apart: only one speaker on? Confidence is multiplied by 0.75 in the delay finder.");
+        addChildComponent(twoSpikeBadge);
         makePrimary(insert); find.onClick = [this] { model.requestDelay(sub.getToggleState()); }; insert.onClick = [this] { model.lockDelayFromLast(); };
         sub.setButtonText("Sub (LF)");
         for (auto* c : std::initializer_list<Component*>{&value, &detail, &find, &insert, &sub}) addAndMakeVisible(c);
+        if (model.delayPending || model.delayLocked()) modelChanged(AppModel::Delay);
     }
-    fohws::Size minSize() const override { return { 300, 90 }; }
+    fohws::Size minSize() const override { return { 300, 150 }; }
     int priority() const override { return 70; }
     void resized() override {
         auto r = getLocalBounds().reduced(pad, 6); auto right = r.removeFromRight(110);
         insert.setBounds(right.removeFromTop(28)); right.removeFromTop(6); find.setBounds(right.removeFromTop(28)); right.removeFromTop(4); sub.setBounds(right.removeFromTop(22));
+        if (twoSpikeBadge.isVisible()) { twoSpikeBadge.setBounds(r.removeFromTop(22)); r.removeFromTop(4); }
         value.setBounds(r.removeFromTop(44)); detail.setBounds(r);
     }
     void modelChanged(int w) override {
-        if (w & AppModel::Theme) { makePrimary(insert); detail.setColour(Label::textColourId, C::textSecondary()); }
+        if (w & AppModel::Theme) {
+            makePrimary(insert); detail.setColour(Label::textColourId, C::textSecondary());
+            twoSpikeBadge.setColour(Label::textColourId, C::warning());
+            twoSpikeBadge.setColour(Label::backgroundColourId, C::warning().withAlpha(0.12f));
+            twoSpikeBadge.setColour(Label::outlineColourId, C::warning());
+        }
         if (!(w & (AppModel::Delay | AppModel::Theme))) return;
         auto& d = model.delay;
+        twoSpikeBadge.setVisible(!model.delayPending && model.delayLocked() && d.twoSimilarArrivals);
+        resized();
         if (model.delayPending) { detail.setText(model.delayWasSub ? "Finding sub delay (3 s window)..." : "Finding delay...", dontSendNotification); return; }
         if (!model.delayLocked()) { value.setText("--", dontSendNotification); detail.setText(d.arrivals.empty() ? "No signal: is pink noise playing?" : "No valid delay result: check signal and that only one speaker is on", dontSendNotification); return; }
         auto& a0 = d.arrivals[0];
         value.setText(String(consoleMs(a0.delayMs), 2) + " ms", dontSendNotification);
-        String t = String(d.confidence > 0.7 ? "High" : d.confidence > 0.35 ? "Medium" : "LOW") + u8(" confidence \xc2\xb7 polarity ") + (a0.inverted ? "INVERTED" : "normal")
+        // The core has already applied the two-spike penalty; display it only once.
+        String t = String(d.confidence > 0.7 ? "High" : d.confidence > 0.35 ? "Medium" : "LOW") + " confidence " + String(roundToInt(d.confidence * 100.0)) + "%"
+                 + (d.twoSimilarArrivals ? u8(" (\xc3\x97" "0.75)") : "")
+                 + "\npolarity " + (a0.inverted ? "INVERTED" : "normal")
                  + u8("\n\xe2\x89\x88 ") + String(a0.distanceM, 2) + " m" + (model.delayWasSub ? " (sub, LF-weighted)" : "");
         for (size_t i = 1; i < d.arrivals.size(); ++i) t << u8("  \xc2\xb7  #") << (int) i + 1 << " " << String(consoleMs(d.arrivals[i].delayMs), 2) << " ms (" << String(d.arrivals[i].relLevelDb, 1) << " dB)";
-        if (d.twoSimilarArrivals) t << u8("\n\xe2\x96\xb2 Two similar spikes: is only one speaker on?");
         detail.setText(t, dontSendNotification);
     }
 private:
-    Label value, detail; TextButton find {"Find"}, insert {"Insert delay"}; ToggleButton sub;
+    Label value, detail, twoSpikeBadge; TextButton find {"Find"}, insert {"Insert delay"}; ToggleButton sub;
+    TooltipWindow tooltip { nullptr, 700 };
 };
 
 // ===================== Impulse =====================

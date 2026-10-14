@@ -1,4 +1,5 @@
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/catch_approx.hpp>
 #include "Widgets.h"
 #include "AnalysisEngine.h"
 #include "SettleStatus.h"
@@ -169,6 +170,29 @@ TEST_CASE("Delay snapshots carry the core two-spike warning", "[app][qa][delay]"
     REQUIRE(result.ok());
     REQUIRE(result.twoSimilarArrivals);
     REQUIRE(result.twoSimilarArrivals == foh::twoSpikeFlag(result.arrivals));
+    // Match the worker's zero-padded history window. The UI snapshot must
+    // retain the core confidence, including exactly one ambiguity penalty.
+    const int window = foh::recommendedDelayWindowSamples(48000, false);
+    std::vector<float> paddedRef((size_t) window), paddedMic((size_t) window);
+    std::copy(ref.begin(), ref.end(), paddedRef.end() - (long) ref.size());
+    std::copy(mic.begin(), mic.end(), paddedMic.end() - (long) mic.size());
+    const auto expected = foh::findDelay(paddedRef, paddedMic, 48000);
+    REQUIRE(result.confidence == Catch::Approx(expected.confidence));
+    REQUIRE(result.confidence > 0.0);
+    REQUIRE(result.confidence <= 0.75);
+
+    // Start a fresh history so the clean capture cannot reuse either spike.
+    engine.captureEpoch.fetch_add(1, std::memory_order_release);
+    REQUIRE(waitFor([&] { return engine.analysisEpoch.load() == engine.captureEpoch.load(); }));
+    mic[1240] = 0.0f;
+    capture(engine, mic.data(), ref.data(), (int) ref.size());
+    REQUIRE(waitFor([&] { return engine.micRing.available() == 0 && engine.refRing.available() == 0; }));
+    REQUIRE(analysis.send(foh::Command::findDelay(false, 2)));
+    REQUIRE(waitFor([&] { return analysis.latest().delaySeq == 2; }));
+    const auto single = analysis.latest().delay;
+    REQUIRE(single.ok());
+    REQUIRE_FALSE(single.twoSimilarArrivals);
+    REQUIRE(single.confidence == Catch::Approx(1.0));
     analysis.stop();
 }
 
