@@ -63,6 +63,9 @@ bool RingBuffer::push(const float* d, int n) noexcept {
     w.store(wi + (uint64_t) n, std::memory_order_release);
     return true;
 }
+int RingBuffer::freeSpace() const noexcept {
+    return capacity() - int(w.load(std::memory_order_relaxed) - r.load(std::memory_order_acquire));
+}
 int RingBuffer::available() const noexcept { return (int) (w.load(std::memory_order_acquire) - r.load(std::memory_order_relaxed)); }
 int RingBuffer::pop(float* d, int n) noexcept {
     if (n <= 0) return 0;

@@ -14,6 +14,7 @@ MainComponent::MainComponent() {
     content.addAndMakeVisible(toolbarTitle); toolbarTitle.setFont(FohLookAndFeel::font(T::small + 1, true));
     content.addAndMakeVisible(switcher); switcher.onChange = [this](int i) { selectWorkspace(i); };
     content.addAndMakeVisible(status);
+    content.addChildComponent(audioNotice); audioNotice.setFont(FohLookAndFeel::font(T::small));
     content.addAndMakeVisible(showModeBtn); showModeBtn.setButtonText("Show mode"); showModeBtn.setClickingTogglesState(true);
     showModeBtn.setTooltip("Minimal live RTA view; toggle off to restore the workspace layout");
     showModeBtn.onClick = [this] { setShowMode(showModeBtn.getToggleState()); };
@@ -260,8 +261,10 @@ void MainComponent::layoutContent() {
     appearance.setVisible(nw > 0); scaleBox.setVisible(nw > 0);
     if (nw) { auto s = Rectangle<int>(0, top, nw, content.getHeight() - top).reduced(10, 0);
         auto bot = s.removeFromBottom(80); appearance.setBounds(bot.removeFromTop(30).reduced(0, 2)); bot.removeFromTop(8); scaleBox.setBounds(bot.removeFromTop(28)); }
-    view.setBounds(content.getLocalBounds().withTrimmedTop(top).withTrimmedLeft(nw));
-    setup.setBounds(content.getLocalBounds().withTrimmedTop(top).withTrimmedLeft(nw));
+    const int noticeHeight = audioNotice.isVisible() ? 24 : 0;
+    audioNotice.setBounds(nw + 12, top, content.getWidth() - nw - 24, noticeHeight);
+    view.setBounds(content.getLocalBounds().withTrimmedTop(top + noticeHeight).withTrimmedLeft(nw));
+    setup.setBounds(content.getLocalBounds().withTrimmedTop(top + noticeHeight).withTrimmedLeft(nw));
 }
 
 void MainComponent::changeListenerCallback(ChangeBroadcaster*) {
@@ -275,12 +278,17 @@ void MainComponent::modelChanged(int) {}
 
 void MainComponent::timerCallback() {
     toolbarTitle.setColour(Label::textColourId, C::textPrimary());
+    const bool needsNotice = model.engine.deviceFailed.load() || model.engine.state.load() != AudioEngine::Ready
+        || model.engine.captureEpoch.load() != model.engine.analysisEpoch.load();
+    audioNotice.setText(model.engine.statusText(), dontSendNotification);
+    audioNotice.setColour(Label::textColourId, C::textPrimary());
+    if (audioNotice.isVisible() != needsNotice) { audioNotice.setVisible(needsNotice); layoutContent(); }
     float mp = model.micPeak, rp = model.refPeak; double fs = model.sampleRate;
     auto dbs = [](float p) { return p > 1e-6f ? String(20 * std::log10(p), 1) + " dBFS" : String("-inf"); };
     auto* dev = model.dm.getCurrentAudioDevice();
     using P = StatusPills; bool clip = mp > 0.99f || rp > 0.99f;
     auto lvl = [&](const char* n, float p) { return P::Pill{ String(n) + " " + dbs(p), p > 0.99f ? P::Poor : p > 0.01f ? P::Good : P::Caution }; };
-    std::vector<P::Pill> v { { model.paused ? "Paused" : "Measuring", model.paused ? P::Caution : P::Good },
+    std::vector<P::Pill> v { { model.paused ? "Paused" : model.engine.statusText(), model.paused || model.engine.deviceFailed.load() || model.engine.state.load() != AudioEngine::Ready || model.engine.captureEpoch.load() != model.engine.analysisEpoch.load() ? P::Caution : P::Good },
                              { dev ? dev->getName() + u8(" \xc2\xb7 ") + String((int) fs / 1000) + " kHz" : String("No device"), dev ? P::None : P::Poor },
                              P::Pill{ "Mic " + (model.splCal().calibrated ? (model.micLevelReady() ? String(model.micLevel(), 1) + " dB SPL" : String("-- dB SPL")) : dbs(mp)), mp > 0.99f ? P::Poor : P::None }, lvl("Ref", rp), { model.calApplied ? "Cal on" : "Cal off", model.calApplied ? P::Good : P::None }, { "Ref delay " + String(model.refDelayMs, 2) + " ms", P::None } };
     if (clip) v.push_back({ "CLIPPING", P::Poor });

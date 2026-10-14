@@ -281,3 +281,184 @@ TEST_CASE("Connection tests isolate output and report synthetic input routing", 
     engine.testConnection(-1, 1);
     CHECK(engine.connectionResult() == foh::ConnectionResult::invalid);
 }
+
+namespace {
+// No hardware or microphone access: exercise JUCE's quiesced lifecycle contract.
+class SyntheticDevice : public juce::AudioIODevice {
+public:
+    SyntheticDevice() : AudioIODevice("Synthetic", "Synthetic") {}
+    double rate = 48000; int block = 256;
+    juce::StringArray getOutputChannelNames() override { return {"1", "2"}; }
+    juce::StringArray getInputChannelNames() override { return {"1", "2"}; }
+    juce::Array<double> getAvailableSampleRates() override { return {rate}; }
+    juce::Array<int> getAvailableBufferSizes() override { return {block}; }
+    int getDefaultBufferSize() override { return block; }
+    juce::String open(const juce::BigInteger&, const juce::BigInteger&, double, int) override { return {}; }
+    void close() override {}
+    bool isOpen() override { return true; }
+    void start(juce::AudioIODeviceCallback*) override {}
+    void stop() override {}
+    bool isPlaying() override { return true; }
+    juce::String getLastError() override { return {}; }
+    int getCurrentBufferSizeSamples() override { return block; }
+    double getCurrentSampleRate() override { return rate; }
+    int getCurrentBitDepth() override { return 32; }
+    juce::BigInteger getActiveOutputChannels() const override { return juce::BigInteger(3); }
+    juce::BigInteger getActiveInputChannels() const override { return juce::BigInteger(3); }
+    int getOutputLatencyInSamples() override { return 0; }
+    int getInputLatencyInSamples() override { return 0; }
+};
+}
+
+TEST_CASE("Device stop and rate/buffer restarts cancel playback and clear analysis", "[app][audio]") {
+    AudioEngine engine; AnalysisEngine analysis(engine); SyntheticDevice device;
+    engine.audioDeviceAboutToStart(&device); analysis.start();
+    REQUIRE(waitFor([&] { return engine.analysisEpoch.load() == engine.captureEpoch.load(); }));
+    float signal[1024]; std::fill(std::begin(signal), std::end(signal), 0.2f);
+    const float* inputs[] {signal, signal};
+    float a[1024], b[1024]; float* outputs[] {a, b};
+    engine.gen = AudioEngine::Sweep; engine.testConnection(1, 1);
+    engine.audioDeviceIOCallbackWithContext(inputs, 2, outputs, 2, 256, {});
+    engine.audioDeviceStopped();
+    CHECK(engine.gen.load() == AudioEngine::Off);
+    CHECK(engine.connectionResult() == foh::ConnectionResult::invalid);
+    CHECK(std::string_view(engine.statusText()).find("stopped") != std::string_view::npos);
+    engine.audioDeviceIOCallbackWithContext(inputs, 2, outputs, 2, 256, {});
+    for (int i = 0; i < 256; ++i) { CHECK(a[i] == 0); CHECK(b[i] == 0); }
+    REQUIRE(waitFor([&] { const auto& s = analysis.latest(); return s.inputEpoch == engine.captureEpoch.load() && !s.micLevelValid; }));
+    for (double rate : {44100.0, 96000.0, 48000.0}) {
+        device.rate = rate; device.block = rate == 48000 ? 1024 : 64;
+        engine.audioDeviceAboutToStart(&device);
+        REQUIRE(waitFor([&] { return engine.analysisEpoch.load() == engine.captureEpoch.load(); }));
+        CHECK(engine.micRing.available() == 0); CHECK(engine.refRing.available() == 0);
+        for (int frames = 0; frames < 1024; frames += device.block) {
+            engine.audioDeviceIOCallbackWithContext(inputs, 2, outputs, 2, device.block, {});
+            for (int i = 0; i < device.block; ++i) { CHECK(a[i] == 0); CHECK(b[i] == 0); }
+        }
+        REQUIRE(waitFor([&] { return engine.micRing.available() == 0; }));
+        engine.audioDeviceStopped();
+    }
+    device.rate = 0;
+    engine.audioDeviceAboutToStart(&device);
+    CHECK(engine.state.load() == AudioEngine::Stopped);
+    analysis.stop();
+}
+
+TEST_CASE("Reference rerouting and unavailable channels invalidate capture", "[app][audio]") {
+    AudioEngine engine;
+    float signal[64] {}; const float* inputs[] {signal, signal};
+    capture(engine, signal, signal, 64);
+    engine.refCh = 0;
+    capture(engine, signal, signal, 64);
+    CHECK(engine.captureEpoch.load() == 1);
+    CHECK(engine.micRing.available() == 64); // no mixed-routing samples queued
+    engine.analysisEpoch = engine.captureEpoch.load();
+    engine.micCh = 3;
+    engine.audioDeviceIOCallbackWithContext(inputs, 2, nullptr, 0, 64, {});
+    CHECK(engine.state.load() == AudioEngine::InvalidInputs);
+    CHECK(engine.captureEpoch.load() == 2);
+    engine.analysisEpoch = 2;
+    engine.audioDeviceIOCallbackWithContext(nullptr, 0, nullptr, 0, 64, {});
+    CHECK(engine.micRing.available() == 64); // no fabricated silence measurement
+    engine.micCh = 0; engine.refCh = 1;
+    capture(engine, signal, signal, 64);
+    engine.analysisEpoch = engine.captureEpoch.load();
+    engine.gen = AudioEngine::Pink; engine.outA = 10;
+    capture(engine, signal, signal, 64);
+    CHECK(engine.state.load() == AudioEngine::InvalidOutputs);
+}
+
+TEST_CASE("Stereo overflow drops both channels and requests a history reset", "[app][audio]") {
+    AudioEngine engine;
+    std::vector<float> full(size_t(engine.refRing.capacity()), 0.25f);
+    REQUIRE(engine.refRing.push(full.data(), int(full.size())));
+    // Represents the consumer having freed mic space before freeing ref space.
+    float signal[64] {};
+    capture(engine, signal, signal, 64);
+    CHECK(engine.micRing.available() == 0);
+    CHECK(engine.refRing.available() == engine.refRing.capacity());
+    CHECK(engine.captureEpoch.load() == 1);
+    CHECK(engine.state.load() == AudioEngine::Overflow);
+    AnalysisEngine analysis(engine); analysis.start();
+    REQUIRE(waitFor([&] { return engine.analysisEpoch.load() == 1; }));
+    CHECK(engine.micRing.available() == 0); CHECK(engine.refRing.available() == 0);
+    capture(engine, signal, signal, 64);
+    CHECK(engine.state.load() == AudioEngine::Ready);
+    analysis.stop();
+}
+
+// Count C++ heap allocations only inside the audited callback, on this thread.
+#include <cstdlib>
+#include <new>
+namespace {
+thread_local bool auditAllocations = false;
+thread_local int callbackAllocations = 0;
+}
+void* operator new(std::size_t n) {
+    if (auditAllocations) ++callbackAllocations;
+    if (void* p = std::malloc(n ? n : 1)) return p;
+    throw std::bad_alloc();
+}
+void operator delete(void* p) noexcept { std::free(p); }
+void operator delete(void* p, std::size_t) noexcept { std::free(p); }
+
+TEST_CASE("Audio callback is allocation free across generators, tests and variable blocks", "[app][audio][rt]") {
+    AudioEngine engine; SyntheticDevice device;
+    engine.audioDeviceAboutToStart(&device); engine.analysisEpoch = engine.captureEpoch.load();
+    float input[8192] {}, output[8192];
+    const float* inputs[] {input, input}; float* outputs[] {output};
+    engine.outB = -1;
+    for (int mode : {AudioEngine::Off, AudioEngine::Pink, AudioEngine::Sweep}) {
+        engine.gen = mode; engine.genGainDb = -30.0f + float(mode);
+        for (int n : {1, 16, 256, 4096, 8192}) {
+            // First exercise the generator, then exercise chime/detection on the same block.
+            engine.cancelConnectionTest();
+            callbackAllocations = 0; auditAllocations = true;
+            engine.audioDeviceIOCallbackWithContext(inputs, 2, outputs, 1, n, {});
+            auditAllocations = false;
+            REQUIRE(callbackAllocations == 0);
+            for (int i = 0; i < n; ++i) REQUIRE(std::isfinite(output[i]));
+            engine.testConnection(0, 1);
+            callbackAllocations = 0; auditAllocations = true;
+            engine.audioDeviceIOCallbackWithContext(inputs, 2, outputs, 1, n, {});
+            auditAllocations = false;
+            REQUIRE(callbackAllocations == 0);
+            for (int i = 0; i < n; ++i) REQUIRE(std::isfinite(output[i]));
+        }
+    }
+    engine.refCh = 100;
+    callbackAllocations = 0; auditAllocations = true;
+    engine.audioDeviceIOCallbackWithContext(nullptr, 0, outputs, 1, 256, {});
+    engine.audioDeviceStopped();
+    auditAllocations = false;
+    CHECK(callbackAllocations == 0);
+}
+
+TEST_CASE("Peak exchange contention preserves the final callback peak", "[app][audio][rt]") {
+    AudioEngine engine;
+    const float samples[] {-0.9f, 0.1f};
+    std::atomic<bool> done{false};
+    std::thread ui([&] { while (!done.load()) { engine.micPeak.exchange(0); engine.refPeak.exchange(0); } });
+    for (int i = 0; i < 10000; ++i) capture(engine, samples, samples, 2);
+    done = true; ui.join();
+    capture(engine, samples, samples, 2);
+    CHECK(engine.micPeak.exchange(0) == 0.9f);
+    CHECK(engine.refPeak.exchange(0) == 0.9f);
+}
+
+TEST_CASE("Device errors from another thread silence playback until restart", "[app][audio]") {
+    AudioEngine engine; SyntheticDevice device;
+    engine.gen = AudioEngine::Pink; engine.playChime(0);
+    const auto epoch = engine.captureEpoch.load();
+    std::thread error([&] { engine.audioDeviceError("Synthetic error"); }); error.join();
+    CHECK(engine.captureEpoch.load() == epoch); // an arbitrary thread never races the ring producer
+    CHECK(std::string_view(engine.statusText()).find("error") != std::string_view::npos);
+    float output[256]; float* outputs[] {output};
+    engine.audioDeviceIOCallbackWithContext(nullptr, 0, outputs, 1, 256, {});
+    for (float s : output) CHECK(s == 0);
+    engine.audioDeviceAboutToStart(&device);
+    CHECK_FALSE(engine.deviceFailed.load());
+    CHECK(engine.gen.load() == AudioEngine::Off);
+    engine.audioDeviceIOCallbackWithContext(nullptr, 0, outputs, 1, 256, {});
+    for (float s : output) CHECK(s == 0); // no stale chime resumes
+}

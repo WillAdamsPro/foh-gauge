@@ -93,6 +93,7 @@ public:
     bool push(const float* data, int n) noexcept FOH_RT;   // audio thread; false = dropped
     int available() const noexcept;
     int capacity() const noexcept { return (int) buf.size(); }
+    int freeSpace() const noexcept; // producer only; consumer can only increase this space
     int pop(float* dest, int n) noexcept;             // analysis thread
     uint64_t dropped() const noexcept { return drops.load(std::memory_order_relaxed); }
 private:

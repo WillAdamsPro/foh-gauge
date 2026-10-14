@@ -14,7 +14,7 @@ public:
     explicit AnalysisEngine(AudioEngine& e) : juce::Thread("FOH analysis"), engine(e) {}
     ~AnalysisEngine() override { stop(); }
     void start() { startThread(juce::Thread::Priority::normal); }
-    void stop() { stopThread(2000); }
+    void stop() { stopThread(-1); }
 
     // UI thread only (single producer / single reader)
     bool send(const foh::Command& c) { return commands.push(c); }
