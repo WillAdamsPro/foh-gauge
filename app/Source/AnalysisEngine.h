@@ -5,6 +5,7 @@
 #include <juce_core/juce_core.h>
 #include <mutex>
 #include <memory>
+#include <array>
 #include "fohcore/fohcore.h"
 
 class AudioEngine;
@@ -21,6 +22,9 @@ public:
     const foh::AnalysisSnapshot& latest() { return publisher.latest(); }
     // Cal is not POD, so it is handed over by pointer swap (rare, non-RT). nullptr = cal off.
     void setCal(std::shared_ptr<const foh::MicCal> cal, const juce::String& name);
+    std::atomic<uint64_t> leqRevision { 0 };
+    // Message thread only. Snapshots acknowledge this revision after the worker consumes it.
+    uint64_t setLoopback(std::shared_ptr<const foh::LoopbackCorrection> c, uint64_t epoch);
     std::atomic<bool> paused { false };
 
 private:
@@ -35,12 +39,25 @@ private:
     std::mutex calLock; std::shared_ptr<const foh::MicCal> pendingCal; juce::String pendingCalName; bool calDirty = false;
     std::shared_ptr<const foh::MicCal> cal; std::string calName;
 
+    std::shared_ptr<const foh::LoopbackCorrection> pendingLoopback, loopback;
+    uint64_t loopbackEpoch = 0, pendingLoopbackEpoch = 0;
+    uint64_t loopbackRevision = 0, pendingLoopbackRevision = 0;
+    bool loopbackDirty = false;
     // analysis-thread state
+    std::unique_ptr<foh::LeqMeter> leq;
+    std::array<foh::MicPosition, 3> positions;
+    uint8_t positionMask = 0;
+    foh::TFResult positionAverage; int positionCount = 0;
     double levelEnergy = 0; int levelSamples = 0;
+    uint64_t meterRevision = 0;
     uint64_t inputEpoch = 0; int micChannel = -1;
     double fs = 0; int fftN = 16384;
     std::unique_ptr<foh::TransferFunction> tf; std::unique_ptr<foh::RTA> rta;
     int smoothing = 12, rtaFrac = 3, averages = 16; double blankThr = 0.6;
     std::vector<float> histRef, histMic; int histPos = 0; // last 3 s, including the sub delay window
+    foh::SweepResult sweepResult;
+    std::vector<float> sweepRef, sweepMic;
+    bool sweepCapturing = false; double sweepStartMs = 0;
+    void cancelSweep(const char* reason);
     foh::DelayResult delay; uint64_t delaySeq = 0, resetSeq = 0; bool delayWasSub = false;
 };

@@ -105,6 +105,7 @@ bool saveSession(const Path& folder, const Session& s, std::string& error) {
         Json c = Json::object(); c.set("mic", s.mic); c.set("reference", s.reference); c.set("outputA", s.outputA); c.set("outputB", s.outputB); j.set("channels", c);
         Json cal = Json::object(); cal.set("name", s.micCalName); cal.set("enabled", s.micCalEnabled); cal.set("present", !s.micCalText.empty()); j.set("micCal", cal);
         if (!s.micCalText.empty()) write(staging / "mic-cal.txt", s.micCalText);
+        if (s.rigProfile) j.set("rigProfile", s.rigProfile->toJson());
         if (s.splCal) j.set("splCal", *s.splCal);
         j.set("hasTargets", s.targets.has_value());
         if (s.targets) write(staging / "targets" / "targets.json", s.targets->dump());
@@ -122,7 +123,8 @@ bool saveSession(const Path& folder, const Session& s, std::string& error) {
         error = e.what(); return false;
     }
 }
-bool loadSession(const Path& folder, Session& out, std::string& error) {
+bool loadSession(const Path& folder, Session& out, std::string& error, std::string* notice) {
+    if (notice) notice->clear();
     try {
         checkFolder(folder); checkChild(folder / "captures"); checkChild(folder / "targets");
         auto j = readJson(folder / "session.json");
@@ -162,7 +164,18 @@ bool loadSession(const Path& folder, Session& out, std::string& error) {
             if (!std::isfinite(v) || (std::string(key) == "blankThreshold" ? v < 0 || v > 1 : std::abs(v) > 10000))
                 throw std::runtime_error("Invalid measurement setting: " + std::string(key));
         }
-        s.workspace = j["workspace"]; s.measurement = j["measurement"]; out = std::move(s); error.clear(); return true;
+        std::string rigNotice = "This session has no rig profile. Using the default W-step flow.";
+        if (j.has("rigProfile")) {
+            try {
+                s.rigProfile = RigProfile::fromJson(j["rigProfile"]);
+                rigNotice.clear();
+            } catch (const std::runtime_error&) {
+                rigNotice = "The saved rig profile is incomplete or invalid. Using the default W-step flow.";
+            }
+        }
+        s.workspace = j["workspace"]; s.measurement = j["measurement"]; out = std::move(s);
+        if (notice) *notice = std::move(rigNotice);
+        error.clear(); return true;
     } catch (const std::exception& e) { error = e.what(); return false; }
 }
 bool sessionDevicesAvailable(const Session& s, const std::string& type, const std::vector<std::string>& inputs, const std::vector<std::string>& outputs) {

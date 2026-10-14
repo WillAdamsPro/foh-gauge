@@ -196,7 +196,7 @@ void WorkspaceView::rebuild() {
 }
 // Extend only the display copy: Expert never changes a saved preset or guide state.
 LayoutNode WorkspaceView::presentationLayout() {
-    if (showMode) return LayoutNode::leaf("RTA");
+    if (showMode) return LayoutNode::leaf("ShowMonitoring");
     if (!maximised.empty() && ws->root.contains(maximised)) return LayoutNode::leaf(maximised);
     auto layout = ws->root;
     if (model.expertMode()) {

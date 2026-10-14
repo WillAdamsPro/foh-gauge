@@ -66,6 +66,7 @@ bool MainComponent::writeSession(const File& folder) {
     s.inputChannels = setup.inputChannels.toString(2).toStdString(); s.outputChannels = setup.outputChannels.toString(2).toStdString();
     s.mic = model.engine.micCh; s.reference = model.engine.refCh; s.outputA = model.engine.outA; s.outputB = model.engine.outB;
     s.micCalEnabled = model.calOn; s.micCalName = model.calFile.toStdString(); s.micCalText = model.calText;
+    s.rigProfile = model.rigProfile;
     s.splCal = model.splCalJson(); s.targets = sessionTargets;
     for (int i = 0; i < model.traces.count(); ++i) s.captures.push_back(model.traces.at(i));
     view.storePanelStates();
@@ -77,10 +78,12 @@ bool MainComponent::writeSession(const File& folder) {
     }
     sessionFolder = folder; return true;
 }
+// Supply callbacks so session notices stay asynchronous even when JUCE modal
+// loops are enabled (as in app tests).
 bool MainComponent::readSession(const File& folder) {
-    foh::Session s; std::string error; fohws::Workspace workspace;
-    if (!foh::loadSession(folder.getFullPathName().toStdString(), s, error) || !fohws::fromJson(s.workspace, workspace, error)) {
-        AlertWindow::showMessageBoxAsync(MessageBoxIconType::WarningIcon, "Session open failed", String(error)); return false;
+    foh::Session s; std::string error, notice; fohws::Workspace workspace;
+    if (!foh::loadSession(folder.getFullPathName().toStdString(), s, error, &notice) || !fohws::fromJson(s.workspace, workspace, error)) {
+        AlertWindow::showMessageBoxAsync(MessageBoxIconType::WarningIcon, "Session open failed", String(error), {}, nullptr, ModalCallbackFunction::create([](int) {})); return false;
     }
     // Device enumeration and all file operations run on the message thread.
     AudioIODeviceType* type = nullptr;
@@ -99,6 +102,8 @@ bool MainComponent::readSession(const File& folder) {
         setup.inputChannels.parseString(String(s.inputChannels), 2); setup.outputChannels.parseString(String(s.outputChannels), 2);
         auto deviceError = model.dm.setAudioDeviceSetup(setup, true); available = deviceError.isEmpty();
     }
+    model.rigProfile = s.rigProfile;
+    model.notify(AppModel::Rig);
     setShowMode(false); leaveWorkspace(); view.setWorkspace(nullptr);
     int index = mgr.indexOf(workspace.id);
     if (index < 0) index = mgr.saveAs(0, String(workspace.name));
@@ -114,7 +119,7 @@ bool MainComponent::readSession(const File& folder) {
     }
     model.engine.micCh = s.mic; model.engine.refCh = s.reference; model.engine.outA = s.outputA; model.engine.outB = s.outputB;
     model.calText = s.micCalText; model.cal = foh::parseMicCal(s.micCalText); model.calFile = String(s.micCalName); model.setCalEnabled(s.micCalEnabled);
-    model.traces.clear();
+    model.clearTraces();
     for (const auto& t : s.captures) { model.traces.store(t.name, t.tf, t.refDelayMs); model.traces.at(model.traces.count() - 1).visible = t.visible; }
     model.loadSplCalJson(s.splCal.value_or(foh::Json::object()));
     if (auto* prefs = model.settings.getUserSettings()) { prefs->setValue("splCalibration", String(model.splCalJson().dump())); prefs->saveIfNeeded(); } sessionTargets = s.targets;
@@ -124,7 +129,10 @@ bool MainComponent::readSession(const File& folder) {
     sessionFolder = folder;
     if (!available) {
         selectWorkspace("setup");
-        AlertWindow::showMessageBoxAsync(MessageBoxIconType::WarningIcon, "Session audio setup needed", "The saved audio device is missing or its settings are unavailable. Choose an input and output in Setup before measuring.");
-    } else if (s.measurement["showMode"].asBool()) setShowMode(true);
+        AlertWindow::showMessageBoxAsync(MessageBoxIconType::WarningIcon, "Session audio setup needed", "The saved audio device is missing or its settings are unavailable. Choose an input and output in Setup before measuring." + (notice.empty() ? String() : "\n\n" + String(notice)), {}, nullptr, ModalCallbackFunction::create([](int) {}));
+    } else {
+        if (s.measurement["showMode"].asBool()) setShowMode(true);
+        if (!notice.empty()) AlertWindow::showMessageBoxAsync(MessageBoxIconType::WarningIcon, "Session rig setup", String(notice), {}, nullptr, ModalCallbackFunction::create([](int) {}));
+    }
     return true;
 }

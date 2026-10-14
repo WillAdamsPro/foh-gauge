@@ -50,23 +50,38 @@ AppModel::AppModel() {
         else loadSplCalJson(j);
     }
     if (prefs) loadSplCalJson(foh::Json::parse(prefs->getValue("splCalibration").toStdString()));
+    if (prefs) {
+        auto j = foh::Json::parse(prefs->getValue("interfaceLoopback").toStdString());
+        for (const auto& entry : j.members()) {
+            auto c = foh::LoopbackCorrection::fromJson(entry.second);
+            if (c.valid()) loopbackCals[entry.first] = std::move(c);
+        }
+    }
     dm.addAudioCallback(&engine);
     if (!dm.getCurrentAudioDevice()) engine.audioDeviceStopped();
     analysis.start();
     send(foh::Command::averages(averages)); send(foh::Command::smoothing(smoothingFraction)); send(foh::Command::blankThreshold(blankThreshold)); send(foh::Command::rtaFraction(rtaFraction));
     startTimerHz(15);
 }
-AppModel::~AppModel() { stopTimer(); dm.removeAudioCallback(&engine); analysis.stop(); if (auto* pf = settings.getUserSettings()) pf->saveIfNeeded(); }
+AppModel::~AppModel() { stopTimer(); if (loopbackMeasuring) finishLoopback(); dm.removeAudioCallback(&engine); analysis.stop(); if (auto* pf = settings.getUserSettings()) pf->saveIfNeeded(); }
 
 void AppModel::timerCallback() {
-    int what = Levels; sampleRate = engine.sampleRate.load();
+    int what = Levels;
+    const int generatorMode = engine.gen.load();
+    if (generatorMode != lastGeneratorMode) { lastGeneratorMode = generatorMode; what |= Settings; }
+    sampleRate = engine.sampleRate.load();
     const auto epoch = engine.captureEpoch.load(std::memory_order_acquire);
     const bool deviceFailed = engine.deviceFailed.load(std::memory_order_acquire);
+    syncLoopback();
+    if (loopbackMeasuring && (deviceFailed || measuringLoopbackKey != loopbackKey()
+        || epoch != activeLoopbackEpoch || Time::getMillisecondCounterHiRes() - loopbackStart > 10000)) finishLoopback();
     if (epoch != lastInputEpoch || deviceFailed != lastDeviceFailed) {
         lastDeviceFailed = deviceFailed;
         lastInputEpoch = epoch;
         auto then = std::move(capture.then);
         cancelSessionOperations();
+        sweep = {}; sweepCapturing = false;
+        multiPosition = {}; positionCount = 0; positionMask = 0;
         tf = {}; rtaDb.clear(); rtaBands.clear(); conv = {}; micLevelValid = false;
         lockedDelayMs = 0; refDelaySamples = 0; refDelayMs = 0;
         what |= Snapshot | Delay | Capture | Settings;
@@ -74,11 +89,15 @@ void AppModel::timerCallback() {
     }
     { const auto& snap = analysis.latest(); // single reader thread (this timer); copy out what we keep
       if (!deviceFailed && snap.seq != lastSeq && snap.inputEpoch == epoch) { lastSeq = snap.seq; what |= Snapshot;
+          leq = snap.leq; leqRevision = snap.leqRevision;
           micLevelDbfs = snap.micLevelDbfs;
           levelInputKey = splInputKey(); levelInputEpoch = snap.inputEpoch;
           levelTimeMs = Time::getMillisecondCounterHiRes();
           micLevelValid = snap.micLevelValid && snap.inputEpoch == engine.captureEpoch.load()
               && snap.micChannel == engine.micCh.load() && engine.micCh.load() >= 0;
+          sweep = snap.sweep; sweepCapturing = snap.sweepCapturing;
+          if (loopbackMeasuring && snap.resetSeq == loopbackResetId && snap.refDelaySamples == 0 && snap.convergence.settled) finishLoopback(&snap.rawTf);
+          multiPosition = snap.multiPosition; positionCount = snap.positionCount; positionMask = snap.positionMask;
           tf = snap.tf; rtaDb = snap.rtaDb; rtaBands = snap.rtaBands; conv = snap.convergence;
           if (capture.active) {
               capture.resetAcknowledged = snap.resetSeq == capture.resetId;
@@ -128,13 +147,15 @@ void AppModel::loadCalFile(const File& f) {
         if (!parsed.ok()) throw std::runtime_error(parsed.error);
         auto published = std::make_shared<foh::MicCal>(parsed);
         calText = std::move(text); cal = std::move(parsed); calFile = f.getFileName(); calOn = true;
-        analysis.setCal(std::move(published), calFile); notify(Cal);
+        analysis.setCal(std::move(published), calFile); ++analysis.leqRevision;
+        notify(Cal);
     } catch (const std::exception& e) {
         AlertWindow::showMessageBoxAsync(AlertWindow::WarningIcon, "Mic calibration import failed", String(e.what()));
     }
 }
 void AppModel::setCalEnabled(bool on) {
-    calOn = on && cal.ok(); analysis.setCal(calOn ? std::make_shared<foh::MicCal>(cal) : nullptr, calFile); notify(Cal);
+    calOn = on && cal.ok(); analysis.setCal(calOn ? std::make_shared<foh::MicCal>(cal) : nullptr, calFile); ++analysis.leqRevision;
+    notify(Cal);
 }
 
 std::string AppModel::splInputKey() const {
@@ -150,11 +171,13 @@ bool AppModel::calibrateSpl(double known) {
     if (!c.calibrate(micLevelDbfs - (calOn ? cal.dbAt(1000) : 0), known, splSensitivity())) return false;
     splCals[splInputKey()] = c;
     if (auto* p = settings.getUserSettings()) { p->setValue("splCalibration", juce::String(splCalJson().dump())); p->saveIfNeeded(); }
+    ++analysis.leqRevision;
     notify(Cal | Settings); return true;
 }
 void AppModel::clearSpl() {
     splCals.erase(splInputKey());
     if (auto* p = settings.getUserSettings()) { p->setValue("splCalibration", juce::String(splCalJson().dump())); p->saveIfNeeded(); }
+    ++analysis.leqRevision;
     notify(Cal | Settings);
 }
 foh::Json AppModel::splCalJson() const {
@@ -171,10 +194,68 @@ void AppModel::loadSplCalJson(const foh::Json& j) {
         candidate[entry.first] = c;
     }
     splCals = std::move(candidate);
+    ++analysis.leqRevision;
     notify(Cal | Settings);
 }
 
 bool AppModel::micLevelReady() const {
     return micLevelValid && !paused && dm.getCurrentAudioDevice() && levelInputKey == splInputKey()
         && levelInputEpoch == engine.captureEpoch.load() && Time::getMillisecondCounterHiRes() - levelTimeMs < 250;
+}
+
+std::string AppModel::loopbackKey() const {
+    auto setup = dm.getAudioDeviceSetup();
+    auto j = foh::Json::array();
+    j.push(dm.getCurrentAudioDeviceType().toStdString());
+    j.push(setup.inputDeviceName.toStdString()); j.push(setup.outputDeviceName.toStdString());
+    j.push(engine.sampleRate.load()); j.push(engine.micCh.load()); j.push(engine.refCh.load());
+    j.push(engine.outA.load()); j.push(engine.outB.load());
+    return j.dump(0);
+}
+void AppModel::syncLoopback() {
+    auto key = loopbackKey(); auto epoch = engine.captureEpoch.load();
+    if (key == activeLoopbackKey && epoch == activeLoopbackEpoch) return;
+    if (loopbackMeasuring) finishLoopback();
+    activeLoopbackKey = key; activeLoopbackEpoch = epoch; loopbackStatus.clear();
+    auto it = loopbackCals.find(key);
+    analysis.setLoopback(it == loopbackCals.end() ? nullptr : std::make_shared<foh::LoopbackCorrection>(it->second), epoch);
+}
+bool AppModel::beginLoopback() {
+    if (loopbackMeasuring || capture.active || !dm.getCurrentAudioDevice()
+        || engine.micCh.load() < 0 || engine.refCh.load() < 0 || engine.micCh.load() == engine.refCh.load()
+        || engine.outA.load() < 0 || engine.outB.load() < 0) return false;
+    syncLoopback();
+    if (!analysis.send(foh::Command::referenceDelay(0))) return false;
+    savedReferenceDelay = refDelaySamples;
+    loopbackResetId = ++nextCaptureId;
+    if (!analysis.send(foh::Command::resetAverages(loopbackResetId))) {
+        send(foh::Command::referenceDelay(savedReferenceDelay)); return false;
+    }
+    savedGenerator = engine.gen.load(); savedGeneratorGain = engine.genGainDb.load(); savedPaused = paused;
+    setPaused(false); engine.genGainDb = -20; engine.gen = AudioEngine::Pink;
+    measuringLoopbackKey = loopbackKey(); loopbackStart = Time::getMillisecondCounterHiRes();
+    loopbackMeasuring = true; loopbackStatus = "Measuring interface...";
+    notify(Settings); return true;
+}
+void AppModel::finishLoopback(const foh::TFResult* raw) {
+    if (!loopbackMeasuring) return;
+    if (measuringLoopbackKey == loopbackKey() && activeLoopbackEpoch == engine.captureEpoch.load())
+        send(foh::Command::referenceDelay(savedReferenceDelay));
+    loopbackMeasuring = false; engine.gen = savedGenerator; engine.genGainDb = savedGeneratorGain; setPaused(savedPaused);
+    auto c = raw ? foh::LoopbackCorrection::measure(*raw) : foh::LoopbackCorrection{};
+    if (c.valid() && measuringLoopbackKey == loopbackKey()) {
+        loopbackCals[measuringLoopbackKey] = c;
+        analysis.setLoopback(std::make_shared<foh::LoopbackCorrection>(c), engine.captureEpoch.load());
+        auto j = foh::Json::object(); for (const auto& entry : loopbackCals) j.set(entry.first, entry.second.toJson());
+        if (auto* p = settings.getUserSettings()) { p->setValue("interfaceLoopback", juce::String(j.dump())); p->saveIfNeeded(); }
+        loopbackStatus = "Interface correction saved (response + latency).";
+    } else loopbackStatus = "Loopback failed: check cables, gain and broadband signal.";
+    notify(Settings);
+}
+void AppModel::clearLoopback() {
+    if (loopbackMeasuring) finishLoopback();
+    loopbackCals.erase(loopbackKey()); analysis.setLoopback(nullptr, engine.captureEpoch.load());
+    auto j = foh::Json::object(); for (const auto& entry : loopbackCals) j.set(entry.first, entry.second.toJson());
+    if (auto* p = settings.getUserSettings()) { p->setValue("interfaceLoopback", juce::String(j.dump())); p->saveIfNeeded(); }
+    loopbackStatus = "Interface correction cleared."; notify(Settings);
 }
