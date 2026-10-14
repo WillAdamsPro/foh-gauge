@@ -1619,3 +1619,44 @@ TEST_CASE("Guide sweep cancellation is scoped to its accepted request", "[app][a
     REQUIRE(waitFor([&] { return !analysis.latest().sweepCapturing; }));
     CHECK(engine.gen.load() == AudioEngine::Off); analysis.stop();
 }
+
+TEST_CASE("Changing SPL calibration during active integration discards old exposure", "[app][audio][splcal][edges]") {
+    juce::ScopedJuceInitialiser_GUI initialise;
+    AppModel model;
+    model.analysis.stop(); model.dm.removeAudioCallback(&model.engine);
+    model.engine.micCh = 0; model.engine.refCh = 1;
+    model.engine.state = AudioEngine::Ready; model.engine.deviceFailed = false;
+    AnalysisEngineTestAccess worker(model.analysis);
+    auto calibrate = [&](double measured, double known) {
+        foh::SplCal cal; REQUIRE(cal.calibrate(measured, known));
+        auto json = foh::Json::object(); json.set(model.splInputKey(), cal.toJson());
+        const auto revision = model.analysis.leqRevision.load();
+        model.loadSplCalJson(json);
+        REQUIRE(model.analysis.leqRevision.load() == revision + 1);
+        worker.step();
+        CHECK(model.analysis.latest().leqRevision == revision + 1);
+        CHECK(model.analysis.latest().leq.seconds == 0);
+        CHECK_FALSE(model.analysis.latest().leq.valid);
+    };
+    auto feed = [&](double amplitude) {
+        std::vector<float> block(960);
+        for (int i = 0; i < 960; ++i)
+            block[i] = float(amplitude * std::sin(2 * juce::MathConstants<double>::pi * 1000 * i / 48000));
+        for (int i = 0; i < 10; ++i) capture(model.engine, block.data(), block.data(), 960);
+        worker.step();
+        const auto r = model.analysis.latest().leq;
+        REQUIRE(r.valid); CHECK(r.seconds == Catch::Approx(0.2));
+        return r;
+    };
+    calibrate(-20, 94);
+    CHECK(model.splCal().level(feed(0.1).session[2]) == Catch::Approx(94).margin(0.01));
+    calibrate(-40, 114);
+    CHECK(model.splCal().level(feed(0.01).session[2]) == Catch::Approx(114).margin(0.01));
+    // Removing calibration also resets history; the next reading remains in dBFS.
+    const auto revision = model.analysis.leqRevision.load();
+    model.loadSplCalJson(foh::Json::object()); worker.step();
+    CHECK(model.analysis.latest().leqRevision == revision + 1);
+    CHECK(model.analysis.latest().leq.seconds == 0);
+    CHECK_FALSE(model.splCal().calibrated);
+    CHECK(model.splCal().level(feed(0.01).session[2]) == Catch::Approx(-40).margin(0.01));
+}

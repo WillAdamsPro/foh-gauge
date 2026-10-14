@@ -96,3 +96,20 @@ std::string AppModel::splInputKey() const {
     auto setup = dm.getAudioDeviceSetup();
     return (dm.getCurrentAudioDeviceType() + "\n" + setup.inputDeviceName + "\n" + juce::String(engine.micCh.load())).toStdString();
 }
+
+// SPL calibration access and restore are shared with synthetic meter tests.
+foh::SplCal AppModel::splCal() const {
+    auto it = splCals.find(splInputKey()); return it == splCals.end() ? foh::SplCal{} : it->second;
+}
+void AppModel::loadSplCalJson(const foh::Json& j) {
+    if (!j.isObject()) return;
+    decltype(splCals) candidate;
+    for (const auto& entry : j.members()) {
+        auto c = foh::SplCal::fromJson(entry.second);
+        if (!c.calibrated) { AlertWindow::showMessageBoxAsync(AlertWindow::WarningIcon, "SPL calibration load failed", "Invalid saved calibration"); return; }
+        candidate[entry.first] = c;
+    }
+    splCals = std::move(candidate);
+    ++analysis.leqRevision;
+    notify(Cal | Settings);
+}
