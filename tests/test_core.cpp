@@ -501,7 +501,7 @@ TEST_CASE("Delay finder robustness (Echo crash triage): edge inputs never throw 
     o=DelayOptions(); o.minSeparationMs=1e12; REQUIRE(findDelay(p,p,48000,o).ok()); o.minSeparationMs=-1; REQUIRE(findDelay(p,p,48000,o).ok());
     o=DelayOptions(); o.lpHz=1e-12; REQUIRE_NOTHROW(findDelay(p,p,48000,o));
     REQUIRE(impulseFromTF(TFResult{}).empty()); TFResult bad; bad.fftSize=1000; REQUIRE(impulseFromTF(bad).empty());
-    TFResult small; small.fftSize=16384; small.H.resize(10); REQUIRE(impulseFromTF(small).size()==16384);
+    TFResult small; small.fftSize=16384; small.H.resize(10); REQUIRE(impulseFromTF(small).empty());
 }
 TEST_CASE("D-INS fractional reference delay: inserting 230.4 samples leaves < 1 deg at 10 kHz") {
     auto src = pink(1<<18, 91); auto meas = fdel(src, 230.4); // mic 4.80 ms later than ref

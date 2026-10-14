@@ -22,6 +22,13 @@ MainComponent::MainComponent(juce::File workspaceFolder) : mgr(std::move(workspa
     content.addAndMakeVisible(switcher); switcher.onChange = [this](int i) { selectWorkspace(i); };
     content.addAndMakeVisible(status);
     content.addChildComponent(audioNotice); audioNotice.setFont(FohLookAndFeel::font(T::small));
+    content.addAndMakeVisible(expertBtn); expertBtn.setButtonText("Expert"); expertBtn.setClickingTogglesState(true);
+    expertBtn.setToggleState(model.expertMode(), dontSendNotification);
+    expertBtn.setTooltip("Reveal all charts and settings in every workspace; guides remain available");
+    expertBtn.onClick = [this] {
+        if (expertBtn.getToggleState() && showMode) setShowMode(false);
+        model.setExpertMode(expertBtn.getToggleState());
+    };
     content.addAndMakeVisible(showModeBtn); showModeBtn.setButtonText("Show mode"); showModeBtn.setClickingTogglesState(true);
     showModeBtn.setTooltip("Live TF/RTA monitoring against a stored reference; toggle off to restore the workspace layout");
     showModeBtn.onClick = [this] { setShowMode(showModeBtn.getToggleState()); };
@@ -114,6 +121,9 @@ void MainComponent::openFloatingWindows() {
         auto* p = view.panel(f.panel); if (!p) continue; view.releasePanel(f.panel, p);
         auto* win = floats.add(new FloatingPanelWindow(*p, f)); std::string id = f.panel;
         win->addKeyListener(presetCommands.keyMappings());
+        // A desktop window has no component ancestry back to the shell.
+        // Forward cycling/scale keys as well as the shared preset mappings.
+        win->addKeyListener(this);
         auto window = SafePointer<FloatingPanelWindow>(win);
         // Ignore queued actions if a workspace switch or reset has already destroyed the window.
         win->onDock = [self = SafePointer<MainComponent>(this), id, window] { MessageManager::callAsync([sp = self, id, window] { if (sp && window) sp->dockPanel(id); }); };
@@ -125,7 +135,13 @@ void MainComponent::openFloatingWindows() {
             sp->openFloatingWindows(); sp->updateSwitcher(); } }); };
         win->onChanged = [this] { updateSwitcher(); }; }
 }
-void MainComponent::closeFloatingWindows() { floats.clear(); }
+void MainComponent::closeFloatingWindows() {
+    for (auto* window : floats) {
+        window->removeKeyListener(this);
+        window->removeKeyListener(presetCommands.keyMappings());
+    }
+    floats.clear();
+}
 void MainComponent::saveWorkspaceAs(const String& name) {
     view.storePanelStates();
     closeFloatingWindows();
@@ -197,6 +213,16 @@ void MainComponent::showWorkspaceMenu() {
             default: break;
         }
     });
+}
+bool MainComponent::keyPressed(const KeyPress& k, Component*) {
+    const auto modifiers = k.getModifiers();
+    const int code = k.getKeyCode();
+    const bool cycle = code == KeyPress::tabKey
+        && modifiers.withoutFlags(ModifierKeys::shiftModifier).getRawFlags() == ModifierKeys::ctrlModifier;
+    const bool scale = modifiers.isCommandDown() && !modifiers.isAltDown() && !modifiers.isCtrlDown()
+        && (code == '0' || code == '=' || code == '+' || code == '-');
+    // Panel-local keys must keep their normal floating-window behavior.
+    return (cycle || scale) && keyPressed(k);
 }
 bool MainComponent::keyPressed(const KeyPress& k) {
     auto m = k.getModifiers(); int code = k.getKeyCode();
@@ -284,7 +310,8 @@ void MainComponent::layoutContent() {
     setupBtn.setBounds(bar.removeFromRight(106).withSizeKeepingCentre(106, 30)); bar.removeFromRight(8);
     pauseBtn.setBounds(bar.removeFromRight(84).withSizeKeepingCentre(84, 30)); bar.removeFromRight(12);
     showModeBtn.setBounds(bar.removeFromRight(96).withSizeKeepingCentre(96, 30)); bar.removeFromRight(8);
-    const bool wide = content.getWidth() >= 1100;
+    expertBtn.setBounds(bar.removeFromRight(70).withSizeKeepingCentre(70, 30)); bar.removeFromRight(8);
+    const bool wide = content.getWidth() >= 1200;
     toolbarTitle.setVisible(wide); status.setVisible(wide);
     toolbarTitle.setBounds(wide ? bar.removeFromLeft(110) : Rectangle<int>());
     int sw = jlimit(100, 380, bar.getWidth() - 128); switcher.setBounds(bar.removeFromLeft(sw).withSizeKeepingCentre(sw, foh::theme::ws::switcherHeight - 6)); bar.removeFromLeft(8);
@@ -306,7 +333,12 @@ void MainComponent::changeListenerCallback(ChangeBroadcaster*) {
     resized(); content.repaint(); view.repaint(); for (auto* f : floats) f->restyle();
     if (auto* w = getTopLevelComponent()) if (auto* dw = dynamic_cast<DocumentWindow*>(w)) dw->setBackgroundColour(C::background());
 }
-void MainComponent::modelChanged(int) {}
+void MainComponent::modelChanged(int what) {
+    if (what & AppModel::Expert) {
+        expertBtn.setToggleState(model.expertMode(), dontSendNotification);
+        view.refreshPresentation();
+    }
+}
 
 void MainComponent::timerCallback() {
     toolbarTitle.setColour(Label::textColourId, C::textPrimary());

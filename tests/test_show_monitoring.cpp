@@ -7,7 +7,9 @@
 #include <thread>
 #include <random>
 #include <iostream>
+#ifndef _WIN32
 #include <sys/resource.h>
+#endif
 
 namespace {
 foh::TFResult syntheticTF(double gain = 0) {
@@ -92,6 +94,9 @@ TEST_CASE("W7 panel owns a stable reference and releases silent mode", "[app][sh
 // Set FOH_W7_CPU=1 to run the optional real-time, visible synthetic acceptance check.
 // Process CPU includes callback feeding, analysis, snapshot copying and chart rendering.
 TEST_CASE("W7 visible synthetic programme CPU measurement", "[app][show][cpu]") {
+#ifdef _WIN32
+    SKIP("Optional process CPU measurement requires POSIX getrusage");
+#else
     if (juce::SystemStats::getEnvironmentVariable("FOH_W7_CPU", "") != "1") return;
     juce::ScopedJuceInitialiser_GUI initialise;
     AppModel model; model.engine.state = AudioEngine::Ready;
@@ -142,6 +147,7 @@ TEST_CASE("W7 visible synthetic programme CPU measurement", "[app][show][cpu]") 
     running = false; feeder.join(); model.analysis.stop(); panel->removeFromDesktop();
     REQUIRE(stored); REQUIRE(steadyStatus.startsWith("Monitoring:")); REQUIRE(driftStatus.startsWith("DRIFT ALERT:"));
     REQUIRE(missingStatus.startsWith("Waiting:")); REQUIRE(cpu < 10);
+#endif
 }
 
 TEST_CASE("Show mode exposes W7 even with an older saved workspace", "[app][show][workspace]") {
@@ -158,4 +164,27 @@ TEST_CASE("Show mode exposes W7 even with an older saved workspace", "[app][show
     view.setShowMode(false);
     REQUIRE(view.panel("RTA")->getParentComponent());
     REQUIRE_FALSE(monitoring->getParentComponent());
+}
+
+TEST_CASE("W7 rejects malformed clocks grids silent references and overflow", "[app][show][edges]") {
+    const auto ref = syntheticTF();
+    for (int variant = 0; variant < 10; ++variant) {
+        auto bad = ref;
+        switch (variant) {
+            case 0: bad.sampleRate = NAN; break;
+            case 1: bad.sampleRate = 0; break;
+            case 2: bad.fftSize = 1; break;
+            case 3: bad.freq[5] = NAN; break;
+            case 4: std::reverse(bad.freq.begin(), bad.freq.end()); break;
+            case 5: bad.magDb.assign(bad.freq.size(), -400); break;
+            case 6: bad.magDb.assign(bad.freq.size(), 1e300); break;
+            case 7: bad.coherence.assign(bad.freq.size(), 2); break;
+            case 8: bad.H.assign(bad.freq.size(), 0); break;
+            case 9: bad.magDb.clear(); break;
+        }
+        CHECK_FALSE(fohui::showDrift(bad, bad).valid);
+        CHECK_FALSE(fohui::showDrift(ref, bad).valid);
+    }
+    fohui::ShowDriftAlert alert;
+    for (int i = 0; i < 3; ++i) CHECK_FALSE(alert.update({true, INFINITY}));
 }

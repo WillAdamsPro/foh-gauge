@@ -11,8 +11,7 @@ on:
   workflow_dispatch:
 jobs:
   build:
-    # macOS minutes are 10x Linux: only master pushes, v* tags, manual runs.
-    if: github.event_name != 'pull_request'
+    # Repo is public, so Actions minutes are free: build and test macOS on PRs too.
     runs-on: macos-26   # arm64, Xcode 26.x default (macos-14 is EOL Nov 2 2026)
     steps:
       - uses: actions/checkout@v4
@@ -65,6 +64,8 @@ jobs:
       - run: cmake -S . -B build -DFOH_BUILD_APP=OFF -DCMAKE_BUILD_TYPE=Release && cmake --build build --parallel && ctest --test-dir build --output-on-failure
 
   windows-build:
+    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/master')
+    continue-on-error: true
     runs-on: windows-2022
     steps:
       - uses: actions/checkout@v4
