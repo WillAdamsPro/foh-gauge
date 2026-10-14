@@ -190,12 +190,22 @@ TFResult virtualSum(const TFResult& a, const TFResult& b) {
         return t.freq.size() == n && t.H.size() == n && t.magDb.size() == n
             && t.phaseDeg.size() == n && t.coherence.size() == n;
     };
-    if (n == 0 || !complete(a) || !complete(b) || a.freq != b.freq) return {};
+    if (n == 0 || !complete(a) || !complete(b) || a.freq != b.freq
+        || !std::isfinite(a.sampleRate) || a.sampleRate <= 0 || a.sampleRate != b.sampleRate) return {};
+    for (size_t k = 0; k < n; ++k) {
+        if (!std::isfinite(a.freq[k]) || a.freq[k] < 0 || (k > 0 && a.freq[k] <= a.freq[k - 1])) return {};
+        for (const auto* t : {&a, &b})
+            if (!std::isfinite(t->H[k].real()) || !std::isfinite(t->H[k].imag())
+                || !std::isfinite(t->coherence[k])) return {};
+    }
     TFResult r = a;
+    r.blanked.resize(n, 0);
     for (size_t k = 0; k < n; ++k) { r.H[k] = a.H[k] + b.H[k];
-        r.magDb[k] = 20.0 * std::log10(std::abs(r.H[k]) + 1e-12); r.phaseDeg[k] = std::arg(r.H[k]) * 180.0 / M_PI;
+        const double magnitude = std::abs(r.H[k]);
+        if (!std::isfinite(magnitude)) return {};
+        r.magDb[k] = 20.0 * std::log10(magnitude + 1e-12); r.phaseDeg[k] = std::arg(r.H[k]) * 180.0 / M_PI;
         r.coherence[k] = std::min(a.coherence[k], b.coherence[k]);
-        if (k < r.blanked.size()) r.blanked[k] = a.isBlanked(k) || b.isBlanked(k); }
+        r.blanked[k] = a.isBlanked(k) || b.isBlanked(k); }
     return r;
 }
 }

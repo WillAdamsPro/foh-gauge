@@ -600,7 +600,7 @@ public:
         sourceA.setSelectedId(model.sumA + 1, dontSendNotification); sourceB.setSelectedId(model.sumB + 1, dontSendNotification);
         auto sum = model.sumPreview(); preview.series.clear();
         preview.centreNote = sum.freq.empty() ? (model.validTrace(model.sumA) && model.validTrace(model.sumB)
-            ? "Sources need matching frequency grids and complete TF data" : "Choose two stored traces to preview their sum") : String{};
+            ? "Sources need matching sample rates and frequency grids, and valid TF data" : "Choose two stored traces to preview their sum") : String{};
         preview.note = {};
         if (!sum.freq.empty()) {
             PlotComponent::Series s; s.c = C::accent(); s.label = "Virtual sum";

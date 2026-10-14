@@ -164,3 +164,47 @@ TEST_CASE("Damaged saved targets clear plot overlays and tolerance bands", "[app
     CHECK(dismissErrors.notices == 6);
     CHECK(juce::ModalComponentManager::getInstance()->getNumModalComponents() == 0);
 }
+
+TEST_CASE("Open sum preview survives repeated edits, hiding and operand deletion", "[app][traces][ui][edges]") {
+    juce::ScopedJuceInitialiser_GUI initialise;
+    AppModel model;
+    auto panel = PanelRegistry::standard().create("TraceList", model);
+    auto plots = children<PlotComponent>(*panel); REQUIRE(plots.size() == 1);
+    auto combos = children<juce::ComboBox>(*panel); REQUIRE(combos.size() == 3);
+    auto tf = syntheticTrace();
+    for (int iteration = 0; iteration < 50; ++iteration) {
+        REQUIRE(model.traces.store("First", tf, 0));
+        REQUIRE(model.traces.store("Second", tf, 0));
+        REQUIRE(model.traces.store("Third", tf, 0));
+        model.selectSum(1, 2);
+        REQUIRE(plots[0]->series.size() == 1);
+        model.renameTrace(1, "Third"); model.renameTrace(1, "  ");
+        CHECK(model.traces.at(1).name == "Third");
+        model.colourTrace(1, juce::Colours::cyan);
+        model.toggleTrace(1); model.toggleTrace(2);
+        CHECK(plots[0]->note == "1000 Hz: +6.02 dB");
+        model.toggleTrace(1); model.toggleTrace(2);
+        model.removeTrace(0);
+        CHECK(model.sumA == 0); CHECK(model.sumB == 1);
+        CHECK(model.traceColour(0) == juce::Colours::cyan);
+        CHECK(combos[1]->getSelectedId() == 1); CHECK(combos[2]->getSelectedId() == 2);
+        CHECK(plots[0]->note == "1000 Hz: +6.02 dB");
+        model.traces.at(1).tf.sampleRate = 44100; model.notify(AppModel::Traces);
+        CHECK(plots[0]->series.empty()); CHECK(plots[0]->note.isEmpty());
+        model.traces.at(1).tf = tf;
+        model.traces.at(1).tf.H[2] = {std::numeric_limits<double>::quiet_NaN(), 0};
+        model.notify(AppModel::Traces);
+        CHECK(plots[0]->series.empty()); CHECK(plots[0]->note.isEmpty());
+        model.traces.at(1).tf = tf; model.notify(AppModel::Traces);
+        model.removeTrace(0);
+        CHECK(model.sumA == -1); CHECK(model.sumB == 0);
+        CHECK(plots[0]->series.empty()); CHECK(plots[0]->note.isEmpty());
+        // A new trace must not silently replace the deleted sum operand.
+        REQUIRE(model.traces.store("Third", tf, 0)); model.notify(AppModel::Traces);
+        CHECK(plots[0]->series.empty());
+        model.colourTrace(-1, juce::Colours::red); model.colourTrace(99, juce::Colours::red);
+        CHECK(model.traceColour(-1) == model.traceColour(99));
+        model.clearTraces(); CHECK(model.sumA == -1); CHECK(model.sumB == -1);
+        CHECK(plots[0]->series.empty());
+    }
+}

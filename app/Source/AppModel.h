@@ -82,7 +82,7 @@ public:
     const foh::Trace* findTrace(const char* n) const;
     // Message-thread only, including the allocating virtual-sum calculation.
     bool validTrace(int i) const { return i >= 0 && i < traces.count(); }
-    juce::Colour traceColour(int i) const { return traceColours[(size_t) i].value_or(foh::ui::col::storedTrace(i % 8)); }
+    juce::Colour traceColour(int i) const { return validTrace(i) ? traceColours[(size_t) i].value_or(foh::ui::col::storedTrace(i % 8)) : foh::ui::col::storedTrace(0); }
     void renameTrace(int i, const juce::String& name) {
         if (!validTrace(i) || name.trim().isEmpty()) return;
         traces.at(i).name = name.trim().toStdString(); notify(Traces);
@@ -105,11 +105,7 @@ public:
     foh::TFResult sumPreview() const {
         if (!validTrace(sumA) || !validTrace(sumB)) return {};
         const auto& a = traces.at(sumA).tf; const auto& b = traces.at(sumB).tf;
-        auto complete = [](const foh::TFResult& t) {
-            auto n = t.freq.size(); return n > 0 && t.H.size() == n && t.magDb.size() == n
-                && t.phaseDeg.size() == n && t.coherence.size() == n;
-        };
-        if (!complete(a) || !complete(b) || a.freq != b.freq) return {};
+        // Visibility controls overlays only; hidden traces remain sum operands.
         return foh::virtualSum(a, b);
     }
 

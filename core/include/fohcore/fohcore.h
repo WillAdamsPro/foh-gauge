@@ -596,7 +596,9 @@ struct SubDelayEstimate {
 SubDelayEstimate subDelayFromPhase(const TFResult& mains, const TFResult& sub, double lo, double hi,
                                    double xoHz = 0, const DelayResult* rawPeakHint = nullptr);
 // Virtual (complex) sum of two traces. Returns an empty result for incomplete
-// parallel arrays or mismatched frequency grids.
+// parallel arrays, mismatched/invalid sample rates or frequency grids, or
+// non-finite complex/coherence data (including sum overflow). Zero sums have
+// finite magnitude/phase readouts; blanking from either operand is preserved.
 TFResult virtualSum(const TFResult& a, const TFResult& b);
 double wrapDeg(double d);
 } // namespace foh
