@@ -49,8 +49,8 @@ public:
     void removeTrace(int i) { traces.remove(i); notify(Traces); }
     void toggleTrace(int i) { traces.at(i).visible = !traces.at(i).visible; notify(Traces); }
 
-    // ---- capture: wait for convergence.settled (10 s timeout) then store
-    struct { bool active = false; juce::String name; double startMs = 0; std::function<void(bool)> then; } capture;
+    // ---- capture: fresh core settle result, or warn and proceed after 10 s
+    struct { bool active = false, unsettled = false; juce::String name; double startMs = 0; uint64_t resetId = 0; bool resetAcknowledged = false; std::function<void(bool)> then; } capture;
     void beginCapture(const juce::String& name, std::function<void(bool)> then);
 
     // ---- mic cal
@@ -71,6 +71,6 @@ public:
 private:
     void timerCallback() override;
     juce::ListenerList<Listener> listeners;
-    uint64_t lastSeq = 0, lastDelaySeq = 0, nextDelayId = 0;
+    uint64_t lastSeq = 0, lastDelaySeq = 0, nextDelayId = 0, nextCaptureId = 0;
     struct { uint64_t id = 0; std::function<void()> then; } pendingDelay;
 };

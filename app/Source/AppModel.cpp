@@ -17,13 +17,24 @@ void AppModel::timerCallback() {
     { const auto& snap = analysis.latest(); // single reader thread (this timer); copy out what we keep
       if (snap.seq != lastSeq) { lastSeq = snap.seq; what |= Snapshot;
           tf = snap.tf; rtaDb = snap.rtaDb; rtaBands = snap.rtaBands; conv = snap.convergence;
+          if (capture.active) {
+              capture.resetAcknowledged = snap.resetSeq == capture.resetId;
+              if (!capture.resetAcknowledged) conv = {}; // ignore the previous capture's settle state
+          }
           refDelaySamples = snap.refDelaySamples; refDelayMs = snap.refDelayMs; calApplied = snap.calApplied; calName = String(CharPointer_UTF8(snap.calName));
           if (snap.delaySeq != lastDelaySeq) { lastDelaySeq = snap.delaySeq; delay = snap.delay; delayWasSub = snap.delayWasSub; delayPending = false; what |= Delay;
               if (lastDelaySeq == pendingDelay.id && pendingDelay.then) { auto t = std::move(pendingDelay.then); pendingDelay.then = {}; MessageManager::callAsync(t); } } } }
     micPeak = engine.micPeak.exchange(0); refPeak = engine.refPeak.exchange(0);
     if (capture.active) { what |= Capture;
-        double el = Time::getMillisecondCounterHiRes() - capture.startMs; bool timeout = conv.timedOut || el > 10000;
-        if ((conv.settled && el > 300) || timeout) { capture.active = false; auto then = std::move(capture.then); bool ok = storeTrace(capture.name); if (then) then(ok && !timeout); } }
+        double el = Time::getMillisecondCounterHiRes() - capture.startMs; bool timeout = el >= 10000;
+        if ((capture.resetAcknowledged && conv.finished) || timeout) {
+            const bool settled = capture.resetAcknowledged && conv.settled;
+            capture.active = false; capture.unsettled = !settled;
+            auto then = std::move(capture.then);
+            const bool ok = storeTrace(capture.name);
+            if (then) then(ok && settled);
+        }
+    }
     if (overlayBuilder && (what & (Snapshot | Delay | Traces))) { overlayBuilder(); what |= Overlay; }
     notify(what);
 }
@@ -42,7 +53,10 @@ bool AppModel::storeTrace(const String& name) {
 }
 const foh::Trace* AppModel::findTrace(const char* n) const { for (int i = traces.count() - 1; i >= 0; --i) if (traces.at(i).name == n) return &traces.at(i); return nullptr; }
 void AppModel::beginCapture(const String& name, std::function<void(bool)> then) {
-    capture.active = true; capture.name = name; capture.startMs = Time::getMillisecondCounterHiRes(); capture.then = std::move(then); conv = {}; notify(Capture);
+    auto reset = foh::Command::resetAverages(++nextCaptureId);
+    if (!analysis.send(reset)) { if (then) then(false); return; }
+    capture.resetId = reset.id; capture.resetAcknowledged = false;
+    capture.active = true; capture.unsettled = false; capture.name = name; capture.startMs = Time::getMillisecondCounterHiRes(); capture.then = std::move(then); conv = {}; notify(Capture);
 }
 void AppModel::loadCalFile(const File& f) {
     cal = foh::loadMicCal(f.getFullPathName().toStdString()); calFile = f.getFileName(); calOn = cal.ok();
