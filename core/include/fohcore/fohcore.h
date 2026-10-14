@@ -317,6 +317,8 @@ inline int recommendedDelayWindowSamples(double sampleRate, bool sub, double sec
 }
 // Offline/analysis-worker sweep deconvolution. Equal-length captures include the
 // whole sweep and its decay; reference is the recorded loopback, not the generator.
+// Both captures must share a sample clock. DC is removed; silent/nonfinite/clipped
+// captures return an error. Raw vectors cannot describe separate sample rates.
 // Regularized Y*conj(X)/|X|^2, zero-padded to avoid circular wrap. Positive lags
 // up to 500 ms are returned; ETC is the analytic-envelope energy, peak = 0 dB.
 struct SweepResult {
@@ -326,7 +328,8 @@ struct SweepResult {
 SweepResult deconvolveSweep(const std::vector<float>& reference,
                            const std::vector<float>& measurement, double sampleRate);
 
-// Impulse response from an averaged TF (IFFT of H). Empty if fftSize is not a power of two.
+// Impulse response from a complete, finite TF (IFFT of H). Blanked bins are zeroed.
+// Empty for invalid metadata/spectrum or no usable non-DC signal.
 std::vector<double> impulseFromTF(const TFResult& tf);
 
 // ---------- RTA (FFT-banded) ----------

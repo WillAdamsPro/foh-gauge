@@ -14,7 +14,7 @@ void AnalysisEngine::cancelSweep(const char* reason) {
 void AnalysisEngine::rebuild(double newFs) {
     leq = std::make_unique<foh::LeqMeter>(newFs);
     positions = {}; positionMask = 0; positionAverage = {}; positionCount = 0;
-    fs = newFs; levelEnergy = 0; levelSamples = 0;
+    fs = newFs; levelEnergy = levelSum = 0; levelSamples = 0; levelInvalid = false; lastLevelUsable = lastTransferUsable = false;
     tf = std::make_unique<foh::TransferFunction>(fftN, fs); rta = std::make_unique<foh::RTA>(fftN, fs, rtaFrac);
     tf->setConvergenceTimeout(10.0);
     tf->setAverages(averages); tf->setCoherenceBlankThreshold(blankThr);
@@ -44,7 +44,7 @@ void AnalysisEngine::handle(const foh::Command& c) {
         }
         case T::StoreMicPosition: {
             if (c.i < 0 || c.i >= 3 || !std::isfinite(c.d) || paused.load()
-                || engine.deviceFailed.load() || tf->convergence().frames == 0) break;
+                || engine.deviceFailed.load() || !lastLevelUsable || !lastTransferUsable || tf->convergence().frames == 0) break;
             auto result = tf->result();
             if (cal) cal->apply(result);
             positions[(size_t)c.i] = {std::move(result), c.d - tf->referenceDelaySamples() / fs * 1000.0};
@@ -61,7 +61,7 @@ void AnalysisEngine::handle(const foh::Command& c) {
         case T::SetRtaFraction: rtaFrac = c.i; rta->setFraction(c.i); break;
         case T::SetBlankThreshold: blankThr = c.d; tf->setCoherenceBlankThreshold(c.d); break;
         case T::SetAverages: averages = c.i; tf->setAverages(c.i); break;
-        case T::ResetAverages: tf->reset(); rta->reset(); resetSeq = c.id; break;
+        case T::ResetAverages: lastTransferUsable = false; tf->reset(); rta->reset(); resetSeq = c.id; break;
         case T::SetReferenceDelay: tf->setReferenceDelaySamples(c.d); tf->reset(); break;
         case T::FindDelay: { // CommandQueue consumer: allocations / FFT stay on this worker.
             int L = std::min((int) histRef.size(), foh::recommendedDelayWindowSamples(fs, c.sub));
@@ -85,17 +85,20 @@ void AnalysisEngine::publish() {
     s.calApplied = cal != nullptr; s.setCalName(cal ? calName.c_str() : "");
     s.leq = leq->reading(); s.leqRevision = meterRevision;
     s.micLevelDbfs = levelSamples > 0 ? 10 * std::log10(2 * levelEnergy / levelSamples + 1e-20) : -120;
-    s.micLevelValid = levelSamples > 0 && !paused.load() && !engine.deviceFailed.load()
+    const double meanSquare = levelSamples > 0 ? std::pow(levelSum / levelSamples, 2) : 0;
+    const double variance = levelSamples > 0 ? levelEnergy / levelSamples - meanSquare : 0;
+    if (levelSamples > 0) lastLevelUsable = !levelInvalid && variance > 1e-20 && meanSquare < variance;
+    s.micLevelValid = lastLevelUsable && levelSamples > 0 && !paused.load() && !engine.deviceFailed.load()
         && engine.state.load() != AudioEngine::Stopped && engine.state.load() != AudioEngine::InvalidInputs;
     s.inputEpoch = inputEpoch; s.micChannel = micChannel;
-    levelEnergy = 0; levelSamples = 0;
+    levelEnergy = levelSum = 0; levelSamples = 0; levelInvalid = false;
     s.resetSeq = resetSeq; s.convergence = tf->convergence();
     publisher.publish();
 }
 
 void AnalysisEngine::run() {
     foh::ScopedFlushDenormals ftz;
-    std::vector<float> m((size_t) fftN), r((size_t) fftN);
+    std::vector<float> m((size_t) fftN), r((size_t) fftN), silence((size_t) fftN, 0.f);
     auto lastPub = juce::Time::getMillisecondCounterHiRes();
     uint64_t epoch = 0;
     while (!threadShouldExit()) {
@@ -139,10 +142,29 @@ void AnalysisEngine::run() {
                     sweepRef.clear(); sweepMic.clear();
                 }
             }
-            for (int i = 0; i < n; ++i) levelEnergy += double(m[i]) * m[i];
+            bool transferInvalid = false;
+            double referenceEnergy = 0, measurementEnergy = 0;
+            for (int i = 0; i < n; ++i) {
+                if (!std::isfinite(r[i]) || std::abs(r[i]) >= 1
+                    || !std::isfinite(m[i]) || std::abs(m[i]) >= 1) transferInvalid = true;
+                if (std::isfinite(r[i])) referenceEnergy += double(r[i]) * r[i];
+                if (std::isfinite(m[i])) measurementEnergy += double(m[i]) * m[i];
+                if (!std::isfinite(m[i]) || std::abs(m[i]) >= 1) levelInvalid = true;
+                else if (std::abs(m[i]) >= std::numeric_limits<float>::min()) {
+                    levelEnergy += double(m[i]) * m[i]; levelSum += m[i];
+                }
+            }
             levelSamples += n;
             leq->process(m.data(), n);
-            tf->process(r.data(), m.data(), n); rta->process(m.data(), n);
+            // Do not retain a coherent live TF across unusable input. W7 and
+            // multi-mic capture must wait for fresh, valid analysis frames.
+            const bool usable = !transferInvalid && referenceEnergy / n > 1e-20 && measurementEnergy / n > 1e-20;
+            if (!usable && lastTransferUsable) tf->reset();
+            lastTransferUsable = usable;
+            if (usable) tf->process(r.data(), m.data(), n);
+            else tf->process(silence.data(), silence.data(), n); // preserve the unsettled timeout
+
+            rta->process(m.data(), n);
             int H = (int) histRef.size();
             for (int i = 0; i < n; ++i) { histRef[(size_t) histPos] = r[(size_t) i]; histMic[(size_t) histPos] = m[(size_t) i]; histPos = (histPos + 1) % H; }
         }
