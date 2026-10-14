@@ -999,7 +999,11 @@ TEST_CASE("Generator controls and output stop remain visible in both themes and 
         for (auto* control : main.toolbarControls()) CHECK_FALSE(control->getBounds().intersects(output.getBounds()));
         auto panel = PanelRegistry::standard().create("Generator", main.appModel());
         REQUIRE(panel); panel->setLookAndFeel(&main.getLookAndFeel()); panel->setSize(360, 112);
-        for (auto* child : panel->getChildren()) CHECK(panel->getLocalBounds().contains(child->getBounds()));
+        for (auto* child : panel->getChildren()) {
+            CHECK(panel->getLocalBounds().contains(child->getBounds()));
+            if (auto* toggle = dynamic_cast<juce::ToggleButton*>(child))
+                CHECK(toggle->findColour(juce::ToggleButton::tickDisabledColourId) == foh::ui::col::textSecondary());
+        }
         if (auto* folder = std::getenv("FOH_GENERATOR_QA_DIR")) {
             juce::File dir(folder); dir.createDirectory();
             auto suffix = juce::String(sunlight ? "sunlight-" : "dark-") + juce::String(scale) + ".png";
@@ -1010,7 +1014,8 @@ TEST_CASE("Generator controls and output stop remain visible in both themes and 
                 juce::Graphics graphics(image); graphics.fillAll(foh::ui::col::cardBackground());
                 graphics.drawImageAt(snapshot, 0, 0);
                 auto stream = dir.getChildFile(name + suffix).createOutputStream(); REQUIRE(stream);
-                juce::PNGImageFormat png; REQUIRE(png.writeImageToStream(image, *stream));
+                stream->setPosition(0);
+                juce::PNGImageFormat png; REQUIRE(png.writeImageToStream(image, *stream)); stream->truncate();
             };
             save(main.logicalContent(), "toolbar-"); save(*panel, "generator-");
         }

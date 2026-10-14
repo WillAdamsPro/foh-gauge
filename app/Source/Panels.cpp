@@ -541,9 +541,12 @@ public:
         gain.setRange(-60, model.allowsFullGeneratorLevel() ? 0 : -6, 0.5);
         gain.setValue(model.engine.genGainDb.load(), dontSendNotification);
         fullLevel.setToggleState(model.allowsFullGeneratorLevel(), dontSendNotification);
+        fullLevel.setColour(ToggleButton::textColourId, C::textPrimary());
+        fullLevel.setColour(ToggleButton::tickColourId, C::accent());
+        fullLevel.setColour(ToggleButton::tickDisabledColourId, C::textSecondary());
     }
     void resized() override { auto r = getLocalBounds().reduced(pad, 8); type.setBounds(controlRow(r)); gain.setBounds(controlRow(r)); fullLevel.setBounds(controlRow(r)); }
-    void modelChanged(int w) override { if (w & AppModel::Settings) sync(); }
+    void modelChanged(int w) override { if (w & (AppModel::Settings | AppModel::Theme)) sync(); }
 private:
     ComboBox type; Slider gain; ToggleButton fullLevel;
 };
