@@ -161,7 +161,7 @@ void MainComponent::floatPanel(const std::string& id) {
     f.displayId = displayIdFor(screen); f.returnNeighbour = fohws::removePanel(w->root, id);
     closeFloatingWindows(); w->floating.push_back(f); view.rebuild(); openFloatingWindows(); updateSwitcher();
 }
-void MainComponent::dockPanel(const std::string& id) {
+void MainComponent::dockPanel(std::string id) {
     auto* w = view.workspace(); if (!w) return;
     auto it = std::find_if(w->floating.begin(), w->floating.end(), [&](auto& x) { return x.panel == id; }); if (it == w->floating.end()) return;
     std::string nb = it->returnNeighbour; closeFloatingWindows(); w->floating.erase(it);

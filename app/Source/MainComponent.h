@@ -34,7 +34,8 @@ public:
     void selectWorkspace(const std::string& id);
     bool keyPressed(const juce::KeyPress&) override;
     void floatPanel(const std::string& id);
-    void dockPanel(const std::string& id);
+    // Own the ID before erasing floating state that may contain the caller's string.
+    void dockPanel(std::string id);
 protected:
     bool keyPressed(const juce::KeyPress&, juce::Component*) override;
     void timerCallback() override; void changeListenerCallback(juce::ChangeBroadcaster*) override; void modelChanged(int what) override;
