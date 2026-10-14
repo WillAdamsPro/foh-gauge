@@ -32,7 +32,11 @@ public:
         notify(Expert);
     }
     void send(const foh::Command& c) { analysis.send(c); }
-    void setPaused(bool p) { paused = p; analysis.paused = p; notify(Levels); }
+    void setPaused(bool p) {
+        paused = p; analysis.paused = p;
+        if (p) cancelPendingMeasurements();
+        notify(Levels | Capture | Delay);
+    }
     bool paused = false;
 
     // ---- copied from the latest AnalysisSnapshot (latest() is only valid until the next call)
@@ -55,8 +59,8 @@ public:
     void requestDelay(bool sub, std::function<void()> then = {});
     void lockDelayFromLast();
     void cancelSessionOperations() {
-        capture.active = false; capture.then = {}; pendingDelay = {};
-        delayPending = false; delay = {}; overlay = {};
+        cancelPendingMeasurements();
+        delay = {}; overlay = {};
     }
     // Device setup has already changed synchronously during session Open.
     // Acknowledge its epoch before restoring delay so the next UI timer does not
@@ -154,6 +158,18 @@ public:
     void setInspector(const juce::String& title, const juce::String& text) { inspectorTitle = title; inspectorText = text; notify(Overlay); }
 
 private:
+    friend struct AppModelTestAccess;
+    void cancelPendingMeasurements() {
+        analysis.cancelDelay();
+        capture.active = false; capture.then = {}; pendingDelay = {}; delayPending = false;
+    }
+    bool acceptDelaySnapshot(const foh::AnalysisSnapshot& snap) {
+        if (snap.delaySeq == lastDelaySeq) return false;
+        lastDelaySeq = snap.delaySeq;
+        if (!delayPending || snap.delaySeq != pendingDelay.id) return false;
+        delay = snap.delay; delayWasSub = snap.delayWasSub; delayPending = false;
+        return true;
+    }
     std::array<std::optional<juce::Colour>, foh::TraceStore::kMax> traceColours;
     void syncLoopback();
     void finishLoopback(const foh::TFResult* raw = nullptr);

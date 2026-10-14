@@ -1175,3 +1175,86 @@ TEST_CASE("Analysis applies stored loopback only to its capture epoch", "[app][a
     CHECK(acknowledged().tf.magDb[100] == Catch::Approx(-6.0206).margin(.1));
     analysis.stop();
 }
+
+TEST_CASE("Delay storms coalesce independently of a full command queue and cancellation", "[app][delay][stress]") {
+    AudioEngine engine;
+    AnalysisEngine analysis(engine);
+    // Accelerated synthetic UI time: hold the consumer while issuing thousands
+    // of requests. Only the newest request may consume an FFT when it resumes.
+    for (int i = 0; i < foh::CommandQueue::capacity(); ++i)
+        REQUIRE(analysis.send(foh::Command::averages(16)));
+    REQUIRE_FALSE(analysis.send(foh::Command::averages(16)));
+    for (uint64_t id = 1; id <= 10000; ++id)
+        REQUIRE(analysis.send(foh::Command::findDelay(id % 2 == 0, id)));
+    analysis.start();
+    REQUIRE(waitFor([&] { return analysis.latest().delaySeq == 10000; }));
+    CHECK(analysis.latest().delayWasSub);
+    // A batch of resets still makes progress after the delay storm.
+    REQUIRE(analysis.send(foh::Command::resetAverages(77)));
+    REQUIRE(waitFor([&] { return analysis.latest().resetSeq == 77; }));
+    analysis.stop();
+    for (uint64_t id = 10001; id <= 20000; ++id)
+        REQUIRE(analysis.send(foh::Command::findDelay(false, id)));
+    analysis.cancelDelay();
+    analysis.start();
+    REQUIRE(waitFor([&] { return analysis.latest().seq > 0; }));
+    REQUIRE(analysis.send(foh::Command::resetAverages(78)));
+    REQUIRE(waitFor([&] { return analysis.latest().resetSeq == 78; }));
+    CHECK(analysis.latest().delaySeq == 10000);
+    // Repeated Stop/Start must not resurrect requests cancelled while stopped.
+    for (uint64_t id = 20001; id <= 20100; ++id) {
+        analysis.paused = true;
+        REQUIRE(analysis.send(foh::Command::findDelay(false, id)));
+        analysis.cancelDelay();
+        analysis.paused = false;
+    }
+    REQUIRE(analysis.send(foh::Command::findDelay(false, 20101)));
+    REQUIRE(waitFor([&] { return analysis.latest().delaySeq == 20101; }));
+    CHECK_FALSE(analysis.latest().delayWasSub);
+    analysis.stop();
+    REQUIRE(analysis.send(foh::Command::findDelay(true, 20102)));
+    engine.captureEpoch.fetch_add(1, std::memory_order_release);
+    analysis.start();
+    REQUIRE(analysis.send(foh::Command::resetAverages(79)));
+    REQUIRE(waitFor([&] { return analysis.latest().resetSeq == 79; }));
+    CHECK(analysis.latest().delaySeq == 20101); // old-device mailbox retired before FFT
+    for (uint64_t id = 20103; id <= 30103; ++id)
+        REQUIRE(analysis.send(foh::Command::findDelay(false, id)));
+    REQUIRE(waitFor([&] { return analysis.latest().delaySeq == 30103; }));
+    analysis.stop();
+}
+
+struct AppModelTestAccess {
+    static void pending(AppModel& model, uint64_t id) {
+        model.pendingDelay.id = id; model.delayPending = true;
+    }
+    static bool accept(AppModel& model, const foh::AnalysisSnapshot& snapshot) {
+        return model.acceptDelaySnapshot(snapshot);
+    }
+};
+
+TEST_CASE("Stale delay snapshots cannot finish newer or cancelled model requests", "[app][delay][stress]") {
+    juce::ScopedJuceInitialiser_GUI initialise;
+    AppModel model;
+    foh::AnalysisSnapshot snapshot;
+    for (uint64_t id = 1; id <= 10000; id += 2) {
+        AppModelTestAccess::pending(model, id + 1);
+        snapshot.delaySeq = id; snapshot.delayWasSub = false;
+        CHECK_FALSE(AppModelTestAccess::accept(model, snapshot));
+        CHECK(model.delayPending);
+        snapshot.delaySeq = id + 1; snapshot.delayWasSub = true;
+        CHECK(AppModelTestAccess::accept(model, snapshot));
+        CHECK_FALSE(model.delayPending);
+        CHECK(model.delayWasSub);
+        CHECK_FALSE(AppModelTestAccess::accept(model, snapshot)); // duplicate snapshot
+    }
+    AppModelTestAccess::pending(model, 10001);
+    model.capture.active = true;
+    model.delay.confidence = 1; model.delay.arrivals.push_back({48, 1, 0, 0, false});
+    model.setPaused(true);
+    CHECK(model.delayLocked()); // Stop cancels work while preserving completed measurements
+    CHECK_FALSE(model.capture.active);
+    snapshot.delaySeq = 10001;
+    CHECK_FALSE(AppModelTestAccess::accept(model, snapshot));
+    CHECK_FALSE(model.delayPending);
+}

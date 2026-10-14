@@ -3,6 +3,10 @@
 #include "MainComponent.h"
 #include <thread>
 
+struct MainComponentTestAccess {
+    static void deliverFloatingAction(MainComponent& main) { main.handleUpdateNowIfNeeded(); }
+};
+
 namespace {
 struct TemporaryWorkspaces {
     juce::File folder = juce::File::getSpecialLocation(juce::File::tempDirectory)
@@ -13,6 +17,7 @@ class TestMain : public MainComponent {
 public:
     explicit TestMain(const juce::File& folder) : MainComponent(folder) {}
     using MainComponent::saveWorkspaceAs;
+    using MainComponent::deferFloatingAction;
     using MainComponent::setShowMode;
     bool inShowMode() const { return showMode; }
     AppModel& appModel() { return model; }
@@ -558,4 +563,33 @@ TEST_CASE("Session traces colours and delays survive a different live sample rat
         juce::Thread::sleep(5);
     }
     CHECK(delaySamples == 120);
+}
+
+TEST_CASE("Floating destructive actions coalesce and cancel during window storms", "[app][lifetime][stress]") {
+    juce::ScopedJuceInitialiser_GUI initialise;
+    TemporaryWorkspaces temporary;
+    auto main = std::make_unique<TestMain>(temporary.folder);
+    main->selectWorkspace("rta-show"); main->showWorkspace();
+    int calls = 0;
+    for (int i = 0; i < 10000; ++i) main->deferFloatingAction([&] { ++calls; });
+    CHECK(calls == 0);
+    MainComponentTestAccess::deliverFloatingAction(*main);
+    CHECK(calls == 1);
+    main->deferFloatingAction([&] { ++calls; });
+    MainComponentTestAccess::deliverFloatingAction(*main);
+    CHECK(calls == 2);
+    for (int cycle = 0; cycle < 100; ++cycle) {
+        main->floatPanel("RTA");
+        REQUIRE(main->floatingCount() == 1);
+        for (int i = 0; i < 100; ++i) main->floating(0)->onClose();
+        main->dockPanel("RTA"); // cancels without yielding, next window reuses the posted message
+        REQUIRE(main->floatingCount() == 0);
+    }
+    MainComponentTestAccess::deliverFloatingAction(*main);
+    juce::Timer::callPendingTimersSynchronously();
+    CHECK(calls == 2);
+    CHECK(main->workspace().root.contains("RTA"));
+    main->deferFloatingAction([&] { ++calls; });
+    main.reset(); drainMessages();
+    CHECK(calls == 2);
 }

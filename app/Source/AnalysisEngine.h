@@ -18,7 +18,11 @@ public:
     void stop() { stopThread(-1); }
 
     // UI thread only (single producer / single reader)
-    bool send(const foh::Command& c) { return commands.push(c); }
+    bool send(const foh::Command& c);
+    void cancelDelay() {
+        std::lock_guard<std::mutex> lock(delayLock);
+        delayDirty = false; ++delayRevision;
+    }
     const foh::AnalysisSnapshot& latest() { return publisher.latest(); }
     // Cal is not POD, so it is handed over by pointer swap (rare, non-RT). nullptr = cal off.
     void setCal(std::shared_ptr<const foh::MicCal> cal, const juce::String& name);
@@ -36,6 +40,11 @@ private:
     AudioEngine& engine;
     foh::SnapshotPublisher publisher;
     foh::CommandQueue commands;
+    std::mutex delayLock;
+    foh::Command pendingDelay;
+    bool delayDirty = false;
+    uint64_t delayRevision = 0, pendingDelayEpoch = 0;
+    void processDelay();
     std::mutex calLock; std::shared_ptr<const foh::MicCal> pendingCal; juce::String pendingCalName; bool calDirty = false;
     std::shared_ptr<const foh::MicCal> cal; std::string calName;
 

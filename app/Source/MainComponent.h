@@ -8,7 +8,7 @@
 #include "WorkspaceManager.h"
 #include "WorkspacePresetCommands.h"
 
-class MainComponent : public juce::Component, public juce::ApplicationCommandTarget, private juce::Timer, private juce::ChangeListener, private juce::KeyListener, private AppModel::Listener {
+class MainComponent : public juce::Component, public juce::ApplicationCommandTarget, private juce::AsyncUpdater, private juce::Timer, private juce::ChangeListener, private juce::KeyListener, private AppModel::Listener {
 public:
     explicit MainComponent(juce::File workspaceFolder = WorkspaceManager::defaultFolder());
     ~MainComponent() override;
@@ -36,6 +36,7 @@ public:
     void floatPanel(const std::string& id);
     void dockPanel(const std::string& id);
 protected:
+    friend struct MainComponentTestAccess;
     bool keyPressed(const juce::KeyPress&, juce::Component*) override;
     void timerCallback() override; void changeListenerCallback(juce::ChangeBroadcaster*) override; void modelChanged(int what) override;
     virtual void workspaceSelected() {}
@@ -65,6 +66,17 @@ protected:
     juce::TextButton setupBtn { "Audio Setup" }, splBtn { "SPL Cal" };
     juce::TextButton wsMenuBtn, showModeBtn, expertBtn;
     void openFloatingWindows(); void closeFloatingWindows();
+    // One posted message for the shell, including across window replacement.
+    void deferFloatingAction(std::function<void()> action) {
+        if (pendingFloatingAction) return;
+        pendingFloatingAction = std::move(action); triggerAsyncUpdate();
+    }
+    void handleAsyncUpdate() override {
+        auto action = std::move(pendingFloatingAction);
+        pendingFloatingAction = {};
+        if (action) action();
+    }
+    std::function<void()> pendingFloatingAction;
     void showWorkspaceMenu(); void updateSwitcher(); void leaveWorkspace();
     void saveWorkspaceAs(const juce::String& name);
     WorkspaceView view { model, PanelRegistry::standard() };

@@ -67,6 +67,7 @@ AppModel::~AppModel() { stopTimer(); if (loopbackMeasuring) finishLoopback(); dm
 
 void AppModel::timerCallback() {
     int what = Levels;
+    std::function<void()> delayCompletion; uint64_t completionId = 0;
     const int generatorMode = engine.gen.load();
     if (generatorMode != lastGeneratorMode) { lastGeneratorMode = generatorMode; what |= Settings; }
     sampleRate = engine.sampleRate.load();
@@ -104,8 +105,11 @@ void AppModel::timerCallback() {
               if (!capture.resetAcknowledged) conv = {}; // ignore the previous capture's settle state
           }
           refDelaySamples = snap.refDelaySamples; refDelayMs = snap.refDelayMs; calApplied = snap.calApplied; calName = String(CharPointer_UTF8(snap.calName));
-          if (snap.delaySeq != lastDelaySeq) { lastDelaySeq = snap.delaySeq; delay = snap.delay; delayWasSub = snap.delayWasSub; delayPending = false; what |= Delay;
-              if (lastDelaySeq == pendingDelay.id && pendingDelay.then) { auto t = std::move(pendingDelay.then); pendingDelay.then = {}; MessageManager::callAsync(t); } } } }
+          if (acceptDelaySnapshot(snap)) {
+              what |= Delay;
+              completionId = pendingDelay.id; delayCompletion = std::move(pendingDelay.then);
+          } } }
+
     micPeak = engine.micPeak.exchange(0); refPeak = engine.refPeak.exchange(0);
     if (capture.active) { what |= Capture;
         double el = Time::getMillisecondCounterHiRes() - capture.startMs; bool timeout = el >= 10000;
@@ -119,6 +123,9 @@ void AppModel::timerCallback() {
     }
     if (overlayBuilder && (what & (Snapshot | Delay | Traces))) { overlayBuilder(); what |= Overlay; }
     notify(what);
+    // Already on the message thread. No extra queued completion can accumulate,
+    // and listeners may cancel/replace the request during notification.
+    if (delayCompletion && pendingDelay.id == completionId) delayCompletion();
 }
 void AppModel::requestDelay(bool sub, std::function<void()> then) {
     pendingDelay.id = ++nextDelayId; pendingDelay.then = std::move(then); delayPending = true; delayWasSub = sub;

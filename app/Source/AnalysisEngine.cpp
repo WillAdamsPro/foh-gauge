@@ -1,6 +1,15 @@
 #include "AnalysisEngine.h"
 #include "Widgets.h" // AudioEngine
 
+bool AnalysisEngine::send(const foh::Command& c) {
+    if (c.type != foh::CommandType::FindDelay) return commands.push(c);
+    // Latest request wins. This mailbox is UI/worker only, never audio I/O.
+    std::lock_guard<std::mutex> lock(delayLock);
+    pendingDelay = c; pendingDelayEpoch = engine.captureEpoch.load(std::memory_order_acquire);
+    delayDirty = true; ++delayRevision;
+    return true;
+}
+
 void AnalysisEngine::setCal(std::shared_ptr<const foh::MicCal> c, const juce::String& name) {
     std::lock_guard<std::mutex> l(calLock); pendingCal = std::move(c); pendingCalName = name; calDirty = true;
 }
@@ -69,13 +78,36 @@ void AnalysisEngine::handle(const foh::Command& c) {
         case T::SetAverages: averages = c.i; tf->setAverages(c.i); break;
         case T::ResetAverages: lastTransferUsable = false; tf->reset(); rta->reset(); resetSeq = c.id; break;
         case T::SetReferenceDelay: tf->setReferenceDelaySamples(c.d); tf->reset(); break;
-        case T::FindDelay: { // CommandQueue consumer: allocations / FFT stay on this worker.
-            int L = std::min((int) histRef.size(), foh::recommendedDelayWindowSamples(fs, c.sub));
-            std::vector<float> r((size_t) L), m((size_t) L); int H = (int) histRef.size();
-            for (int i = 0; i < L; ++i) { int idx = (histPos - L + i + H) % H; r[(size_t) i] = histRef[(size_t) idx]; m[(size_t) i] = histMic[(size_t) idx]; }
-            delay = foh::findDelay(r, m, fs, c.sub ? foh::DelayOptions::forSubs() : foh::DelayOptions{});
-            delaySeq = c.id; delayWasSub = c.sub; break; }
+        case T::FindDelay: break; // handled by the coalescing mailbox
     }
+}
+
+void AnalysisEngine::processDelay() {
+    foh::Command command;
+    uint64_t revision, epoch;
+    {
+        std::lock_guard<std::mutex> lock(delayLock);
+        if (!delayDirty) return;
+        command = pendingDelay; revision = delayRevision; epoch = pendingDelayEpoch; delayDirty = false;
+    }
+    // Retire work requested against the previous device before copying/FFT.
+    if (epoch != engine.captureEpoch.load(std::memory_order_acquire) || epoch != inputEpoch) return;
+    foh::DelayResult result;
+    if (paused.load() || engine.deviceFailed.load() || engine.state.load() != AudioEngine::Ready) result.error = "Measurement interrupted";
+    else {
+        const int length = std::min((int) histRef.size(), foh::recommendedDelayWindowSamples(fs, command.sub));
+        std::vector<float> r((size_t) length), m((size_t) length);
+        const int history = (int) histRef.size();
+        for (int i = 0; i < length; ++i) {
+            const int index = (histPos - length + i + history) % history;
+            r[(size_t) i] = histRef[(size_t) index]; m[(size_t) i] = histMic[(size_t) index];
+        }
+        result = foh::findDelay(r, m, fs, command.sub ? foh::DelayOptions::forSubs() : foh::DelayOptions{});
+    }
+    std::lock_guard<std::mutex> lock(delayLock);
+    // A running FFT may finish, but superseded/cancelled/device-stale results cannot publish.
+    if (revision != delayRevision || epoch != engine.captureEpoch.load(std::memory_order_acquire)) return;
+    delay = std::move(result); delaySeq = command.id; delayWasSub = command.sub;
 }
 
 void AnalysisEngine::publish() {
@@ -131,7 +163,10 @@ void AnalysisEngine::run() {
           if (calDirty) { positions = {}; positionMask = 0; positionAverage = {}; positionCount = 0;
                           cal = pendingCal; calName = pendingCalName.toStdString(); calDirty = false;
                           rta->setCalibrationDb(cal ? cal->correctionDb(fftN / 2 + 1, fs / fftN) : std::vector<double>{}); } }
-        foh::Command c; while (commands.pop(c)) handle(c);
+        // Bound each turn even if the UI continually refills the SPSC queue.
+        foh::Command c;
+        for (int n = 0; n < foh::CommandQueue::capacity() && commands.pop(c); ++n) handle(c);
+        processDelay();
         const auto revision = leqRevision.load();
         if (revision != meterRevision) { leq->reset(); meterRevision = revision; }
         if (sweepCapturing && (paused.load() || engine.deviceFailed.load()

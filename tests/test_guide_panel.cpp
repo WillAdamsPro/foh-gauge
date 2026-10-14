@@ -789,3 +789,28 @@ TEST_CASE("Workspace and Show presentation changes retire pending guide work", "
         CHECK_FALSE(model.overlay.active);
     }
 }
+
+TEST_CASE("Accelerated guide navigation storms retire pending verification", "[app][guide][stress]") {
+    juce::ScopedJuceInitialiser_GUI initialise;
+    AppModel model; CaptureStub capture;
+    auto& registry = PanelRegistry::standard();
+    fohws::Workspace first, second;
+    first.root = fohws::LayoutNode::leaf("GuideInspector");
+    second.root = fohws::LayoutNode::leaf("RTA");
+    WorkspaceView view(model, registry); view.setSize(400, 900); view.setVisible(true);
+    view.setWorkspace(&first);
+    auto* panel = view.panel("GuideInspector"); REQUIRE(panel);
+    prepareVerify(*panel, model, capture);
+    button(*panel, "Re-measure to verify").onClick();
+    REQUIRE(capture.pending);
+    for (int i = 0; i < 200; ++i) {
+        view.setWorkspace(&second); view.setWorkspace(&first);
+        view.setShowMode(true); view.setShowMode(false);
+        model.setPaused(true); model.setPaused(false);
+        juce::Timer::callPendingTimersSynchronously();
+    }
+    CHECK(capture.calls == 2); // presentation churn cannot spawn extra captures
+    capture.finish(model, 3);
+    CHECK_FALSE(labelContains(*panel, "Mean change:"));
+    cannotPass(*panel);
+}

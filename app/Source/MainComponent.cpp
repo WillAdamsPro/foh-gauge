@@ -66,7 +66,7 @@ MainComponent::MainComponent(juce::File workspaceFolder) : mgr(std::move(workspa
     if (!mgr.loadErrors().isEmpty()) AlertWindow::showMessageBoxAsync(AlertWindow::WarningIcon, "Workspace load failed", mgr.loadErrors().joinIntoString("\n"));
     startTimerHz(15);
 }
-MainComponent::~MainComponent() { removeKeyListener(presetCommands.keyMappings()); stopTimer(); leaveWorkspace(); view.setWorkspace(nullptr); model.removeListener(this); foh::theme::ThemeManager::get().removeChangeListener(this); floats.clear(); LookAndFeel::setDefaultLookAndFeel(nullptr); setLookAndFeel(nullptr); }
+MainComponent::~MainComponent() { cancelPendingUpdate(); pendingFloatingAction = {}; removeKeyListener(presetCommands.keyMappings()); stopTimer(); leaveWorkspace(); view.setWorkspace(nullptr); model.removeListener(this); foh::theme::ThemeManager::get().removeChangeListener(this); floats.clear(); LookAndFeel::setDefaultLookAndFeel(nullptr); setLookAndFeel(nullptr); }
 
 void MainComponent::openSetup() {
     if (showMode) setShowMode(false);
@@ -126,8 +126,8 @@ void MainComponent::openFloatingWindows() {
         win->addKeyListener(this);
         auto window = SafePointer<FloatingPanelWindow>(win);
         // Ignore queued actions if a workspace switch or reset has already destroyed the window.
-        win->onDock = [this, id, window] { MessageManager::callAsync([sp = SafePointer<MainComponent>(this), id, window] { if (sp && window) sp->dockPanel(id); }); };
-        win->onClose = [this, id, window] { MessageManager::callAsync([sp = SafePointer<MainComponent>(this), id, window] { if (sp && window) { // close = hide; Workspace > Show Panels brings it back
+        win->onDock = [this, id, window] { if (window) deferFloatingAction([sp = SafePointer<MainComponent>(this), id, window] { if (sp && window) sp->dockPanel(id); }); };
+        win->onClose = [this, id, window] { if (window) deferFloatingAction([sp = SafePointer<MainComponent>(this), id, window] { if (sp && window) { // close = hide; Workspace > Show Panels brings it back
             auto* w2 = sp->view.workspace(); if (!w2) return;
             // Erasing from the state vector invalidates references held by every later window.
             sp->closeFloatingWindows();
@@ -136,6 +136,9 @@ void MainComponent::openFloatingWindows() {
         win->onChanged = [this] { updateSwitcher(); }; }
 }
 void MainComponent::closeFloatingWindows() {
+    // Leave the single AsyncUpdater message pending so replacement windows can
+    // reuse it without posting another message during a synchronous storm.
+    pendingFloatingAction = {};
     for (auto* window : floats) {
         window->removeKeyListener(this);
         window->removeKeyListener(presetCommands.keyMappings());
