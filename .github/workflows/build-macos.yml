@@ -33,6 +33,9 @@ jobs:
           MIN=$(/usr/libexec/PlistBuddy -c 'Print :LSMinimumSystemVersion' "$APP/Contents/Info.plist"); echo "LSMinimumSystemVersion=$MIN"
           [ "$MIN" = "26.0" ] || { echo "::error::LSMinimumSystemVersion is $MIN, expected 26.0"; exit 1; }
           vtool -show-build "$APP/Contents/MacOS/"* | tee /dev/stderr | grep -q "minos 26.0" || { echo "::error::binary minos is not 26.0"; exit 1; }
+          codesign --force --deep -s - "$APP"
+          codesign --verify --deep --strict "$APP"
+          codesign -dv "$APP"
           ditto -c -k --keepParent "$APP" FOH-Gauge-macOS-arm64.zip
       - uses: actions/upload-artifact@v4
         with:

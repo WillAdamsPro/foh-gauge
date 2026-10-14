@@ -1,17 +1,113 @@
 #include <juce_gui_extra/juce_gui_extra.h>
 #include "MainComponent.h"
+#if JUCE_MAC
+ #import <AVFoundation/AVFoundation.h>
+#endif
 class FOHGaugeApp : public juce::JUCEApplication {
 public:
     const juce::String getApplicationName() override { return "FOH Gauge"; }
     const juce::String getApplicationVersion() override { return "0.1.0"; }
-    void initialise(const juce::String&) override { window.reset(new Window()); }
-    void shutdown() override { window = nullptr; }
-    struct Window : juce::DocumentWindow {
+    void initialise(const juce::String&) override {
+#if JUCE_MAC
+        // Resolve consent before MainComponent constructs AppModel and opens audio
+        // devices. A known decision (including denial) must never request again.
+        if ([AVCaptureDevice authorizationStatusForMediaType:AVMediaTypeAudio]
+                == AVAuthorizationStatusNotDetermined) {
+            [AVCaptureDevice requestAccessForMediaType:AVMediaTypeAudio
+                completionHandler:^(BOOL) {
+                    // AVFoundation completes off the message thread. Do not retain
+                    // the app or create a window if it quit while consent was pending.
+                    juce::MessageManager::callAsync([] {
+                        if (auto* app = dynamic_cast<FOHGaugeApp*>(juce::JUCEApplication::getInstance()))
+                            if (!app->shuttingDown) app->window.reset(new Window());
+                    });
+                }];
+            return;
+        }
+#endif
+        window.reset(new Window());
+    }
+    void shutdown() override { shuttingDown = true; window = nullptr; }
+    struct Window : juce::DocumentWindow, juce::MenuBarModel, juce::ApplicationCommandTarget {
+        enum { resetScale = 1, largerScale, smallerScale, scale125, scale150, scale200, darkTheme, sunlightTheme };
+        MainComponent* main = nullptr; // owned by DocumentWindow
+        juce::ApplicationCommandManager commands;
         Window() : DocumentWindow("FOH Gauge", foh::ui::col::background(), allButtons) {
-            setUsingNativeTitleBar(true); setContentOwned(new MainComponent(), true);
-            setResizable(true, true); setResizeLimits(1280, 800, 4000, 3000); centreWithSize(getWidth(), getHeight()); setVisible(true); }
+            setUsingNativeTitleBar(true);
+            main = new MainComponent();
+            setContentOwned(main, true);
+            setResizable(true, true);
+            centreWithSize(getWidth(), getHeight());
+            constrainToDisplay();
+            main->fitSavedScale();
+            commands.registerAllCommandsForTarget(this);
+            commands.setFirstCommandTarget(this);
+            addKeyListener(commands.getKeyMappings());
+            juce::MenuBarModel::setMacMainMenu(this);
+            setVisible(true);
+        }
+        ~Window() override {
+            juce::MenuBarModel::setMacMainMenu(nullptr);
+            removeKeyListener(commands.getKeyMappings());
+        }
+        void constrainToDisplay() {
+            auto& displays = juce::Desktop::getInstance().getDisplays();
+            if (auto* display = displays.getDisplayForRect(getBounds())) {
+                auto area = display->userArea;
+                // JUCE bounds exclude the native frame, so reserve that space too.
+                if (auto* peer = getPeer())
+                    if (const auto frame = peer->getFrameSizeIfPresent()) frame->subtractFrom(area);
+                setResizeLimits(juce::jmin(640, area.getWidth()), juce::jmin(400, area.getHeight()),
+                                area.getWidth(), area.getHeight());
+                setBounds(getBounds().withSize(juce::jmin(getWidth(), area.getWidth()),
+                                               juce::jmin(getHeight(), area.getHeight())).constrainedWithin(area));
+            }
+        }
+        void moved() override { constrainToDisplay(); }
+        void resized() override { DocumentWindow::resized(); constrainToDisplay(); }
+        juce::StringArray getMenuBarNames() override { return { "File", "View" }; }
+        juce::PopupMenu getMenuForIndex(int index, const juce::String& name) override {
+            if (index == 0) return main->getMenuForIndex(0, name);
+            juce::PopupMenu menu;
+            for (int id : { resetScale, scale125, scale150, scale200, largerScale, smallerScale })
+                menu.addCommandItem(&commands, id);
+            menu.addSeparator();
+            menu.addCommandItem(&commands, darkTheme);
+            menu.addCommandItem(&commands, sunlightTheme);
+            return menu;
+        }
+        void menuItemSelected(int id, int index) override { if (index == 0) main->menuItemSelected(id, 0); }
+        juce::ApplicationCommandTarget* getNextCommandTarget() override { return nullptr; }
+        void getAllCommands(juce::Array<juce::CommandID>& ids) override {
+            for (int id : { resetScale, largerScale, smallerScale, scale125, scale150, scale200, darkTheme, sunlightTheme }) ids.add(id);
+        }
+        void getCommandInfo(juce::CommandID id, juce::ApplicationCommandInfo& info) override {
+            if (id < resetScale || id > sunlightTheme) return;
+            const char* names[] = { "100%", "Increase UI Scale", "Decrease UI Scale", "125%", "150%", "200%", "Dark Theme", "Sunlight Theme" };
+            info.setInfo(names[id - 1], names[id - 1], "View", 0);
+            const int percent = id == resetScale ? 100 : id == scale125 ? 125 : id == scale150 ? 150 : id == scale200 ? 200 : 0;
+            if (percent) info.setTicked(main->uiScalePercent() == percent);
+            if (id == darkTheme || id == sunlightTheme) info.setTicked(main->isSunlightTheme() == (id == sunlightTheme));
+            if (id <= smallerScale) info.addDefaultKeypress(id == resetScale ? '0' : id == largerScale ? '=' : '-', juce::ModifierKeys::commandModifier);
+        }
+        bool perform(const InvocationInfo& info) override {
+            switch (info.commandID) {
+                case resetScale: main->setUiScale(100); break;
+                case largerScale: main->stepUiScale(1); break;
+                case smallerScale: main->stepUiScale(-1); break;
+                case scale125: main->setUiScale(125); break;
+                case scale150: main->setUiScale(150); break;
+                case scale200: main->setUiScale(200); break;
+                case darkTheme: main->setSunlightTheme(false); break;
+                case sunlightTheme: main->setSunlightTheme(true); break;
+                default: return false;
+            }
+            commands.commandStatusChanged();
+            return true;
+        }
         void closeButtonPressed() override { juce::JUCEApplication::getInstance()->systemRequestedQuit(); }
     };
     std::unique_ptr<Window> window;
+    bool shuttingDown = false;
 };
 START_JUCE_APPLICATION(FOHGaugeApp)
