@@ -3,6 +3,7 @@
 #pragma once
 #include "FloatingPanels.h"
 #include "WorkspaceManager.h"
+#include "WorkspacePresetCommands.h"
 
 class MainComponent : public juce::Component, private juce::Timer, private juce::ChangeListener, private AppModel::Listener {
 public:
@@ -16,12 +17,15 @@ public:
 protected:
     void timerCallback() override; void changeListenerCallback(juce::ChangeBroadcaster*) override; void modelChanged(int what) override;
     virtual void workspaceSelected() {}
-    bool sidebarVisible() const { return getWidth() >= 1280; } // spec §7: sidebar collapses under 1280 px
+    bool sidebarVisible() const { return !showMode && getWidth() >= 1280; } // spec §7: sidebar collapses under 1280 px
     FohLookAndFeel lnf;
     AppModel model;
     WorkspaceManager mgr; int current = -1;
+    WorkspacePresetCommands presetCommands { [this](int i) { selectWorkspace(i); } };
     juce::OwnedArray<FloatingPanelWindow> floats;
-    juce::TextButton wsMenuBtn;
+    bool showMode = false;
+    void setShowMode(bool enabled);
+    juce::TextButton wsMenuBtn, showModeBtn;
     void openFloatingWindows(); void closeFloatingWindows();
     void showWorkspaceMenu(); void updateSwitcher(); void leaveWorkspace();
     WorkspaceView view { model, PanelRegistry::standard() };
