@@ -1,5 +1,7 @@
 #include "WorkspaceManager.h"
+#include "Panels.h"
 #include <fohcore/input.h>
+#include <algorithm>
 using namespace juce;
 using namespace fohws;
 
@@ -18,6 +20,27 @@ bool WorkspaceManager::readFile(const File& f, Workspace& w) const {
         auto json = Json::parse(foh::input::read(f.getFullPathName().toStdString()), &err);
         Workspace tmp;
         if (!err.empty() || !fromJson(json, tmp, err)) throw std::runtime_error(err);
+        // Saved layouts may come from a development build or a newer app.
+        // Drop unregistered panels before the view can create empty chrome.
+        const auto known = [](const std::string& id) { return PanelRegistry::standard().find(id) != nullptr; };
+        std::function<void(LayoutNode&)> prune = [&](LayoutNode& node) {
+            if (node.kind == LayoutNode::Leaf) {
+                if (!known(node.panel)) node.panel.clear();
+                return;
+            }
+            for (auto& child : node.children) prune(child);
+            if (node.kind == LayoutNode::Tabs) {
+                int removedBeforeActive = 0;
+                for (int i = 0; i < node.active; ++i)
+                    if (node.children[(size_t) i].panel.empty()) ++removedBeforeActive;
+                node.active -= removedBeforeActive;
+            }
+            normalise(node);
+            if (node.children.empty() && node.kind != LayoutNode::Leaf) node = LayoutNode::leaf("");
+        };
+        prune(tmp.root);
+        tmp.floating.erase(std::remove_if(tmp.floating.begin(), tmp.floating.end(),
+            [&](const auto& panel) { return !known(panel.panel); }), tmp.floating.end());
         w = std::move(tmp); return true;
     } catch (const std::exception& e) {
         errors.add(f.getFileName() + ": " + String(e.what()));

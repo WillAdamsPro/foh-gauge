@@ -32,13 +32,13 @@ TEST_CASE("floating windows, panel state and tab state survive serialisation") {
     Workspace w = builtInPresets()[2];
     w.floating.push_back({ "DelayFinder", { 1700, 120, 420, 260 }, "display-2", true, "TransferFunction" });
     Json st = Json::object(); st.set("fraction", 6); w.panelState.set("RTA", st);
-    w.root.children[0].children[1].children[0].active = 1;
+    w.root.children[0].children[1].active = 1;
     Workspace back; std::string err; REQUIRE(fromJson(Json::parse(toJson(w).dump()), back, err));
     REQUIRE(back.floating.size() == 1);
     CHECK(back.floating[0].panel == "DelayFinder"); CHECK(back.floating[0].bounds == Rect { 1700, 120, 420, 260 });
     CHECK(back.floating[0].displayId == "display-2"); CHECK(back.floating[0].alwaysOnTop); CHECK(back.floating[0].returnNeighbour == "TransferFunction");
     CHECK(back.panelState["RTA"]["fraction"].asInt() == 6);
-    CHECK(back.root.children[0].children[1].children[0].active == 1);
+    CHECK(back.root.children[0].children[1].active == 1);
 }
 
 TEST_CASE("bad JSON is rejected with an error, not a crash") {

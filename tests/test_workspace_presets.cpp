@@ -31,10 +31,10 @@ TEST_CASE("Cmd+1-4 restore the four workspace panel sets in order", "[app][works
         current = index;
     });
     const std::vector<std::vector<std::string>> expected {
-        { "Calibration", "Generator", "InputsAndDevices", "Inspector", "LimitPreset", "SignalMeters" },
+        { "Calibration", "Generator", "InputsAndDevices", "Inspector", "SignalMeters" },
         { "Coherence", "DelayFinder", "GuideInspector", "Impulse", "Inspector", "Phase", "TransferFunction" },
-        { "EQSuggestions", "Inspector", "Phase", "RTA", "TraceList", "TransferFunction" },
-        { "Dose", "Events", "Inspector", "RTA", "SPLHistory", "SPLNumbers", "ShowMonitoring" }
+        { "Inspector", "Phase", "RTA", "TraceList", "TransferFunction" },
+        { "Inspector", "RTA", "SPLNumbers", "ShowMonitoring" }
     };
     const std::vector<std::string> names { "Setup", "Alignment", "Tuning", "RTA/Show" };
 
@@ -66,13 +66,13 @@ TEST_CASE("each preset restores its own edited panel set and can reset independe
         fohws::removePanel(workspaces.at(0).root, "Calibration");
         fohws::removePanel(workspaces.at(1).root, "Coherence");
         fohws::removePanel(workspaces.at(2).root, "Phase");
-        fohws::removePanel(workspaces.at(3).root, "Events");
+        fohws::removePanel(workspaces.at(3).root, "SPLNumbers");
         // Exercise both an explicit save and live layouts saved on departure.
         workspaces.save(0);
         workspaces.saveAll();
     }
     WorkspaceManager relaunched(temporary.folder);
-    const char* removed[] { "Calibration", "Coherence", "Phase", "Events" };
+    const char* removed[] { "Calibration", "Coherence", "Phase", "SPLNumbers" };
     for (int i = 0; i < 4; ++i) {
         CHECK_FALSE(relaunched.at(i).root.contains(removed[i]));
         relaunched.resetToDefault(i);
@@ -165,4 +165,117 @@ TEST_CASE("bundled typefaces are released with the UI before JUCE shutdown", "[a
     CHECK(regular->getReferenceCount() == 1);
     CHECK(semibold->getReferenceCount() == 1);
     CHECK(bold->getReferenceCount() == 1);
+}
+
+TEST_CASE("presets contain only finished registered panels", "[app][workspace]") {
+    juce::ScopedJuceInitialiser_GUI initialiser;
+    AppModel model;
+    const auto& registry = PanelRegistry::standard();
+    for (const auto& workspace : fohws::builtInPresets()) {
+        for (const auto& id : panels(workspace)) {
+            INFO(id);
+            auto panel = registry.create(id, model);
+            REQUIRE(panel != nullptr);
+            CHECK_FALSE(panel->isPlaceholder());
+        }
+    }
+    for (const auto* id : {"LimitPreset", "EQSuggestions", "SPLHistory", "Dose", "Events"}) {
+        INFO(id);
+       #if FOH_SHOW_UNFINISHED
+        auto panel = registry.create(id, model);
+        REQUIRE(panel != nullptr);
+        CHECK(panel->isPlaceholder());
+       #else
+        CHECK(registry.find(id) == nullptr);
+       #endif
+    }
+}
+
+TEST_CASE("old workspaces silently skip unregistered docked and floating panels", "[app][workspace][files]") {
+    TemporaryWorkspaces temporary;
+    REQUIRE(temporary.folder.createDirectory().wasOk());
+    auto legacy = fohws::builtInPresets()[0];
+    legacy.root = fohws::H({
+        {0.25, fohws::L("LimitPreset")},
+        {0.25, fohws::LayoutNode::tabs({"EQSuggestions", "RTA", "SPLHistory"}, 1)},
+        {0.25, fohws::V({{0.5, fohws::L("Dose")}, {0.5, fohws::L("FuturePanel")}})},
+        {0.25, fohws::L("Inspector")}
+    });
+    legacy.floating = {{"Events", {40, 65, 500, 300}, "main"},
+                       {"FutureFloatingPanel", {40, 65, 500, 300}, "main"},
+                       {"SignalMeters", {40, 65, 500, 300}, "main"}};
+    auto file = temporary.folder.getChildFile("setup.json");
+    REQUIRE(file.replaceWithText(juce::String(fohws::toJson(legacy).dump())));
+    WorkspaceManager loaded(temporary.folder);
+    REQUIRE(loaded.loadErrors().isEmpty());
+    const auto& workspace = loaded.at(0);
+   #if FOH_SHOW_UNFINISHED
+    CHECK(panels(workspace) == std::vector<std::string>{"Dose", "EQSuggestions", "Events", "Inspector", "LimitPreset", "RTA", "SPLHistory", "SignalMeters"});
+   #else
+    CHECK(panels(workspace) == std::vector<std::string>{"Inspector", "RTA", "SignalMeters"});
+    REQUIRE(workspace.root.kind == fohws::LayoutNode::Split);
+    REQUIRE(workspace.root.children.size() == 2);
+    CHECK(workspace.root.children[0] == fohws::L("RTA"));
+    CHECK(workspace.root.sizes == std::vector<double>{0.5, 0.5});
+    REQUIRE(workspace.floating.size() == 1);
+    CHECK(workspace.floating.front().panel == "SignalMeters");
+   #endif
+    CHECK_FALSE(workspace.root.contains("FuturePanel"));
+    loaded.saveAll();
+    WorkspaceManager relaunched(temporary.folder);
+    CHECK(relaunched.loadErrors().isEmpty());
+    CHECK(panels(relaunched.at(0)) == panels(workspace));
+
+    // An unavailable root is a valid empty workspace, ready to dock a panel.
+    legacy.root = fohws::L("FuturePanel"); legacy.floating.clear();
+    REQUIRE(temporary.folder.getChildFile("setup.current.json").replaceWithText(
+        juce::String(fohws::toJson(legacy).dump())));
+    WorkspaceManager empty(temporary.folder);
+    CHECK(empty.loadErrors().isEmpty());
+    CHECK(empty.at(0).root == fohws::L(""));
+}
+
+TEST_CASE("pruning unknown tabs preserves the selected surviving panel", "[app][workspace][files]") {
+    TemporaryWorkspaces temporary;
+    REQUIRE(temporary.folder.createDirectory().wasOk());
+    auto legacy = fohws::builtInPresets()[0];
+    legacy.root = fohws::LayoutNode::tabs({"FuturePanel", "Inspector", "RTA"}, 2);
+    REQUIRE(temporary.folder.getChildFile("setup.json").replaceWithText(
+        juce::String(fohws::toJson(legacy).dump())));
+    WorkspaceManager loaded(temporary.folder);
+    CHECK(loaded.loadErrors().isEmpty());
+    CHECK(loaded.at(0).root == fohws::LayoutNode::tabs({"Inspector", "RTA"}, 1));
+}
+
+TEST_CASE("finished presets render in both themes and UI scales", "[app][workspace][layout]") {
+    juce::ScopedJuceInitialiser_GUI initialiser;
+    const auto originalTheme = foh::theme::ThemeManager::get().current().id;
+    AppModel model; model.analysis.stop(); model.dm.removeAudioCallback(&model.engine);
+    auto presets = fohws::builtInPresets();
+    for (bool sunlight : {false, true}) {
+        foh::theme::ThemeManager::get().setTheme(sunlight ? "apple-pro-sunlight" : "apple-pro-dark");
+        FohLookAndFeel look;
+        for (int scale : {100, 200}) for (auto& workspace : presets) {
+            INFO(workspace.id << " scale " << scale << " sunlight " << sunlight);
+            WorkspaceView view(model, PanelRegistry::standard());
+            view.setLookAndFeel(&look); view.setSize(1200, 800); view.setWorkspace(&workspace);
+            for (const auto& id : panels(workspace)) {
+                auto* panel = view.panel(id);
+                REQUIRE(panel != nullptr);
+                CHECK_FALSE(panel->isPlaceholder());
+            }
+            auto image = view.createComponentSnapshot(view.getLocalBounds(), true, scale / 100.f);
+            CHECK(image.getWidth() == 1200 * scale / 100);
+            CHECK(image.getHeight() == 800 * scale / 100);
+            if (const auto* folder = std::getenv("FOH_WORKSPACE_QA_DIR")) {
+                juce::File dir(folder); REQUIRE(dir.createDirectory().wasOk());
+                auto file = dir.getChildFile(juce::String(workspace.id) + (sunlight ? "-sunlight-" : "-dark-") + juce::String(scale) + ".png");
+                auto stream = file.createOutputStream(); REQUIRE(stream != nullptr);
+                stream->setPosition(0);
+                juce::PNGImageFormat png; REQUIRE(png.writeImageToStream(image, *stream)); stream->truncate();
+            }
+            view.setWorkspace(nullptr); view.setLookAndFeel(nullptr);
+        }
+    }
+    foh::theme::ThemeManager::get().setTheme(originalTheme);
 }
