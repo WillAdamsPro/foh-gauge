@@ -50,6 +50,9 @@ protected:
     juce::File sessionFolder;
     std::unique_ptr<juce::FileChooser> sessionChooser;
     std::optional<foh::Json> sessionTargets;
+    // Session notices must also close when their owning UI is destroyed.
+    juce::ScopedMessageBox sessionNotice;
+    void showSessionNotice(const juce::String& title, const juce::String& message);
     FohLookAndFeel lnf;
     AppModel model;
     WorkspaceManager mgr; int current = -1;

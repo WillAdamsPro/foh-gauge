@@ -153,7 +153,16 @@ SubDelayEstimate subDelayFromPhase(const TFResult& a, const TFResult& b, double 
     return e;
 }
 TFResult virtualSum(const TFResult& a, const TFResult& b) {
-    TFResult r = a; size_t n = std::min(a.H.size(), b.H.size());
+    // TFResult is public data: imported/synthetic callers need not have all
+    // parallel arrays populated. Reject incomplete or incompatible inputs
+    // before indexing them, just as the stored-trace preview does.
+    const size_t n = a.freq.size();
+    auto complete = [n](const TFResult& t) {
+        return t.freq.size() == n && t.H.size() == n && t.magDb.size() == n
+            && t.phaseDeg.size() == n && t.coherence.size() == n;
+    };
+    if (n == 0 || !complete(a) || !complete(b) || a.freq != b.freq) return {};
+    TFResult r = a;
     for (size_t k = 0; k < n; ++k) { r.H[k] = a.H[k] + b.H[k];
         r.magDb[k] = 20.0 * std::log10(std::abs(r.H[k]) + 1e-12); r.phaseDeg[k] = std::arg(r.H[k]) * 180.0 / M_PI;
         r.coherence[k] = std::min(a.coherence[k], b.coherence[k]);

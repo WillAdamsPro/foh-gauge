@@ -140,3 +140,58 @@ TEST_CASE("Setup unsubscribes device changes and wizard cancels timers on destru
     for (const auto sample : loopback) CHECK(sample == 0);
     CHECK(model.engine.connectionResult() == foh::ConnectionResult::pending);
 }
+
+TEST_CASE("Session notices expire with their owner before and after asynchronous display", "[app][lifetime]") {
+    juce::ScopedJuceInitialiser_GUI initialise;
+    TemporaryWorkspaces temporary;
+    for (bool display : {false, true}) {
+        auto main = std::make_unique<TestMain>(temporary.folder);
+        REQUIRE_FALSE(main->readSession(temporary.folder.getChildFile("Missing.fohsession")));
+        if (display) {
+            drainMessages();
+            REQUIRE(juce::ModalComponentManager::getInstance()->getNumModalComponents() == 1);
+        }
+        main.reset();
+        drainMessages();
+        CHECK(juce::ModalComponentManager::getInstance()->getNumModalComponents() == 0);
+    }
+}
+
+TEST_CASE("Merged measurement panels repeatedly release listeners and pending UI work", "[app][lifetime][stress]") {
+    juce::ScopedJuceInitialiser_GUI initialise;
+    AppModel model;
+    model.tf.freq = {0, 100, 1000, 10000};
+    model.tf.H.assign(4, {1, 0}); model.tf.magDb.assign(4, 0);
+    model.tf.phaseDeg.assign(4, 0); model.tf.coherence.assign(4, 1);
+    model.sweep.response.impulse.assign(24000, 0);
+    model.sweep.response.impulse[230] = 1;
+    foh::Arrival arrival {}; arrival.delaySamples = 230; arrival.delayMs = 230.0 / 48;
+    model.sweep.response.arrivals.push_back(arrival);
+    model.sweep.etcDb.assign(24000, -120); model.sweep.etcDb[230] = 0;
+    for (int pass = 0; pass < 20; ++pass) {
+        REQUIRE(model.traces.store("Synthetic", model.tf, 0));
+        model.selectSum(0, 0);
+        std::vector<std::unique_ptr<Panel>> panels;
+        for (auto id : {"SPLNumbers", "TraceList", "Impulse", "TransferFunction", "Phase", "ShowMonitoring"}) {
+            auto panel = PanelRegistry::standard().create(id, model);
+            REQUIRE(panel != nullptr);
+            panel->setSize(600, 420);
+            for (auto* child : panel->getChildren()) {
+                if (auto* combo = dynamic_cast<juce::ComboBox*>(child))
+                    combo->setSelectedId(1, juce::sendNotificationAsync);
+                if (auto* toggle = dynamic_cast<juce::ToggleButton*>(child)) {
+                    toggle->setToggleState(true, juce::dontSendNotification);
+                    if (toggle->onClick) toggle->onClick();
+                }
+            }
+            panel->modelChanged(AppModel::Snapshot | AppModel::Traces | AppModel::Theme);
+            auto image = panel->createComponentSnapshot(panel->getLocalBounds());
+            CHECK(image.isValid());
+            panels.push_back(std::move(panel));
+        }
+        model.clearTraces();
+        panels.clear(); // ComboBox notifications are still queued.
+        drainMessages();
+        model.notify(AppModel::Snapshot | AppModel::Traces | AppModel::Settings);
+    }
+}

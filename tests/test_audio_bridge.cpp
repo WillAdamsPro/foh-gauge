@@ -16,8 +16,8 @@ void capture(AudioEngine& engine, const float* mic, const float* ref, int n) {
     engine.audioDeviceIOCallbackWithContext(inputs, 2, nullptr, 0, n, {});
 }
 template <typename Predicate>
-bool waitFor(Predicate predicate) {
-    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+bool waitFor(Predicate predicate, std::chrono::seconds timeout = std::chrono::seconds(3)) {
+    const auto deadline = std::chrono::steady_clock::now() + timeout;
     while (std::chrono::steady_clock::now() < deadline) {
         if (predicate()) return true;
         std::this_thread::sleep_for(std::chrono::milliseconds(5));
@@ -841,7 +841,10 @@ TEST_CASE("Sweep measurement captures loopback and publishes impulse and ETC", "
         engine.audioDeviceIOCallbackWithContext(inputs, 2, outputs, 2, block, {});
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
-    REQUIRE(waitFor([&] { return !analysis.latest().sweepCapturing; }));
+    // Debug sanitizer instrumentation makes the million-point deconvolution
+    // slower than the short bridge-handshake deadline. Still require the full
+    // recovered result below, rather than accepting a cancelled capture.
+    REQUIRE(waitFor([&] { return !analysis.latest().sweepCapturing; }, std::chrono::seconds(15)));
     const auto result = analysis.latest().sweep;
     REQUIRE(result.response.ok());
     CHECK(result.response.arrivals[0].delayMs == Catch::Approx(4.8).margin(0.02));
@@ -884,4 +887,30 @@ TEST_CASE("Pausing cancels a sweep capture and stops playback", "[app][audio][sw
     CHECK(analysis.latest().sweep.response.impulse.empty());
     CHECK(engine.gen.load() == AudioEngine::Off);
     analysis.stop();
+}
+
+TEST_CASE("Analysis engines join pending sweep and meter work on repeated destruction", "[app][audio][lifetime][stress]") {
+    for (int pass = 0; pass < 12; ++pass) {
+        AudioEngine engine; SyntheticDevice device;
+        device.rate = pass % 3 == 0 ? 44100 : pass % 3 == 1 ? 48000 : 96000;
+        engine.audioDeviceAboutToStart(&device);
+        auto analysis = std::make_unique<AnalysisEngine>(engine);
+        analysis->start();
+        REQUIRE(waitFor([&] { return engine.analysisEpoch.load() == engine.captureEpoch.load(); }));
+        std::array<float, 16384> signal {};
+        for (size_t i = 0; i < signal.size(); ++i)
+            signal[i] = float(0.1 * std::sin(2 * juce::MathConstants<double>::pi * 1000 * i / device.rate));
+        capture(engine, signal.data(), signal.data(), int(signal.size()));
+        REQUIRE(waitFor([&] { return analysis->latest().leq.seconds > 0; }));
+        foh::Command sweep; sweep.type = foh::CommandType::MeasureSweep;
+        REQUIRE(analysis->send(sweep));
+        REQUIRE(waitFor([&] { return analysis->latest().sweepCapturing; }));
+        capture(engine, signal.data(), signal.data(), int(signal.size()));
+        analysis->setCal(std::make_shared<foh::MicCal>(), "Synthetic");
+        REQUIRE(analysis->send(foh::Command::findDelay(false, pass + 1)));
+        // Match JUCE's shutdown order: quiesce I/O before joining the worker.
+        engine.audioDeviceStopped();
+        analysis.reset();
+        CHECK(engine.gen.load() == AudioEngine::Off);
+    }
 }

@@ -814,3 +814,23 @@ TEST_CASE("session rings and capture store remain bounded over three hours of sy
         REQUIRE(traces.count() == TraceStore::kMax);
     }
 }
+TEST_CASE("Virtual sum rejects incomplete traces and mismatched frequency grids", "[traces][edges]") {
+    foh::TFResult trace;
+    trace.freq = {100, 1000}; trace.H.assign(2, {1, 0});
+    trace.magDb.assign(2, 0); trace.phaseDeg.assign(2, 0); trace.coherence.assign(2, 1);
+    for (int field = 0; field < 5; ++field) {
+        auto incomplete = trace;
+        switch (field) {
+            case 0: incomplete.freq.pop_back(); break;
+            case 1: incomplete.H.pop_back(); break;
+            case 2: incomplete.magDb.pop_back(); break;
+            case 3: incomplete.phaseDeg.pop_back(); break;
+            case 4: incomplete.coherence.pop_back(); break;
+        }
+        CHECK(foh::virtualSum(incomplete, trace).freq.empty());
+        CHECK(foh::virtualSum(trace, incomplete).freq.empty());
+    }
+    auto different = trace; different.freq[1] = 2000;
+    CHECK(foh::virtualSum(trace, different).freq.empty());
+    CHECK(foh::virtualSum({}, {}).freq.empty());
+}
