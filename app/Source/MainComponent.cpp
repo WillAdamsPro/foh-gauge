@@ -43,6 +43,16 @@ Typeface::Ptr FohLookAndFeel::getTypefaceForFont(const Font& f) {
     }
     return LookAndFeel_V4::getTypefaceForFont(f);
 }
+Font FohLookAndFeel::numeric(float size, bool b) {
+   #if JUCE_MAC
+    String mono = "Menlo";      // SF Mono isn't addressable by name; Menlo has fixed-width digits
+   #elif JUCE_WINDOWS
+    String mono = "Consolas";
+   #else
+    String mono = Font::getDefaultMonospacedFontName();
+   #endif
+    return Font(FontOptions(mono, size, b ? Font::bold : Font::plain));
+}
 Font FohLookAndFeel::font(float size, bool b, bool sb) {
     return Font(FontOptions(foh::ui::uiFontName(), size, Font::plain).withStyle(b ? "Bold" : sb ? "Semibold" : "Regular"));
 }
@@ -61,6 +71,7 @@ float PlotComponent::xOf(double f) const { return (float) (plotX() + plotW() * s
 float PlotComponent::yOf(double v) const { return (float) (plotY() + plotH() * (yMax - jlimit(yMin, yMax, v)) / (yMax - yMin)); }
 void PlotComponent::paint(Graphics& g) {
     auto pr = Rectangle<float>((float) plotX(), (float) plotY(), (float) plotW(), (float) plotH());
+    g.setColour(C::plotWell()); g.fillRect(pr); // A2: darker plot well
     g.setFont(FohLookAndFeel::font(T::axisTick));
     for (auto& s : shade) { float a = xOf(s.first), b = xOf(s.second); g.setColour(C::accent().withAlpha(C::crossoverBandAlpha())); g.fillRect(a, pr.getY(), b - a, pr.getHeight());
         if (shadeLabel.isNotEmpty()) { g.setColour(C::accent()); g.setFont(FohLookAndFeel::font(T::label)); g.drawText(shadeLabel, (int) a - 40, (int) pr.getY() + 10, (int) (b - a) + 80, 14, Justification::centred); g.setFont(FohLookAndFeel::font(T::axisTick)); } }
@@ -89,6 +100,19 @@ void PlotComponent::paint(Graphics& g) {
             hg.drawLine(0, 8, 8, 0, 1.0f); hg.drawLine(-4, 4, 4, -4, 1.0f); hg.drawLine(4, 12, 12, 4, 1.0f); }
         Graphics::ScopedSaveState hs(g); g.setTiledImageFill(hatchTile, 0, 0, 1.0f);
         for (auto& r : lowCoh) { float a = jmax(pr.getX(), xOf(r.first)), b = jmin(pr.getRight(), xOf(r.second)); if (b > a) g.fillRect(a, pr.getY(), b - a, pr.getHeight()); } }
+    if (showLowCohCallout && !lowCoh.empty()) { // widest hatched region (log width); skipped when it's basically the whole plot (no signal)
+        const std::pair<double,double>* best = nullptr; double bw = 0;
+        for (auto& rr : lowCoh) { double w = std::log10(rr.second / rr.first); if (w > bw) { bw = w; best = &rr; } }
+        float x0 = best ? jmax(pr.getX(), xOf(best->first)) : 0, x1 = best ? jmin(pr.getRight(), xOf(best->second)) : 0;
+        if (best && (x1 - x0) < pr.getWidth() * 0.8f) {
+            auto box = Rectangle<float>(0, 0, 210, 40).withCentre({ (x0 + x1) * 0.5f, pr.getBottom() - 34 });
+            box.setX(jlimit(pr.getX() + 4, pr.getRight() - box.getWidth() - 4, box.getX()));
+            g.setColour(C::cardBackground()); g.fillRoundedRectangle(box, D::radiusButton());
+            g.setColour(C::warning()); g.drawRoundedRectangle(box.reduced(0.5f), D::radiusButton(), 1.0f);
+            auto ic = Rectangle<float>(box.getX() + 10, box.getCentreY() - 7, 14, 13); Path t; t.addTriangle(ic.getCentreX(), ic.getY(), ic.getRight(), ic.getBottom(), ic.getX(), ic.getBottom()); g.fillPath(t);
+            g.setColour(C::textPrimary()); g.setFont(FohLookAndFeel::font(T::small, true)); g.drawText("Low coherence: don't EQ here", (int) box.getX() + 32, (int) box.getY() + 5, 172, 16, Justification::left);
+            g.setColour(C::textSecondary()); g.setFont(FohLookAndFeel::font(T::axisTick)); g.drawText("Likely a reflection at the mic", (int) box.getX() + 32, (int) box.getY() + 21, 172, 14, Justification::left);
+            g.setFont(FohLookAndFeel::font(T::axisTick)); } }
     Graphics::ScopedSaveState ss(g); g.reduceClipRegion(pr.toNearestInt());
     if (bars) for (auto& s : series) { if (s.dash) continue; g.setColour(C::rtaBar());
         for (size_t i = 0; i < s.v.size() && i < barLo.size(); ++i) { float a = xOf(barLo[i]) + 1, b = xOf(barHi[i]) - 1, y = yOf(s.v[i]); g.fillRect(a, y, std::max(1.f, b - a), pr.getBottom() - y); }
@@ -112,7 +136,7 @@ static void logDecimate(const foh::TFResult& r, const std::vector<double>& v, st
 } // ~300 log-spaced points (spec)
 
 // ===================== Guide content =====================
-// chart: 0 none, 1 live mag (W2 mains), 2 stored mains + live sub, 3 phase to 400 Hz, 4 phase+sum, 5 done, 6 live TF mag full range, 7 = 6 + impulse/delay view
+// chart: 0 none, 1 live mag (W2 mains), 2 stored mains + live sub, 3 phase to 250 Hz, 4 phase+sum, 5 done, 6 live TF mag full range, 7 = 6 + impulse/delay view
 struct Step { const char* progress; const char* title; const char* body; const char* action; int act; int chart; };
 static const std::vector<std::vector<Step>> kGuides = {
  { {"Connect", "Connect your gear", "UMC404HD: Out 1 to the console. Out 2 to In 2 with a 1/4\" TRS cable (reference loopback; TRS keeps it off phantom). ECM8000 to In 1 (XLR, +48 V on). Pick the device and channels on Setup at 48 kHz.", "Open Setup", 1, 0},
@@ -122,7 +146,7 @@ static const std::vector<std::vector<Step>> kGuides = {
    {"Save", "Save Position 1", "Store this trace so you can compare later. If you move the mic, find the delay again.", "Store 'Position 1'", 5, 6} },
  { {"Measure mains", "Measure the mains alone", "Mute the subs. Mic where sub and mains are about equally loud (often FOH). Pink noise on. This finds and locks the delay to the mains, then stores 'Main'.", "Capture mains \xe2\x97\x8f", 12, 1},
    {"Measure sub", "Measure the sub alone", "Mute the mains, unmute the subs. Don't find the delay again: the comparison depends on the same timing. The dashed line is your stored mains.", "Capture sub \xe2\x97\x8f", 7, 2},
-   {"Find delay", "Find the delay", "Compare phase in the shaded crossover band (phase above 400 Hz is hidden). Judge polarity from these traces, not the impulse. Prefer the option where slopes match across the band and that needs the least delay.", "Use this delay", 8, 3},
+   {"Find delay", "Find the delay", "Compare phase in the shaded crossover band (phase above 250 Hz is hidden). Judge polarity from these traces, not the impulse. Prefer the option where slopes match across the band and that needs the least delay.", "Use this delay", 8, 3},
    {"Apply & verify", "Apply and verify", "Enter the change in your DSP and unmute both. The sum (white) should RISE in the crossover band, up to ~+6 dB where the two are equal, not dip. Walk a few seats.", "Capture both \xe2\x97\x8f", 9, 4},
    {"Done", "Sub and mains aligned", "", "Measure again", 13, 5} },
  { {"Mains", "Measure the mains", "Mains already tuned. Mic in the seam: where main and fill are about equally loud, inside the fill's area. Fill muted. This finds and locks the delay to the mains.", "Find + lock delay", 3, 6},
@@ -171,7 +195,7 @@ void SegmentedControl::paint(Graphics& g) {
         if (i == sel) { g.setColour(foh::ui::theme().isLight ? C::cardBackground() : C::textPrimary().withAlpha(0.22f)); g.fillRoundedRectangle(seg.reduced(2), rad - 1);
                         g.setColour(C::border()); g.drawRoundedRectangle(seg.reduced(2), rad - 1, D::hairline()); }
         else if (i > 0 && i - 1 != sel) { g.setColour(C::border()); g.fillRect(seg.getX(), seg.getY() + 5, D::hairline(), seg.getHeight() - 10); }
-        g.setColour(i == sel ? C::textPrimary() : C::textSecondary()); g.drawText(labels[i], seg, Justification::centred); }
+        g.setColour(i == sel ? C::textPrimary() : disabled[i] ? C::textAxis() : C::textSecondary()); g.drawText(labels[i], seg, Justification::centred); }
 }
 Path NavButton::glyphPath(Glyph gl, Rectangle<float> b) { // 16 px line glyphs, drawn as stroked paths
     Path p; float x = b.getX(), y = b.getY(), s = b.getWidth() / 16.0f; auto P = [&](float px, float py) { return Point<float>(x + px * s, y + py * s); };
@@ -233,11 +257,14 @@ MainComponent::MainComponent() {
     const char* pages[] = {"Home / Setup", "Transfer Function", "RTA / Spectrum", "Guides"};
     for (int i = 0; i < 4; ++i) { auto* b = nav.add(new NavButton(pages[i], (NavButton::Glyph) i)); b->onClick = [this, i] { showPage(i); }; addAndMakeVisible(b); }
     addAndMakeVisible(status);
-    addAndMakeVisible(pauseBtn); pauseBtn.setClickingTogglesState(true); pauseBtn.onClick = [this] { paused = pauseBtn.getToggleState(); pauseBtn.setButtonText(paused ? "Resume" : "Pause"); };
+    addAndMakeVisible(pauseBtn); pauseBtn.setClickingTogglesState(true); pauseBtn.onClick = [this] { paused = pauseBtn.getToggleState(); pauseBtn.setButtonText(paused ? u8("\xe2\x96\xb6 Start") : u8("\xe2\x96\xa0 Stop")); };
     addAndMakeVisible(helpPanel); addChildComponent(helpBtn); helpBtn.setClickingTogglesState(true);
     helpBtn.onClick = [this] { helpOpen = helpBtn.getToggleState(); layoutHelp(); };
     help.setColour(Label::textColourId, C::textBody()); help.setFont(FohLookAndFeel::font(T::body));
     addAndMakeVisible(pageTitle); pageTitle.setFont(FohLookAndFeel::font(T::title, true));
+    addAndMakeVisible(toolbarTitle); toolbarTitle.setFont(FohLookAndFeel::font(T::small + 1, true)); toolbarTitle.setColour(Label::textColourId, C::textPrimary());
+    addAndMakeVisible(viewSeg); viewSeg.disabled.setBit(2); viewSeg.onChange = [this](int i) { if (i == 0) showPage(2); else if (i == 1) showPage(1); };
+    makePrimary(pauseBtn); pauseBtn.setButtonText(u8("\xe2\x96\xa0 Stop"));
 
     auto chanItems = [](ComboBox& b, const char* pre) { for (int i = 1; i <= 4; ++i) b.addItem(String(pre) + String(i), i); };
     chanItems(micBox, "Mic: In "); chanItems(refBox, "Ref: In "); chanItems(outABox, "To console: Out "); chanItems(outBBox, "Loopback: Out ");
@@ -270,7 +297,7 @@ MainComponent::MainComponent() {
                                  if (auto* pf = settings.getUserSettings()) { pf->setValue("uiScale", pc); pf->saveIfNeeded(); } };
     addChildComponent(scaleBox);
 
-    magPlot.yLabel = "MAGNITUDE DB"; magPlot.showLegend = true; magPlot.yMin = -12; magPlot.yMax = 12; magPlot.yStep = 6;
+    magPlot.yLabel = "MAGNITUDE DB"; magPlot.showLegend = true; magPlot.showLowCohCallout = true; magPlot.yMin = -12; magPlot.yMax = 12; magPlot.yStep = 6;
     phasePlot.yLabel = u8("PHASE \xc2\xb0"); phasePlot.yMin = -180; phasePlot.yMax = 180; phasePlot.yStep = 90; phasePlot.wrapPhase = true;
     cohPlot.yLabel = "COHERENCE"; cohPlot.yMin = 0; cohPlot.yMax = 1; cohPlot.yStep = 0.5;
     for (auto* p : {&magPlot, &phasePlot, &cohPlot, &rtaPlot, &gPlotA, &gPlotB}) addChildComponent(*p);
@@ -286,7 +313,7 @@ MainComponent::MainComponent() {
     insertBtn.onClick = [this] { if (!lastDelay.arrivals.empty()) { tf->setReferenceDelaySamples((int) std::lround(lastDelay.arrivals[0].delaySamples)); lockedDelayMs = lastDelay.arrivals[0].delayMs; } };
     clearAvgBtn.onClick = [this] { tf->reset(); rta->reset(); };
     delayCaption.setText("DELAY FINDER", dontSendNotification); delayCaption.setFont(FohLookAndFeel::font(T::label)); delayCaption.setColour(Label::textColourId, C::textSecondary());
-    delayValue.setFont(FohLookAndFeel::font(T::valueDelay, true)); delayValue.setText("--", dontSendNotification);
+    delayValue.setFont(FohLookAndFeel::numeric(T::valueDelay)); delayValue.setText("--", dontSendNotification);
     delayDetail.setFont(FohLookAndFeel::font(T::body)); delayDetail.setColour(Label::textColourId, C::textSecondary()); delayDetail.setText("press Find again", dontSendNotification);
     traceModel.o = this; traceList.setModel(&traceModel); traceList.setRowHeight(22);
     delTraceBtn.onClick = [this] { traces.remove(traceList.getSelectedRow()); refreshTraceList(); };
@@ -302,7 +329,7 @@ MainComponent::MainComponent() {
     guideStepLabel.setFont(FohLookAndFeel::font(T::label)); guideStepLabel.setColour(Label::textColourId, C::accent());
     guideBody.setFont(FohLookAndFeel::font(T::logo)); guideBody.setJustificationType(Justification::centredLeft);
     guideResult.setFont(FohLookAndFeel::font(T::body)); guideResult.setJustificationType(Justification::topLeft); guideResult.setColour(Label::textColourId, C::textBody());
-    guideReadout.setFont(FohLookAndFeel::font(T::valueMedium, true));
+    guideReadout.setFont(FohLookAndFeel::numeric(T::valueMedium));
     guidePolarity.setFont(FohLookAndFeel::font(T::small)); guidePolarity.setColour(Label::textColourId, C::textSecondary());
     doneSummary.setFont(FohLookAndFeel::font(T::logo)); doneSummary.setJustificationType(Justification::topLeft);
     doneActions.setFont(FohLookAndFeel::font(T::logo)); doneActions.setJustificationType(Justification::topLeft);
@@ -370,11 +397,14 @@ void MainComponent::resized() {
     const int statusBarHeight = D::statusBarHeight(), navWidth = D::navWidth();
     auto nr = Rectangle<int>(10, statusBarHeight + 16, navWidth - 20, 30);
     for (auto* b : nav) { b->setBounds(nr); nr.translate(0, 34); }
-    status.setBounds(navWidth + 12, 0, getWidth() - navWidth - 12 - 140, statusBarHeight);
-    pauseBtn.setBounds(getWidth() - 120, 10, 100, 35);
+    // A2 unified toolbar: [title][status pills ...][RTA|Transfer|SPL][Stop]
+    { auto tb = Rectangle<int>(navWidth, 0, getWidth() - navWidth, statusBarHeight).reduced(14, 0);
+      pauseBtn.setBounds(tb.removeFromRight(84).withSizeKeepingCentre(84, 28)); tb.removeFromRight(12);
+      viewSeg.setBounds(tb.removeFromRight(210).withSizeKeepingCentre(210, 26)); tb.removeFromRight(12);
+      toolbarTitle.setBounds(tb.removeFromLeft(210)); status.setBounds(tb); }
     layoutHelp();
     auto c = mainArea();
-    auto header = c.removeFromTop(29); pageTitle.setBounds(header.removeFromLeft(400)); c.removeFromTop(12);
+    auto header = c.removeFromTop(29); c.removeFromTop(12);
     // header pills (TF)
     { auto h = header; storeBtn.setBounds(h.removeFromRight(80)); h.removeFromRight(8); clearAvgBtn.setBounds(h.removeFromRight(100)); h.removeFromRight(8);
       avgBox.setBounds(h.removeFromRight(110)); h.removeFromRight(8); smoothBox.setBounds(h.removeFromRight(150)); rtaFracBox.setBounds(header.removeFromRight(160)); guideBox.setBounds(Rectangle<int>(header.getRight() - 300, header.getY(), 300, 29)); }
@@ -409,15 +439,33 @@ void MainComponent::layoutHelp() {
     helpPanel.setBounds(railMode() ? Rectangle<int>(getWidth() - railWidth - hw, top, hw, getHeight() - top) : Rectangle<int>(getWidth() - hw, top, hw, getHeight() - top));
     if (helpPanel.isVisible()) helpPanel.toFront(false);
 }
+void HelpPanel::setText(const String& copy) {
+    sections.clear(); StringArray lines; lines.addLines(copy);
+    String cur; std::vector<String> ps; for (auto& l : lines) { if (l.trim().isEmpty()) { if (cur.isNotEmpty()) ps.push_back(cur); cur = {}; } else cur << (cur.isEmpty() ? "" : " ") << l.trim(); }
+    if (cur.isNotEmpty()) ps.push_back(cur);
+    for (size_t i = 0; i < ps.size(); ++i) { auto& p = ps[i]; int colon = p.indexOfChar(':');
+        if (i == 0) sections.push_back({"What am I looking at?", p});
+        else if (colon > 0 && colon <= 20) sections.push_back({p.substring(0, colon), p.substring(colon + 1).trim()});
+        else if (!sections.empty()) sections.back().second << "\n\n" << p; }
+    repaint();
+}
 void HelpPanel::paint(Graphics& g) {
     g.fillAll(C::helperBackground());
     g.setColour(overlay ? C::cardBorderEmphasis() : C::border()); g.fillRect(0.f, 0.f, D::hairline(), (float) getHeight());
-    g.setColour(C::accent()); g.setFont(FohLookAndFeel::font(T::small, false, true)); g.drawText("WHAT AM I LOOKING AT?", 20, 20, getWidth() - 40, 16, Justification::left);
+    auto r = getLocalBounds().reduced(14, 0).withTrimmedTop(12);
+    g.setColour(C::textSecondary()); g.setFont(FohLookAndFeel::font(T::axisTick, true)); g.drawText(caption, r.removeFromTop(18), Justification::left); r.removeFromTop(6);
+    for (size_t i = 0; i < sections.size(); ++i) { auto& hd = sections[i].first; auto& body = sections[i].second;
+        if (i) { g.setColour(C::border()); g.fillRect(0.f, (float) r.getY(), (float) getWidth(), D::hairline()); r.removeFromTop(12); }
+        g.setColour(C::textPrimary()); g.setFont(FohLookAndFeel::font(i == 0 ? T::body + 1 : T::body, true)); g.drawText(hd, r.removeFromTop(20), Justification::left); r.removeFromTop(2);
+        AttributedString as; as.append(body, FohLookAndFeel::font(T::body), C::textSecondary()); as.setLineSpacing(3.0f);
+        TextLayout tl; tl.createLayout(as, (float) r.getWidth()); auto bh = (int) std::ceil(tl.getHeight());
+        tl.draw(g, r.removeFromTop(bh).toFloat()); r.removeFromTop(12);
+        if (r.getHeight() <= 0) break; }
 }
 
 void MainComponent::changeListenerCallback(ChangeBroadcaster*) { // theme switched: refresh stock-widget colours, then re-layout (widths) + repaint
     appearance.setSelected(foh::ui::theme().isLight ? 1 : 0); lnf.applyTheme(); makePrimary(insertBtn); makePrimary(guideAct); makePrimary(doneAgain);
-    status.repaint(); help.setColour(Label::textColourId, C::textBody()); setupHelp.setColour(Label::textColourId, C::textSecondary());
+    status.repaint(); viewSeg.repaint(); makePrimary(pauseBtn); toolbarTitle.setColour(Label::textColourId, C::textPrimary()); helpPanel.repaint(); help.setColour(Label::textColourId, C::textBody()); setupHelp.setColour(Label::textColourId, C::textSecondary());
     delayCaption.setColour(Label::textColourId, C::textSecondary()); delayDetail.setColour(Label::textColourId, C::textSecondary());
     guideStepLabel.setColour(Label::textColourId, C::accent()); guideResult.setColour(Label::textColourId, C::textBody()); guidePolarity.setColour(Label::textColourId, C::textSecondary());
     sendLookAndFeelChange(); updateTF(); updateGuidePlots(); resized(); repaint();
@@ -437,15 +485,17 @@ void MainComponent::showPage(int p) {
     if (p == 2) on = {&rtaPlot, &rtaFracBox};
     for (auto* x : on) x->setVisible(true);
     const char* titles[] = {"Home / Setup", "Transfer function", "RTA / Spectrum", ""};
-    pageTitle.setText(titles[p], dontSendNotification); pageTitle.setVisible(p != 3);
+    pageTitle.setText(titles[p], dontSendNotification); pageTitle.setVisible(false); // A2: page title lives in the toolbar
+    toolbarTitle.setText(p == 3 ? String(kGuideNames[guide]) : String(titles[p]), dontSendNotification);
+    viewSeg.setSelected(p == 2 ? 0 : p == 1 ? 1 : -1);
     if (p == 3) layoutGuide();
-    help.setText(explain(), dontSendNotification); repaint();
+    helpPanel.setText(explain()); repaint();
 }
 
 String MainComponent::explain() const {
     switch (page) {
         case 0: return "Pick your interface (UMC404HD) at 48 kHz.\n\nMic = In 1 (ECM8000, +48 V).\n\nReference = In 2: a 1/4\" TRS loopback from Out 2, so it carries exactly what goes to the system.\n\nOut 1 goes to the console. Both inputs should sit near -20 dBFS on pink noise, never clipping.\n\nLoad your mic cal file (CSV/TXT/FRD) and turn Cal ON.";
-        case 1: return "This compares the console (reference) to the mic. Anything that isn't flat is what the speakers + room are doing to your mix.\n\nTop: Magnitude. 0 dB = unchanged.\n\nMiddle: Phase. Timing per frequency. A steady slope means leftover delay; flat is ideal.\n\nBottom: Coherence. How much to trust the trace. Low = probably a reflection or noise: don't EQ it.\n\nDelay finder lines up the reference with the mic. Stored traces are dashed.";
+        case 1: return "This compares the console (reference) to the mic. Anything that isn't flat is what the speakers + room are doing to your mix.\n\nMagnitude: top plot. 0 dB = unchanged.\n\nPhase: middle plot. Timing per frequency. A steady slope means leftover delay; flat is ideal.\n\nCoherence: bottom plot. How much to trust the trace. Low = probably a reflection or noise: don't EQ it.\n\nDelay finder lines up the reference with the mic. Stored traces are dashed.";
         case 2: return "The RTA shows the level in each 1/3 or 1/6 octave band at the mic.\n\nUse it to see what's loud in the room. To judge the system itself, prefer the transfer function: the RTA includes the spectrum of whatever is playing.";
         default: return "Guides walk you through one job at a time: read the step, press the one big button, check the result.\n\nThe app explains and suggests; you decide and make the change in your own gear.\n\nShaded band = acoustic crossover (where sub and mains are within 10 dB).";
     }
@@ -515,11 +565,11 @@ void MainComponent::updateGuidePlots() {
         case 1: magSetup(gPlotA, -24, 6); add(gPlotA, lastTF, lastTF.magDb, C::accent(), nullptr); break;
         case 2: magSetup(gPlotA, -24, 6); if (main) add(gPlotA, main->tf, main->tf.magDb, C::traceStored(), th::stroke::dashStored, 1e9, D::traceStored(), "Mains (stored)");
                 add(gPlotA, lastTF, lastTF.magDb, C::traceSecondary(), nullptr, 1e9, D::trace(), "Sub (live)"); break;
-        case 3: phSetup(gPlotA); gPlotA.centreNote = "phase hidden above 400 Hz";
-                if (main) add(gPlotA, main->tf, main->tf.phaseDeg, C::accent(), nullptr, 400, D::trace(), "Mains phase"); if (sub) add(gPlotA, sub->tf, sub->tf.phaseDeg, C::traceSecondary(), nullptr, 400, D::trace(), "Sub phase"); break;
-        case 4: phSetup(gPlotA); gPlotA.centreNote = "phase hidden above 400 Hz"; magSetup(gPlotB, -24, 12);
-                if (main) add(gPlotA, main->tf, main->tf.phaseDeg, C::accent(), nullptr, 400, D::trace(), "Mains phase");
-                if (sub) add(gPlotA, sub->tf, sub->tf.phaseDeg, C::traceSecondary(), th::stroke::dashLimit, 400, D::trace(), "Sub phase");
+        case 3: phSetup(gPlotA); gPlotA.centreNote = "phase shown up to 250 Hz";
+                if (main) add(gPlotA, main->tf, main->tf.phaseDeg, C::accent(), nullptr, 250, D::trace(), "Mains phase"); if (sub) add(gPlotA, sub->tf, sub->tf.phaseDeg, C::traceSecondary(), nullptr, 250, D::trace(), "Sub phase"); break;
+        case 4: phSetup(gPlotA); gPlotA.centreNote = "phase shown up to 250 Hz"; magSetup(gPlotB, -24, 12);
+                if (main) add(gPlotA, main->tf, main->tf.phaseDeg, C::accent(), nullptr, 250, D::trace(), "Mains phase");
+                if (sub) add(gPlotA, sub->tf, sub->tf.phaseDeg, C::traceSecondary(), th::stroke::dashLimit, 250, D::trace(), "Sub phase");
                 if (main) add(gPlotB, main->tf, main->tf.magDb, C::traceMainsMuted(), th::stroke::dashComponent, 1e9, D::traceSecondary(), "Mains");
                 if (sub) add(gPlotB, sub->tf, sub->tf.magDb, C::traceSubMuted(), th::stroke::dashComponent, 1e9, D::traceSecondary(), "Sub");
                 add(gPlotB, lastTF, lastTF.magDb, C::traceSum(), nullptr, 1e9, D::trace(), "Sum (live)"); break;
@@ -589,6 +639,7 @@ void MainComponent::layoutGuide() {
     auto c = mainArea();
     guideStepLabel.setText((u8("GUIDED \xc2\xb7 ") + String(kGuideNames[guide]) + u8(" \xc2\xb7 STEP ") + String(step + 1) + " OF " + String((int) steps.size())).toUpperCase(), dontSendNotification);
     guideStepLabel.setBounds(c.removeFromTop(16)); c.removeFromTop(6);
+    toolbarTitle.setText(kGuideNames[guide], dontSendNotification);
     pageTitle.setVisible(true); pageTitle.setText(u8(st.title), dontSendNotification); pageTitle.setBounds(c.removeFromTop(29)); c.removeFromTop(14);
     gProgress = c.removeFromTop(36); c.removeFromTop(16);
     if (st.chart == 5) { // Done
