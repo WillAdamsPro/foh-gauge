@@ -4,7 +4,7 @@ namespace C = foh::ui::col;
 namespace D = foh::ui::dim;
 namespace T = foh::theme::type;
 
-MainComponent::MainComponent() {
+MainComponent::MainComponent(juce::File workspaceFolder) : mgr(std::move(workspaceFolder)) {
     if (auto* pf = model.settings.getUserSettings()) foh::theme::ThemeManager::get().setTheme(pf->getValue("appearance") == "sunlight" ? "apple-pro-sunlight" : "apple-pro-dark");
     if (auto* t = std::getenv("FOH_THEME")) foh::theme::ThemeManager::get().setTheme(t); // dev aid
     setLookAndFeel(&lnf); LookAndFeel::setDefaultLookAndFeel(&lnf); lnf.applyTheme(); // default too, so floating panel windows get the ws chrome
@@ -126,6 +126,16 @@ void MainComponent::openFloatingWindows() {
         win->onChanged = [this] { updateSwitcher(); }; }
 }
 void MainComponent::closeFloatingWindows() { floats.clear(); }
+void MainComponent::saveWorkspaceAs(const String& name) {
+    view.storePanelStates();
+    closeFloatingWindows();
+    // saveAs grows the manager's vector, invalidating the view's workspace pointer.
+    // Detach while that pointer is still valid, before allocating the new entry.
+    view.setWorkspace(nullptr);
+    const int index = mgr.saveAs(current, name);
+    current = -1;
+    selectWorkspace(index);
+}
 void MainComponent::floatPanel(const std::string& id) {
     if (showMode) return;
     auto* w = view.workspace(); auto* p = view.panel(id, false); if (!w || !p) return;
@@ -179,7 +189,7 @@ void MainComponent::showWorkspaceMenu() {
                 auto* aw = new AlertWindow(r == 2 ? "Save Workspace As" : "Rename Workspace", "Name:", MessageBoxIconType::NoIcon);
                 aw->addTextEditor("name", r == 2 ? String(s.mgr.at(s.current).name) + " copy" : String(s.mgr.at(s.current).name)); aw->addButton("OK", 1, KeyPress(KeyPress::returnKey)); aw->addButton("Cancel", 0, KeyPress(KeyPress::escapeKey));
                 aw->enterModalState(true, ModalCallbackFunction::create([sp, aw, r](int res) { if (!sp || res != 1) return; auto name = aw->getTextEditorContents("name").trim(); if (name.isEmpty()) return;
-                    auto& s2 = *sp; if (r == 2) { s2.view.storePanelStates(); s2.closeFloatingWindows(); int idx = s2.mgr.saveAs(s2.current, name); s2.current = -1; s2.selectWorkspace(idx); }
+                    auto& s2 = *sp; if (r == 2) s2.saveWorkspaceAs(name);
                     else { s2.mgr.rename(s2.current, name); s2.updateSwitcher(); } }), true);
                 break; }
             case 6: { int c = s.current; s.closeFloatingWindows(); s.view.setWorkspace(nullptr); s.current = -1; s.mgr.remove(c); s.selectWorkspace(0); break; }
