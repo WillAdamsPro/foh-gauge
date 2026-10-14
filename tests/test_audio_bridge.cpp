@@ -71,6 +71,15 @@ TEST_CASE("Audio peaks include negative samples and reset between UI periods", "
     REQUIRE(engine.micPeak.exchange(0) == 0.2f);
 }
 
+TEST_CASE("Invalid input samples never poison audio peak meters", "[app][audio][edges]") {
+    AudioEngine engine;
+    const float input[] {std::numeric_limits<float>::quiet_NaN(),
+        std::numeric_limits<float>::infinity(), -std::numeric_limits<float>::infinity(), -0.5f};
+    capture(engine, input, input, 4);
+    REQUIRE(engine.micPeak.exchange(0) == 0.5f);
+    REQUIRE(engine.refPeak.exchange(0) == 0.5f);
+}
+
 TEST_CASE("Analysis restart clears queued stereo audio and delay history", "[app][audio][delay]") {
     AudioEngine engine;
     AnalysisEngine analysis(engine);
@@ -97,6 +106,10 @@ TEST_CASE("Analysis restart clears queued stereo audio and delay history", "[app
     REQUIRE(analysis.send(foh::Command::findDelay(true, 2)));
     REQUIRE(waitFor([&] { return analysis.latest().delaySeq == 2; }));
     REQUIRE_FALSE(analysis.latest().delay.ok());
+    REQUIRE(analysis.latest().tf.sampleRate == 96000);
+    REQUIRE(analysis.latest().tf.averages == 0);
+    REQUIRE_FALSE(analysis.latest().convergence.finished);
+    for (double level : analysis.latest().rtaDb) REQUIRE(std::isfinite(level));
     analysis.stop();
 }
 
@@ -223,7 +236,7 @@ TEST_CASE("Output chime is bounded, routed and stops at each sample rate", "[app
         engine.audioDeviceIOCallbackWithContext(nullptr, 0, outputs, 2, block, {});
         REQUIRE(selected[0] == 0.f); // Retrigger starts with the attack ramp.
         REQUIRE(selected[100] != 0.f);
-        for (int i = 0; i < block; ++i) REQUIRE(unused[i] == selected[i]);
+        for (int i = 0; i < block; ++i) REQUIRE(unused[i] == 0.f);
     }
 }
 
@@ -253,4 +266,31 @@ TEST_CASE("SPL level snapshots measure the selected input and reset on routing c
     REQUIRE(second.micLevelDbfs == Catch::Approx(-26.0206).margin(0.01));
     REQUIRE(waitFor([&] { return !analysis.latest().micLevelValid; })); // Never calibrate a stale snapshot.
     analysis.stop();
+}
+
+TEST_CASE("Connection tests isolate output and report synthetic input routing", "[app][audio][routing]") {
+    AudioEngine engine;
+    engine.gen = AudioEngine::Pink;
+    constexpr int block = 256;
+    float a[block] {}, b[block] {}, signal[block];
+    std::fill(std::begin(signal), std::end(signal), 0.1f);
+    float silence[block] {};
+    const float* inputs[] {silence, signal}; float* outputs[] {a, b};
+    engine.testConnection(1, 1);
+    for (int i = 0; i < 188; ++i) {
+        engine.audioDeviceIOCallbackWithContext(inputs, 2, outputs, 2, block, {});
+        for (auto sample : a) CHECK(sample == 0.f);
+    }
+    CHECK(engine.connectionResult() == foh::ConnectionResult::pass);
+    engine.testConnection(0, 0);
+    // Separate synthetic input buffers from output buffers.
+    const float* swapped[] {silence, signal};
+    for (int i = 0; i < 188; ++i)
+        engine.audioDeviceIOCallbackWithContext(swapped, 2, outputs, 2, block, {});
+    CHECK(engine.connectionResult() == foh::ConnectionResult::swapInputs);
+    engine.testConnection(1, 1); engine.cancelConnectionTest();
+    engine.audioDeviceIOCallbackWithContext(nullptr, 0, outputs, 2, block, {});
+    CHECK(engine.connectionResult() == foh::ConnectionResult::pending);
+    engine.testConnection(-1, 1);
+    CHECK(engine.connectionResult() == foh::ConnectionResult::invalid);
 }

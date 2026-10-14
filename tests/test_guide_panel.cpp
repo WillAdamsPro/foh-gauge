@@ -9,10 +9,9 @@ std::unique_ptr<Panel> makeGuidePanel(AppModel&);
 AppModel::AppModel() = default;
 AppModel::~AppModel() = default;
 void AppModel::timerCallback() {}
-// SetupPage is also linked into this isolated UI test executable.
-bool AppModel::calibrateSpl(double) { throw std::logic_error("Unexpected SPL calibration"); }
-void AppModel::clearSpl() { throw std::logic_error("Unexpected SPL calibration reset"); }
 foh::SplCal AppModel::splCal() const { return {}; }
+bool AppModel::calibrateSpl(double) { throw std::logic_error("Unexpected SPL calibration"); }
+void AppModel::clearSpl() { throw std::logic_error("Unexpected SPL calibration"); }
 void AppModel::requestDelay(bool, std::function<void()>) { throw std::logic_error("Unexpected delay request"); }
 void AppModel::lockDelayFromLast() { throw std::logic_error("Unexpected delay lock"); }
 void AppModel::beginCapture(const juce::String&, std::function<void(bool)>) { throw std::logic_error("Unexpected capture"); }

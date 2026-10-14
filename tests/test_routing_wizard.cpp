@@ -47,9 +47,8 @@ TEST_CASE("Optional routing walkthrough applies physical channels only on Finish
     // The callback uses these exact indices, rather than a separate wizard map.
     const float a[] {0.1f}, b[] {0.2f}, mic[] {0.3f}, ref[] {0.4f};
     const float* inputs[] {a, b, mic, ref};
+    // A mic-channel change restarts capture (#81); acknowledge it as the analysis worker would.
     engine.audioDeviceIOCallbackWithContext(inputs, 4, nullptr, 0, 1, {});
-    // The first block publishes the changed input epoch; emulate the worker's
-    // reset acknowledgement before expecting new samples in the rings.
     engine.analysisEpoch.store(engine.captureEpoch.load());
     engine.audioDeviceIOCallbackWithContext(inputs, 4, nullptr, 0, 1, {});
     float capturedMic = 0, capturedRef = 0;
@@ -60,7 +59,7 @@ TEST_CASE("Optional routing walkthrough applies physical channels only on Finish
     float* outputs[] {out0, out1, out2, out3};
     engine.playChime();
     engine.audioDeviceIOCallbackWithContext(nullptr, 0, outputs, 4, 32, {});
-    CHECK(out2[16] != 0); CHECK(out3[16] == out2[16]);
+    CHECK(out2[16] == 0); CHECK(out3[16] != 0);
     CHECK(out0[16] == 0); CHECK(out1[16] == 0);
 }
 
@@ -95,4 +94,63 @@ TEST_CASE("Routing handles missing channels and Setup opens it only on request",
     button(*wizard, "Finish").onClick(); CHECK_FALSE(wizard->isVisible());
     CHECK(model.engine.micCh.load() == -1); CHECK(model.engine.refCh.load() == -1);
     CHECK(model.engine.outA.load() == -1); CHECK(model.engine.outB.load() == -1);
+}
+
+TEST_CASE("Wizard suggests known interface defaults without applying them", "[app][routing]") {
+    juce::ScopedJuceInitialiser_GUI initialise;
+    AudioEngine engine; engine.micCh = 3; engine.refCh = 2;
+    RoutingWizard wizard(engine);
+    wizard.setChannels({"In 1", "In 2", "In 3", "In 4"}, {"Out 1", "Out 2"});
+    wizard.setDevices("BEHRINGER UMC404HD", "UMC404HD"); wizard.begin();
+    CHECK(choice(wizard).getSelectedId() == 2);
+    CHECK(engine.micCh.load() == 3);
+    button(wizard, "Next").onClick(); CHECK(choice(wizard).getSelectedId() == 3);
+    button(wizard, "Next").onClick(); CHECK(choice(wizard).getSelectedId() == 3);
+    button(wizard, "Next").onClick(); CHECK(choice(wizard).getSelectedId() == 2);
+    button(wizard, "Finish").onClick();
+    CHECK(engine.micCh.load() == 0); CHECK(engine.refCh.load() == 1);
+    CHECK(engine.outA.load() == 0); CHECK(engine.outB.load() == 1);
+    engine.micCh = 3;
+    wizard.setDevices("Unknown USB", "Unknown USB"); wizard.begin();
+    CHECK(choice(wizard).getSelectedId() == 5);
+    // A known input paired with an unrelated output must also remain manual.
+    wizard.setDevices("UMC404HD", "Unknown USB"); wizard.begin();
+    CHECK(choice(wizard).getSelectedId() == 5);
+}
+
+TEST_CASE("Each wizard connection reports pass or swapped inputs without applying the draft", "[app][routing]") {
+    juce::ScopedJuceInitialiser_GUI initialise;
+    AudioEngine engine; RoutingWizard wizard(engine);
+    wizard.setChannels({"In 1", "In 2"}, {"Out 1", "Out 2"});
+    auto statusContains = [&](const char* text) {
+        for (int i = 0; i < wizard.getNumChildComponents(); ++i)
+            if (auto* label = dynamic_cast<juce::Label*>(wizard.getChildComponent(i)))
+                if (label->getText().contains(text)) return true;
+        return false;
+    };
+    std::vector<float> signal(48000, 0.1f), silence(48000), a(48000), b(48000);
+    float* outputs[] {a.data(), b.data()};
+    for (int step = 0; step < 4; ++step) {
+        const int expected = step == 0 || step == 3 ? 0 : 1;
+        for (bool swapped : {false, true}) {
+            const int active = swapped ? 1 - expected : expected;
+            const float* inputs[] {active == 0 ? signal.data() : silence.data(), active == 1 ? signal.data() : silence.data()};
+            button(wizard, "Test connection").onClick();
+            engine.audioDeviceIOCallbackWithContext(inputs, 2, outputs, 2, 48000, {});
+            const char* expectedText = swapped ? "swap inputs" : "Pass:";
+            for (int attempt = 0; attempt < 50 && !statusContains(expectedText); ++attempt) {
+                juce::Thread::sleep(10);
+                juce::Timer::callPendingTimersSynchronously();
+            }
+            INFO("step " << step << ", swapped " << swapped);
+            CHECK(statusContains(expectedText));
+        }
+        CHECK(engine.micCh.load() == 0); CHECK(engine.refCh.load() == 1);
+        if (step < 3) button(wizard, "Next").onClick();
+    }
+    button(wizard, "Back").onClick();
+    CHECK(statusContains("swap inputs")); // Per-step result survives navigation.
+    button(wizard, "Test connection").onClick();
+    button(wizard, "Skip").onClick();
+    CHECK(engine.connectionResult() == foh::ConnectionResult::pending);
 }

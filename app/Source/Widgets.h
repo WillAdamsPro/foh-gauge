@@ -1,4 +1,5 @@
 #pragma once
+#include <fohcore/routing.h>
 #include <juce_audio_utils/juce_audio_utils.h>
 #include <juce_gui_extra/juce_gui_extra.h>
 #include "fohcore/fohcore.h"
@@ -20,10 +21,16 @@ class AudioEngine : public juce::AudioIODeviceCallback {
     int lastMicChannel = 0;
 public:
     AudioEngine(); // Synthesizes the immutable chime before the audio callback is registered.
-    void playChime() noexcept { chimeRequest.fetch_add(1, std::memory_order_relaxed); }
+    // Message-thread commands; one atomic packet keeps channel selection and request together.
+    void playChime() noexcept { playChime(outA.load()); }
+    void playChime(int output) noexcept;
+    void testConnection(int output, int expectedInput) noexcept;
+    void cancelConnectionTest() noexcept;
+    foh::ConnectionResult connectionResult() const noexcept;
     enum Gen { Off = 0, Pink = 1, Sweep = 2 };
     std::atomic<int> gen{Off}, micCh{0}, refCh{1}, outA{0}, outB{1};
     std::atomic<float> genGainDb{-20.f};
+    static_assert(std::atomic<int>::is_always_lock_free);
     static_assert(std::atomic<float>::is_always_lock_free);
     static_assert(std::atomic<uint64_t>::is_always_lock_free);
     std::atomic<float> micPeak{0}, refPeak{0};
@@ -40,6 +47,10 @@ private:
     std::array<float, 28801> chime {}; // 0.6 seconds at 48 kHz, final sample is zero
     std::atomic<uint64_t> chimeRequest {0};
     uint64_t lastChimeRequest = 0;
+    uint32_t requestSequence = 0; // message thread only
+    std::atomic<uint64_t> testResult {0};
+    foh::ConnectionDetector connectionDetector;
+    int testSamplesRemaining = 0, chimeOutput = -1;
     double chimePosition = 28800;
     foh::PinkNoise pink; foh::LogSweep sweep; float lastGain = -999;
     float scratch[4096] {};
