@@ -128,8 +128,17 @@ DelayResult findDelay(const std::vector<float>& ref, const std::vector<float>& m
 }
 std::vector<double> impulseFromTF(const TFResult& tf) {
     int N = tf.fftSize; if (!isPowerOfTwo(N) || N > (1 << 24)) return {};
+    if (N < 2 || !std::isfinite(tf.sampleRate) || tf.sampleRate < 1
+        || tf.H.size() != size_t(N / 2 + 1)) return {};
+    bool signal = false;
+    for (size_t k = 0; k < tf.H.size(); ++k) {
+        auto h = tf.H[k];
+        if (!std::isfinite(h.real()) || !std::isfinite(h.imag()) || std::abs(h) > 1e100) return {};
+        if (k > 0 && !tf.isBlanked(k) && std::abs(h) > 1e-20) signal = true;
+    }
+    if (!signal) return {};
     std::vector<cpx> d((size_t) N);
-    for (int k = 0; k <= N / 2 && k < (int) tf.H.size(); ++k) { d[(size_t) k] = detail::cleanSpectrum(tf.H[(size_t) k]); if (k > 0 && k < N / 2) d[(size_t) (N - k)] = std::conj(d[(size_t) k]); }
+    for (int k = 0; k <= N / 2; ++k) { d[(size_t) k] = tf.isBlanked(size_t(k)) ? cpx{} : tf.H[(size_t) k]; if (k > 0 && k < N / 2) d[(size_t) (N - k)] = std::conj(d[(size_t) k]); }
     FFT(N).inverse(d); std::vector<double> out((size_t) N); for (int i = 0; i < N; ++i) out[(size_t) i] = d[(size_t) i].real();
     return out;
 }

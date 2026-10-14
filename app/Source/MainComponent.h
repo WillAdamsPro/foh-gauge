@@ -2,16 +2,17 @@
 // (appearance, UI scale) and the WorkspaceView that hosts the panels.
 #pragma once
 #include "FloatingPanels.h"
+#include "console/ConsoleWindow.h"
 #include <fohcore/session.h>
 #include "SetupPage.h"
 #include "WorkspaceManager.h"
 #include "WorkspacePresetCommands.h"
 
-class MainComponent : public juce::Component, public juce::ApplicationCommandTarget, private juce::Timer, private juce::ChangeListener, private AppModel::Listener {
+class MainComponent : public juce::Component, public juce::ApplicationCommandTarget, private juce::Timer, private juce::ChangeListener, private juce::KeyListener, private AppModel::Listener {
 public:
     explicit MainComponent(juce::File workspaceFolder = WorkspaceManager::defaultFolder());
     ~MainComponent() override;
-    enum : juce::CommandID { openSessionCommand = 0x3000, saveSessionCommand, saveSessionAsCommand };
+    enum : juce::CommandID { openSessionCommand = 0x3000, saveSessionCommand, saveSessionAsCommand, consoleControlCommand };
     juce::PopupMenu getFileMenu(juce::ApplicationCommandManager&);
     juce::ApplicationCommandTarget* getNextCommandTarget() override { return nullptr; }
     void getAllCommands(juce::Array<juce::CommandID>&) override;
@@ -35,6 +36,7 @@ public:
     void floatPanel(const std::string& id);
     void dockPanel(const std::string& id);
 protected:
+    bool keyPressed(const juce::KeyPress&, juce::Component*) override;
     void timerCallback() override; void changeListenerCallback(juce::ChangeBroadcaster*) override; void modelChanged(int what) override;
     virtual void workspaceSelected() {}
     bool sidebarVisible() const { return !showMode && content.getWidth() >= 1280; } // spec §7: sidebar collapses under 1280 px
@@ -49,6 +51,7 @@ protected:
     int uiScale = 100;
     juce::File sessionFolder;
     std::unique_ptr<juce::FileChooser> sessionChooser;
+    std::unique_ptr<foh::console::ConsoleWindow> consoleWindow;
     std::optional<foh::Json> sessionTargets;
     // Session notices must also close when their owning UI is destroyed.
     juce::ScopedMessageBox sessionNotice;
@@ -63,7 +66,7 @@ protected:
     void openSetup();
     SetupPage setup { model };
     juce::TextButton setupBtn { "Audio Setup" }, splBtn { "SPL Cal" };
-    juce::TextButton wsMenuBtn, showModeBtn;
+    juce::TextButton wsMenuBtn, showModeBtn, expertBtn;
     void openFloatingWindows(); void closeFloatingWindows();
     void showWorkspaceMenu(); void updateSwitcher(); void leaveWorkspace();
     void saveWorkspaceAs(const juce::String& name);

@@ -48,6 +48,43 @@ TEST_CASE("bad JSON is rejected with an error, not a crash") {
     err.clear(); CHECK_FALSE(fromJson(Json::parse(R"({"format":"foh-gauge-workspace","version":99,"id":"x","name":"x","root":{"type":"leaf","panel":"RTA"}})"), w, err));
 }
 
+TEST_CASE("Empty dock roots round-trip after the last panel is floated or closed", "[layout][workspace]") {
+    for (auto workspace : builtInPresets()) {
+        std::vector<std::string> ids; workspace.root.collectPanels(ids);
+        for (const auto& id : ids) {
+            auto neighbour = removePanel(workspace.root, id);
+            workspace.floating.push_back({id, {40, 65, 500, 300}, "main", false, neighbour});
+        }
+        REQUIRE(workspace.root == LayoutNode::leaf(""));
+        Workspace restored; std::string error;
+        REQUIRE(fromJson(toJson(workspace), restored, error));
+        CHECK(toJson(restored) == toJson(workspace));
+        std::vector<std::string> docked; restored.root.collectPanels(docked);
+        CHECK(docked.empty());
+        // Docking after restore can seed a new tree from the empty root.
+        auto panel = restored.floating.back(); restored.floating.pop_back();
+        addAsTab(restored.root, panel.panel, panel.returnNeighbour);
+        CHECK(restored.root.contains(panel.panel));
+        workspace.floating.clear();
+        REQUIRE(fromJson(toJson(workspace), restored, error));
+        CHECK(restored.root == LayoutNode::leaf(""));
+    }
+}
+
+TEST_CASE("Empty root support still rejects absent IDs and empty child leaves", "[layout][workspace]") {
+    auto node = LayoutNode::leaf("RTA"); const auto before = node;
+    std::string error;
+    for (const auto* text : {
+        R"({"type":"leaf"})", R"({"type":"leaf","panel":null})",
+        R"({"type":"leaf","panel":0})",
+        R"({"type":"tabs","children":[{"type":"leaf","panel":""}]})",
+        R"({"type":"split","sizes":[1],"children":[{"type":"leaf","panel":""}]})"}) {
+        REQUIRE_FALSE(fromJson(Json::parse(text), node, error));
+        CHECK(node == before);
+        CHECK_FALSE(error.empty());
+    }
+}
+
 TEST_CASE("Json escapes and numbers round-trip") {
     Json j = Json::object(); j.set("s", "quote \" backslash \\ tab \t \xc2\xb0"); j.set("n", 0.125); j.set("neg", -3); j.set("b", true);
     auto back = Json::parse(j.dump(0)); CHECK(back == j);

@@ -194,24 +194,45 @@ void WorkspaceView::rebuild() {
     layoutDisplay();
     resized(); repaint();
 }
+// Extend only the display copy: Expert never changes a saved preset or guide state.
+LayoutNode WorkspaceView::presentationLayout() {
+    if (showMode) return LayoutNode::leaf("ShowMonitoring");
+    if (!maximised.empty() && ws->root.contains(maximised)) return LayoutNode::leaf(maximised);
+    auto layout = ws->root;
+    if (model.expertMode()) {
+        for (const auto& entry : registry.all()) {
+            if (!layout.contains(entry.id) && !(isFloating && isFloating(entry.id)))
+                fohws::addAsTab(layout, entry.id, "TransferFunction");
+        }
+        // Adding a tab normally selects it. Keep the workspace's current charts
+        // selected when Expert adds the extra tabs.
+        std::function<void(LayoutNode&, const LayoutNode&)> retainActive = [&](LayoutNode& node, const LayoutNode& saved) {
+            if (node.kind == LayoutNode::Tabs) node.active = saved.kind == LayoutNode::Tabs ? saved.active : 0;
+            else if (node.kind == LayoutNode::Split)
+                for (size_t i = 0; i < node.children.size(); ++i) retainActive(node.children[i], saved.children[i]);
+        };
+        retainActive(layout, ws->root);
+    }
+    return layout;
+}
 void WorkspaceView::layoutDisplay() {
     for (auto& [id, p] : panels) if (!(isFloating && isFloating(id))) releasePanel(id, p.get());
-    display = showMode ? LayoutNode::leaf("ShowMonitoring") : maximised.empty() || !ws->root.contains(maximised) ? ws->root : LayoutNode::leaf(maximised);
+    display = presentationLayout();
     auto ms = [this](const std::string& id) { auto* p = panel(id); return p ? p->minSize() : fohws::Size { WS::panelMinWidth, WS::panelMinHeight }; };
     auto pr = [this](const std::string& id) { auto* p = panel(id); return p ? p->priority() : 10; };
-    LayoutNode before = display; if (getWidth() > 0 && getHeight() > 0) fohws::enforceMinSizes(display, getWidth(), getHeight(), ms, pr); collapsed = !(before == display); // collapse rule on a display copy
+    LayoutNode before = display; if (getWidth() > 0 && getHeight() > 0) fohws::enforceMinSizes(display, getWidth(), getHeight(), ms, pr); collapsed = model.expertMode() || !(before == display); // collapse rule on a display copy
     rootComp = buildNode(*this, display, {}); addAndMakeVisible(*rootComp);
 }
 void WorkspaceView::resized() {
     if (!ws) return;
     // re-run the collapse rule when the size changes, so a wide window restores the full preset tree
-    LayoutNode check = showMode ? LayoutNode::leaf("ShowMonitoring") : maximised.empty() ? ws->root : LayoutNode::leaf(maximised);
+    LayoutNode check = presentationLayout();
     auto ms = [this](const std::string& id) { auto* p = panel(id); return p ? p->minSize() : fohws::Size { WS::panelMinWidth, WS::panelMinHeight }; };
     auto pr = [this](const std::string& id) { auto* p = panel(id); return p ? p->priority() : 10; };
     fohws::enforceMinSizes(check, getWidth(), getHeight(), ms, pr);
     bool structural = !rootComp || !sameShape(check, display);
     if (structural) { rootComp.reset(); for (auto& [id, p] : panels) if (!(isFloating && isFloating(id))) releasePanel(id, p.get());
-        display = check; collapsed = !(check == ws->root); rootComp = buildNode(*this, display, {}); addAndMakeVisible(*rootComp); }
+        display = check; collapsed = model.expertMode() || !(check == ws->root); rootComp = buildNode(*this, display, {}); addAndMakeVisible(*rootComp); }
     rootComp->setBounds(getLocalBounds());
 }
 void WorkspaceView::paint(Graphics& g) { g.fillAll(TH().surfaces.background); }

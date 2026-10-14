@@ -23,6 +23,9 @@ foh::Session synthetic() {
     s.rigProfile->subArrangement = foh::RigProfile::SubArrangement::Distributed;
     s.targets = foh::Json::object(); s.targets->set("futureField", "preserved");
     s.workspace.set("id", "alignment"); s.measurement.set("averages", 16);
+    s.measurement.set("smoothing", 12); s.measurement.set("rtaFraction", 3);
+    s.measurement.set("blankThreshold", 0.7); s.measurement.set("refDelayMs", 3.125);
+    s.measurement.set("showMode", true);
     foh::Trace t; t.name = "Synthetic capture / portable"; t.visible = false; t.refDelayMs = 1.2345678901234567;
     t.tf.sampleRate = 96000; t.tf.fftSize = 8; t.tf.averages = 16; t.tf.blankThreshold = 0.6;
     t.tf.freq = {0, 12000}; t.tf.magDb = {-0.12345678901234567, 2}; t.tf.phaseDeg = {1, -90}; t.tf.coherence = {0.8, 0.99}; t.tf.H = {{1, 0}, {0, -1}}; t.tf.blanked = {1, 0};
@@ -202,4 +205,121 @@ TEST_CASE("Syntactically damaged rig manifests fail safely without partial resto
         REQUIRE(loaded.rigProfile); CHECK(loaded.rigProfile->toJson() == s.rigProfile->toJson());
         CHECK(loaded.workspace == s.workspace); CHECK(loaded.captures.size() == s.captures.size());
     }
+}
+
+TEST_CASE("Session manifest rejects wrong types before replacing any data", "[session][regression]") {
+    Bundle bundle; auto original = synthetic(); std::string error, notice;
+    REQUIRE(foh::saveSession(bundle.path, original, error));
+    std::ifstream file(bundle.path / "session.json");
+    const std::string text{std::istreambuf_iterator<char>(file), {}};
+    const auto manifest = foh::Json::parse(text);
+    for (const auto& group : {std::string("devices"), std::string("channels"), std::string("micCal"), std::string("measurement"), std::string()}) {
+        std::vector<std::string> keys;
+        if (group == "devices") keys = {"type", "input", "output", "sampleRate", "bufferSize", "inputChannels", "outputChannels"};
+        else if (group == "channels") keys = {"mic", "reference", "outputA", "outputB"};
+        else if (group == "micCal") keys = {"name", "enabled", "present"};
+        else if (group == "measurement") keys = {"showMode", "averages", "smoothing", "rtaFraction", "blankThreshold", "refDelayMs", "traceColours"};
+        else keys = {"version", "captureCount", "hasTargets", "workspace", "measurement", "splCal"};
+        for (const auto& key : keys) {
+            INFO(group << "." << key);
+            auto j = manifest;
+            if (group.empty()) j.set(key, foh::Json::array());
+            else { auto child = j[group]; child.set(key, foh::Json::object()); j.set(group, child); }
+            std::ofstream(bundle.path / "session.json") << j.dump();
+            auto out = original; notice = "stale";
+            REQUIRE_FALSE(foh::loadSession(bundle.path, out, error, &notice));
+            CHECK_FALSE(error.empty()); CHECK(notice.empty());
+            CHECK(out.deviceType == original.deviceType); CHECK(out.inputDevice == original.inputDevice);
+            CHECK(out.outputDevice == original.outputDevice); CHECK(out.sampleRate == original.sampleRate);
+            CHECK(out.bufferSize == original.bufferSize); CHECK(out.inputChannels == original.inputChannels);
+            CHECK(out.outputChannels == original.outputChannels); CHECK(out.mic == original.mic);
+            CHECK(out.reference == original.reference); CHECK(out.outputA == original.outputA); CHECK(out.outputB == original.outputB);
+            CHECK(out.micCalEnabled == original.micCalEnabled); CHECK(out.micCalName == original.micCalName);
+            CHECK(out.micCalText == original.micCalText); CHECK(out.splCal == original.splCal); CHECK(out.targets == original.targets);
+            REQUIRE(out.rigProfile); CHECK(out.rigProfile->toJson() == original.rigProfile->toJson());
+            CHECK(out.workspace == original.workspace); CHECK(out.measurement == original.measurement);
+            REQUIRE(out.captures.size() == original.captures.size()); CHECK(out.captures[0].tf.H == original.captures[0].tf.H);
+        }
+    }
+}
+
+TEST_CASE("Session requires its asset directories and calibration copy", "[session][regression]") {
+    Bundle bundle; auto s = synthetic(); std::string error;
+    REQUIRE(foh::saveSession(bundle.path, s, error));
+    SECTION("missing captures directory") { std::filesystem::remove_all(bundle.path / "captures"); }
+    SECTION("missing calibration") { std::filesystem::remove(bundle.path / "mic-cal.txt"); }
+    SECTION("empty captures still require directory") {
+        s.captures.clear(); REQUIRE(foh::saveSession(bundle.path, s, error));
+        std::filesystem::remove_all(bundle.path / "captures");
+    }
+    auto out = synthetic(); REQUIRE_FALSE(foh::loadSession(bundle.path, out, error));
+    CHECK_FALSE(error.empty()); CHECK(out.captures.size() == 1);
+}
+
+TEST_CASE("Save rejects data that Open cannot accept and preserves the destination", "[session][regression]") {
+    Bundle bundle; auto s = synthetic(); std::string error;
+    REQUIRE(foh::saveSession(bundle.path, s, error));
+    SECTION("wrong target type") { s.targets = foh::Json::array(); }
+    SECTION("wrong SPL type") { s.splCal = foh::Json::array(); }
+    SECTION("wrong device mask") { s.inputChannels = "bad"; }
+    SECTION("wrong channel") { s.mic = 2048; }
+    SECTION("enabled missing calibration") { s.micCalText.clear(); }
+    SECTION("invalid measurement") { s.measurement.set("showMode", "true"); }
+    SECTION("invalid trace colour") { auto a = foh::Json::array(); a.push("oops"); s.measurement.set("traceColours", a); }
+    REQUIRE_FALSE(foh::saveSession(bundle.path, s, error)); CHECK_FALSE(error.empty());
+    CHECK_FALSE(std::filesystem::exists(bundle.path.string() + ".saving"));
+    CHECK_FALSE(std::filesystem::exists(bundle.path.string() + ".backup"));
+    foh::Session loaded; REQUIRE(foh::loadSession(bundle.path, loaded, error));
+    CHECK(loaded.measurement == synthetic().measurement); CHECK(loaded.inputChannels == "11");
+}
+
+#if defined(__unix__) || defined(__APPLE__)
+#include <sys/resource.h>
+#include <sys/wait.h>
+#include <unistd.h>
+#include <csignal>
+TEST_CASE("Write failures preserve session data and remove staging files", "[session][files][regression]") {
+    Bundle root; std::filesystem::create_directory(root.path);
+    const auto destination = root.path / "Synthetic.fohsession";
+    auto s = synthetic(); std::string error;
+    REQUIRE(foh::saveSession(destination, s, error));
+    SECTION("read only destination parent") {
+        if (geteuid() == 0) { WARN("Permission denial requires an unprivileged user"); return; }
+        std::filesystem::permissions(root.path, std::filesystem::perms::owner_read | std::filesystem::perms::owner_exec);
+        const bool saved = foh::saveSession(destination, s, error);
+        std::filesystem::permissions(root.path, std::filesystem::perms::owner_all);
+        CHECK_FALSE(saved); CHECK_FALSE(error.empty());
+    }
+    SECTION("exhausted write capacity") {
+        // Isolate the process-wide limit and SIGXFSZ handling. A tiny file-size
+        // quota deterministically fails a staged asset write, like a full disk,
+        // without filling the developer's disk or adding a production test hook.
+        const auto pid = fork(); REQUIRE(pid >= 0);
+        if (pid == 0) {
+            std::signal(SIGXFSZ, SIG_IGN);
+            struct rlimit limit {8, 8};
+            if (setrlimit(RLIMIT_FSIZE, &limit) != 0) _exit(2);
+            const bool saved = foh::saveSession(destination, s, error);
+            _exit(!saved && !error.empty() ? 0 : 3);
+        }
+        int status = 0; REQUIRE(waitpid(pid, &status, 0) == pid);
+        REQUIRE(WIFEXITED(status)); CHECK(WEXITSTATUS(status) == 0);
+    }
+    CHECK_FALSE(std::filesystem::exists(destination.string() + ".saving"));
+    CHECK_FALSE(std::filesystem::exists(destination.string() + ".backup"));
+    foh::Session loaded; REQUIRE(foh::loadSession(destination, loaded, error));
+    CHECK(loaded.micCalText == s.micCalText); CHECK(loaded.measurement == s.measurement);
+    REQUIRE(loaded.captures.size() == 1); CHECK(loaded.captures[0].tf.H == s.captures[0].tf.H);
+}
+#endif
+
+TEST_CASE("Save refuses to replace a regular file masquerading as a session folder", "[session][regression]") {
+    Bundle bundle; std::ofstream(bundle.path) << "synthetic original";
+    std::string error;
+    REQUIRE_FALSE(foh::saveSession(bundle.path, synthetic(), error));
+    CHECK_FALSE(error.empty());
+    std::ifstream file(bundle.path); const std::string text{std::istreambuf_iterator<char>(file), {}};
+    CHECK(text == "synthetic original");
+    CHECK_FALSE(std::filesystem::exists(bundle.path.string() + ".saving"));
+    CHECK_FALSE(std::filesystem::exists(bundle.path.string() + ".backup"));
 }
