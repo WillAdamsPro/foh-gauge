@@ -49,7 +49,10 @@ MicCal parseMicCal(const std::string& text) {
             double d;
             if (!input::number(tok, d)) {
                 // Conventional column headings are allowed, never partly numeric rows.
-                if (rows.empty() && v.empty() && (tok == "Frequency" || tok == "frequency" || tok == "Freq" || tok == "freq" || tok == "Freq(Hz)" || tok == "freq(hz)" || tok == "Hz" || tok == "hz")) break;
+                std::string heading = tok;
+                std::transform(heading.begin(), heading.end(), heading.begin(), [](unsigned char ch) { return (char) std::tolower(ch); });
+                if (rows.empty() && v.empty() && (heading == "hz" || heading == "freq" || heading == "frequency"
+                    || heading == "freq(hz)" || heading == "frequency(hz)")) break;
                 return bad("Invalid mic calibration number on row " + std::to_string(nrows + 1));
             }
             v.push_back(d);
@@ -65,7 +68,7 @@ MicCal parseMicCal(const std::string& text) {
     std::stable_sort(rows.begin(), rows.end(), [](auto& a, auto& b){ return a[0] < b[0]; });
     for (auto& r : rows) { if (!c.hz.empty() && r[0] <= c.hz.back()) continue; c.hz.push_back(r[0]); c.db.push_back(r[1]); c.phaseDeg.push_back(r[2]); }
     c.hasPhase = nrows > 0 && anyPhase;
-    if (c.hz.size() < 2) return bad("No usable Hz,dB rows found");
+    if (c.hz.size() < 2) c.error = "No usable Hz,dB rows found";
     return c;
 }
 MicCal loadMicCal(const std::string& path) {

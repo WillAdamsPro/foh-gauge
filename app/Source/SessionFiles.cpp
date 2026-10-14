@@ -125,6 +125,12 @@ bool MainComponent::readSession(const File& folder) {
         setup.inputChannels.parseString(String(s.inputChannels), 2); setup.outputChannels.parseString(String(s.outputChannels), 2);
         auto deviceError = model.dm.setAudioDeviceSetup(setup, true); available = deviceError.isEmpty();
     }
+    if (!available) {
+        // Never attach routing from the missing/failed device to the previous
+        // live device or JUCE's partially opened replacement.
+        model.dm.closeAudioDevice();
+        s.mic = s.reference = s.outputA = s.outputB = -1;
+    }
     model.rigProfile = s.rigProfile;
     model.notify(AppModel::Rig);
     setShowMode(false); leaveWorkspace(); view.setWorkspace(nullptr);
