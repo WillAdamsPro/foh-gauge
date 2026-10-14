@@ -4,6 +4,7 @@
 #include "fohcore/format.h"
 #include <atomic>
 #include <complex>
+#include <cmath>
 #include <cstdint>
 #include <limits>
 #include <string>
@@ -40,6 +41,7 @@ private:
 // ---------- FFT (radix-2, precomputed twiddles) ----------
 class FFT {
 public:
+    // Power of two in [1, 2^24]; invalid sizes/storage throw invalid_argument.
     explicit FFT(int size);
     int size() const { return n; }
     void forward(std::vector<cpx>& data) const;   // in place
@@ -60,7 +62,7 @@ class PinkNoise {   // Paul Kellet refined filter on white noise, ~-3 dB/oct
 public:
     explicit PinkNoise(uint32_t seed = 12345) : state(seed ? seed : 1) {}
     float next() noexcept FOH_RT;
-    void process(float* out, int n) noexcept FOH_RT { for (int i = 0; i < n; ++i) out[i] = next(); }
+    void process(float* out, int n) noexcept FOH_RT { ScopedFlushDenormals ftz; if (out) for (int i = 0; i < n; ++i) out[i] = next(); }
     void setGainDb(float db) noexcept;
 private:
     float white() noexcept;
@@ -73,9 +75,11 @@ private:
 // next()/process() on the audio thread; reset()/setGainDb() from any thread (atomic request).
 class LogSweep {    // exponential sine sweep (Farina), loops with silence gap
 public:
+    // Invalid parameters disable the sweep. Finite gains clamp to [-240, 60] dB;
+    // non-finite gains mute both generators.
     void prepare(double sampleRate, double f1, double f2, double seconds, double gapSeconds = 0.5);
     float next() noexcept FOH_RT;
-    void process(float* out, int n) noexcept FOH_RT { for (int i = 0; i < n; ++i) out[i] = next(); }
+    void process(float* out, int n) noexcept FOH_RT { ScopedFlushDenormals ftz; if (out) for (int i = 0; i < n; ++i) out[i] = next(); }
     void reset() noexcept { resetReq.store(true, std::memory_order_release); }
     void setGainDb(float db) noexcept;
     long lengthSamples() const { return sweepLen; }
@@ -103,6 +107,7 @@ private:
 };
 
 // ---------- Fractional-octave smoothing (log-frequency, power domain) ----------
+// Non-finite values become zero; extreme components clamp to +/-1e100.
 // fraction: 3 => 1/3 oct, 6, 12, 24, 48; 0 => none.
 std::vector<double> smoothPower(const std::vector<double>& power, double binHz, int fraction);
 std::vector<cpx> smoothComplex(const std::vector<cpx>& h, double binHz, int fraction);
@@ -113,7 +118,7 @@ std::vector<cpx> smoothComplex(const std::vector<cpx>& h, double binHz, int frac
 enum class TrafficLight : uint8_t { Red = 0, Amber = 1, Green = 2 };
 constexpr double kCoherenceGreen = 0.9, kCoherenceAmber = 0.6;
 constexpr TrafficLight classifyCoherence(double c) {
-    return c >= kCoherenceGreen ? TrafficLight::Green : (c >= kCoherenceAmber ? TrafficLight::Amber : TrafficLight::Red);
+    return !(c >= 0 && c <= 1) ? TrafficLight::Red : c >= kCoherenceGreen ? TrafficLight::Green : (c >= kCoherenceAmber ? TrafficLight::Amber : TrafficLight::Red);
 }
 inline const char* trafficLightName(TrafficLight t) { return t == TrafficLight::Green ? "green" : t == TrafficLight::Amber ? "amber" : "red"; }
 
@@ -167,8 +172,8 @@ public:
     explicit SettleDetector(const ConvergenceSettings& s = {}) : cfg(s) {}
     // Returns settled. elapsedSeconds is the audio time measured so far.
     bool update(double deltaDb, double elapsedSeconds = 0.0) {
-        ++n; streak = (deltaDb == deltaDb && deltaDb < cfg.toleranceDb) ? streak + 1 : 0;
-        if (!done && streak >= cfg.consecutive) { done = true; isSettled = true; }
+        ++n; streak = (std::isfinite(deltaDb) && deltaDb >= 0 && deltaDb < cfg.toleranceDb) ? streak + 1 : 0;
+        if (!done && streak > 0 && streak >= (cfg.consecutive > 0 ? cfg.consecutive : 1)) { done = true; isSettled = true; }
         bool timeout = cfg.maxFrames > 0 ? n >= cfg.maxFrames : (cfg.maxSeconds > 0 && elapsedSeconds >= cfg.maxSeconds);
         if (!done && timeout) { done = true; isUnsettled = true; }
         return isSettled;
@@ -199,6 +204,10 @@ struct ConvergenceState {
 class TransferFunction {
 public:
     TransferFunction(int fftSize = 16384, double sampleRate = 48000.0);
+    // FFT >= 2, finite sample rate >= 1 Hz; invalid configuration throws.
+    // Both channels must share this sample clock; resample mismatched sources upstream.
+    // Reconstruct on rate change (do not mix samples from different rates).
+    // Non-finite/subnormal samples are treated as silence.
     // Feed blocks of reference (x) and measurement (y) samples; 50% overlap Welch.
     void process(const float* ref, const float* meas, int n);
     // Delay applied to the reference (positive = ref delayed, compensating acoustic delay).
@@ -211,7 +220,7 @@ public:
     // averages: 0 = infinite (cumulative); otherwise exponential with ~N frame memory
     void setAverages(int n) { avgN = n; }
     // Bins with coherence below t (0..1) are flagged in TFResult::blanked. 0 disables.
-    void setCoherenceBlankThreshold(double t) { blankThr = t < 0 ? 0 : (t > 1 ? 1 : t); }
+    void setCoherenceBlankThreshold(double t) { blankThr = !std::isfinite(t) || t < 0 ? 0 : (t > 1 ? 1 : t); }
     double coherenceBlankThreshold() const { return blankThr; }
     void reset();
     TFResult result(int smoothingFraction = 0) const;
@@ -262,6 +271,7 @@ struct DelayResult {
     bool ok() const { return error.empty() && !arrivals.empty(); }
 };
 bool twoSpikeFlag(const std::vector<Arrival>& arrivals); // applies the rule to arrivals[0] vs arrivals[1]
+// Paired samples require a shared sample clock, as for TransferFunction.
 // Cross-correlation of meas vs ref (meas = ref delayed). Returns top 3 peaks with
 // sub-sample (parabolic) interpolation. phat = GCC-PHAT weighting.
 DelayResult findDelay(const std::vector<float>& ref, const std::vector<float>& meas, double sampleRate,
@@ -289,9 +299,11 @@ DelayResult findDelay(const std::vector<float>& ref, const std::vector<float>& m
 // Capture length the caller should use: 1 s for mains, 3 s for subs (LF needs
 // many periods for a stable estimate; clamp to 2..4 s for sub work).
 inline int recommendedDelayWindowSamples(double sampleRate, bool sub, double seconds = 0) {
+    if (!std::isfinite(sampleRate) || sampleRate < 1) return 0;
     double s = seconds > 0 ? seconds : (sub ? 3.0 : 1.0);
     if (sub) s = s < 2.0 ? 2.0 : (s > 4.0 ? 4.0 : s);
-    return (int) (s * sampleRate);
+    double samples = s * sampleRate;
+    return samples >= (1 << 23) ? (1 << 23) : (int) samples;
 }
 // Impulse response from an averaged TF (IFFT of H). Empty if fftSize is not a power of two.
 std::vector<double> impulseFromTF(const TFResult& tf);
@@ -301,11 +313,13 @@ struct Band { double fCenter, fLo, fHi; };
 std::vector<Band> octaveBands(int fraction, double fmin = 20.0, double fmax = 20000.0); // base-10 IEC centres
 class RTA {
 public:
+    // Same FFT/rate and sample sanitation contract as TransferFunction.
     RTA(int fftSize = 16384, double sampleRate = 48000.0, int fraction = 3);
     void setFraction(int f);
     void process(const float* x, int n);
     void reset();
     // dBFS per band (sine at full scale ~ 0 dB). Optional cal correction applied (dB per bin added).
+    // Corrections clamp to +/-240 dB; non-finite corrections are ignored.
     std::vector<double> bandsDb() const;
     const std::vector<Band>& bands() const { return bandList; }
     void setCalibrationDb(const std::vector<double>& perBinDb) { calDb = perBinDb; }
@@ -345,7 +359,7 @@ struct MicCal {
     double phaseAt(double f) const;
     // Per-bin correction for a spectrum (dB to ADD = -cal response).
     std::vector<double> correctionDb(int numBins, double binHz) const;
-    // Apply to a TF result in place (divides by mic response).
+    // Apply to a TF result in place (divides by mic response, clamped to +/-240 dB).
     void apply(TFResult& tf) const;
 };
 MicCal parseMicCal(const std::string& text);

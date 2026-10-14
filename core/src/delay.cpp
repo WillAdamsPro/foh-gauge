@@ -1,4 +1,4 @@
-#include "fohcore/fohcore.h"
+#include "dsp_safety.h"
 #include <algorithm>
 #include <cmath>
 #include <limits>
@@ -19,8 +19,9 @@ DelayResult findDelay(const std::vector<float>& ref, const std::vector<float>& m
     return findDelay(ref, meas, fs, o);
 }
 DelayResult findDelay(const std::vector<float>& ref, const std::vector<float>& meas, double fs, const DelayOptions& opt) {
+    ScopedFlushDenormals ftz;
     DelayResult res;
-    if (!(fs > 0) || !std::isfinite(fs)) { res.error = "invalid sample rate"; return res; }
+    if (fs < 1 || !std::isfinite(fs)) { res.error = "invalid sample rate"; return res; }
     size_t Ls = std::min(ref.size(), meas.size());
     if (Ls < 64) { res.error = "window too short (< 64 samples)"; return res; }
     int L = (int) std::min(Ls, (size_t) kMaxWindow); res.samplesUsed = L; res.truncated = Ls > (size_t) kMaxWindow;
@@ -37,6 +38,7 @@ DelayResult findDelay(const std::vector<float>& ref, const std::vector<float>& m
     for (int i = 0; i < L; ++i) {
         float x = ref[(size_t) i], y = meas[(size_t) i];
         if (!std::isfinite(x)) { x = 0; ++res.nonFiniteSamples; } if (!std::isfinite(y)) { y = 0; ++res.nonFiniteSamples; }
+        x = detail::cleanSample(x); y = detail::cleanSample(y);
         anyX |= x != 0; anyY |= y != 0; X[(size_t) i] = x; Y[(size_t) i] = y; }
     if (!anyX || !anyY) { res.error = !anyX ? "reference is silent" : "measurement is silent"; return res; }
     fft.forward(X); fft.forward(Y);
@@ -99,7 +101,7 @@ DelayResult findDelay(const std::vector<float>& ref, const std::vector<float>& m
         for (int it = 0; it < 30; ++it) {
             if (f1 > f2) { hi = x2; x2 = x1; f2 = f1; x1 = hi - gr * (hi - lo); f1 = std::fabs(rAt(x1)); }
             else { lo = x1; x1 = x2; f1 = f2; x2 = lo + gr * (hi - lo); f2 = std::fabs(rAt(x2)); } }
-        double ds = std::max((double) -nNeg, 0.5 * (lo + hi));
+        double ds = std::clamp(0.5 * (lo + hi), (double) -nNeg, (double) L - 1);
         ar.delaySamples = ds; ar.delayMs = ds / fs * 1000.0; ar.distanceM = ds / fs * c; ar.inverted = rAt(ds) < 0;
     }
     // level: |analytic correlation| evaluated exactly at the fractional delay (band-limited DFT sum),
@@ -125,9 +127,9 @@ DelayResult findDelay(const std::vector<float>& ref, const std::vector<float>& m
     return res;
 }
 std::vector<double> impulseFromTF(const TFResult& tf) {
-    int N = tf.fftSize; if (!isPowerOfTwo(N)) return {};
+    int N = tf.fftSize; if (!isPowerOfTwo(N) || N > (1 << 24)) return {};
     std::vector<cpx> d((size_t) N);
-    for (int k = 0; k <= N / 2 && k < (int) tf.H.size(); ++k) { d[(size_t) k] = tf.H[(size_t) k]; if (k > 0 && k < N / 2) d[(size_t) (N - k)] = std::conj(tf.H[(size_t) k]); }
+    for (int k = 0; k <= N / 2 && k < (int) tf.H.size(); ++k) { d[(size_t) k] = detail::cleanSpectrum(tf.H[(size_t) k]); if (k > 0 && k < N / 2) d[(size_t) (N - k)] = std::conj(d[(size_t) k]); }
     FFT(N).inverse(d); std::vector<double> out((size_t) N); for (int i = 0; i < N; ++i) out[(size_t) i] = d[(size_t) i].real();
     return out;
 }

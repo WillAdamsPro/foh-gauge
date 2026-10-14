@@ -1,4 +1,4 @@
-#include "fohcore/fohcore.h"
+#include "dsp_safety.h"
 #include <algorithm>
 #include <array>
 #include <cctype>
@@ -13,7 +13,7 @@ MicCal parseMicCal(const std::string& text) {
     while (std::getline(in, line)) {
         std::string low = line; std::transform(low.begin(), low.end(), low.begin(), [](unsigned char ch){ return (char) std::tolower(ch); });
         auto sf = low.find("sens factor");
-        if (sf != std::string::npos) { auto eq = low.find_first_of("=:", sf); if (eq != std::string::npos) try { c.sensitivityOffsetDb = std::stod(low.substr(eq + 1)); c.hasSensFactor = true; } catch (...) {}
+        if (sf != std::string::npos) { auto eq = low.find_first_of("=:", sf); if (eq != std::string::npos) try { double value = std::stod(low.substr(eq + 1)); if (std::isfinite(value)) { c.sensitivityOffsetDb = value; c.hasSensFactor = true; } } catch (...) {}
             std::string t = line; while (!t.empty() && (t.back() == '\r' || t.back() == '\n' || t.back() == ' ')) t.pop_back();
             size_t b = t.find_first_not_of(" \t\"\xEF\xBB\xBF"); t = b == std::string::npos ? "" : t.substr(b); if (!t.empty() && t.back() == '"') t.pop_back();
             c.sensFactorLine = t; continue; }
@@ -38,17 +38,23 @@ MicCal loadMicCal(const std::string& path) {
     std::stringstream ss; ss << f.rdbuf(); return parseMicCal(ss.str());
 }
 static double interp(const std::vector<double>& hz, const std::vector<double>& v, double f) {
-    if (hz.empty()) return 0; if (f <= hz.front()) return v.front(); if (f >= hz.back()) return v.back();
+    if (hz.empty() || hz.size() != v.size() || !std::isfinite(f)) return 0;
+    if (f <= hz.front()) return detail::cleanSpectrum(v.front());
+    if (f >= hz.back()) return detail::cleanSpectrum(v.back());
     auto it = std::upper_bound(hz.begin(), hz.end(), f); size_t i = (size_t) (it - hz.begin());
-    double t = std::log(f / hz[i-1]) / std::log(hz[i] / hz[i-1]); return v[i-1] + t * (v[i] - v[i-1]);
+    if (i == 0 || i >= hz.size() || hz[i-1] <= 0 || hz[i] <= hz[i-1]) return 0;
+    double t = (std::log(f) - std::log(hz[i-1])) / (std::log(hz[i]) - std::log(hz[i-1]));
+    return detail::cleanSpectrum((1 - t) * detail::cleanSpectrum(v[i-1]) + t * detail::cleanSpectrum(v[i]));
 }
 double MicCal::dbAt(double f) const { return interp(hz, db, f); }
 double MicCal::phaseAt(double f) const { return hasPhase ? interp(hz, phaseDeg, f) : 0.0; }
 std::vector<double> MicCal::correctionDb(int n, double bin) const {
+    if (n <= 0) return {};
     std::vector<double> o((size_t) n); for (int k = 0; k < n; ++k) o[(size_t) k] = k == 0 ? 0 : -dbAt(k * bin); return o; }
 void MicCal::apply(TFResult& tf) const {
-    for (size_t k = 1; k < tf.H.size(); ++k) { double f = tf.freq[k];
-        cpx m = std::polar(std::pow(10.0, dbAt(f) / 20.0), phaseAt(f) * M_PI / 180.0);
-        tf.H[k] /= m; tf.magDb[k] = 20.0 * std::log10(std::abs(tf.H[k]) + 1e-12); tf.phaseDeg[k] = std::arg(tf.H[k]) * 180.0 / M_PI; }
+    size_t n = std::min({tf.H.size(), tf.freq.size(), tf.magDb.size(), tf.phaseDeg.size()});
+    for (size_t k = 1; k < n; ++k) { double f = tf.freq[k];
+        cpx m = std::polar(std::pow(10.0, detail::correction(dbAt(f)) / 20.0), std::remainder(phaseAt(f), 360.0) * M_PI / 180.0);
+        tf.H[k] = detail::cleanSpectrum(tf.H[k]) / m; tf.magDb[k] = 20.0 * std::log10(std::abs(tf.H[k]) + 1e-12); tf.phaseDeg[k] = std::arg(tf.H[k]) * 180.0 / M_PI; }
 }
 }

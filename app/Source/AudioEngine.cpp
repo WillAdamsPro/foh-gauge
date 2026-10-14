@@ -35,6 +35,7 @@ void AudioEngine::audioDeviceAboutToStart(AudioIODevice* d) {
 }
 void AudioEngine::audioDeviceIOCallbackWithContext(const float* const* in, int nIn, float* const* out, int nOut, int n,
                                                    const AudioIODeviceCallbackContext&) {
+    foh::ScopedFlushDenormals ftz;
     const float g = genGainDb.load(); if (g != lastGain) { pink.setGainDb(g + 20.f); sweep.setGainDb(g + 12.f); lastGain = g; }
     const int mode = gen.load(), oa = outA.load(), ob = outB.load();
     const auto request = chimeRequest.load(std::memory_order_relaxed);
@@ -63,8 +64,10 @@ void AudioEngine::audioDeviceIOCallbackWithContext(const float* const* in, int n
         if (mp) micRing.push(mp, m); else { std::fill(scratch, scratch + m, 0.f); micRing.push(scratch, m); }
         if (rp) refRing.push(rp, m); else { std::fill(scratch, scratch + m, 0.f); refRing.push(scratch, m); }
         auto peakOf = [m](const float* data) {
-            auto range = FloatVectorOperations::findMinAndMax(data, m);
-            return std::max(std::abs(range.getStart()), std::abs(range.getEnd()));
+            float peak = 0;
+            for (int i = 0; i < m; ++i)
+                if (std::isfinite(data[i])) peak = std::max(peak, std::abs(data[i]));
+            return peak;
         };
         if (mp) fetch_max(micPeak, peakOf(mp));
         if (rp) fetch_max(refPeak, peakOf(rp));
