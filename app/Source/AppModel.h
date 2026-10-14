@@ -4,6 +4,8 @@
 #pragma once
 #include "Widgets.h"
 #include "AnalysisEngine.h"
+#include <fohcore/json.h>
+#include <map>
 
 class AppModel : private juce::Timer {
 public:
@@ -57,6 +59,19 @@ public:
     struct { bool active = false, unsettled = false; juce::String name; double startMs = 0; uint64_t resetId = 0; bool resetAcknowledged = false; std::function<void(bool)> then; } capture;
     void beginCapture(const juce::String& name, std::function<void(bool)> then);
 
+    // SPL calibration is message-thread state, keyed by audio system/device/channel.
+    std::map<std::string, foh::SplCal> splCals;
+    double micLevelDbfs = -120; bool micLevelValid = false;
+    bool micLevelReady() const;
+    std::string splInputKey() const;
+    foh::SplCal splCal() const;
+    double splSensitivity() const { return calOn && cal.hasSensFactor ? cal.sensitivityOffsetDb : 0; }
+    double micLevel() const { return splCal().level(micLevelDbfs - (calOn ? cal.dbAt(1000) : 0), splSensitivity()); }
+    bool calibrateSpl(double knownLevel);
+    void clearSpl();
+    foh::Json splCalJson() const;
+    void loadSplCalJson(const foh::Json&);
+
     // ---- mic cal
     foh::MicCal cal; juce::String calFile; std::string calText; bool calOn = false;
     void loadCalFile(const juce::File& f);
@@ -73,6 +88,7 @@ public:
     void setInspector(const juce::String& title, const juce::String& text) { inspectorTitle = title; inspectorText = text; notify(Overlay); }
 
 private:
+    std::string levelInputKey; uint64_t levelInputEpoch = 0; double levelTimeMs = 0;
     void timerCallback() override;
     juce::ListenerList<Listener> listeners;
     uint64_t lastSeq = 0, lastDelaySeq = 0, nextDelayId = 0, nextCaptureId = 0;

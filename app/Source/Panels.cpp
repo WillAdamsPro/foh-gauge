@@ -241,9 +241,11 @@ public:
     void resized() override { auto r = getLocalBounds().reduced(pad, 6); auto row = controlRow(r); frac.setBounds(row.removeFromRight(120)); target.setBounds(controlRow(r)); plot.setBounds(r); }
     void modelChanged(int w) override {
         if (w & AppModel::Settings) frac.setSelectedId(model.rtaFraction, dontSendNotification);
-        if (!(w & (AppModel::Snapshot | AppModel::Theme | AppModel::Overlay)) || !isShowing()) return;
+        if (!(w & (AppModel::Snapshot | AppModel::Theme | AppModel::Overlay | AppModel::Cal | AppModel::Settings)) || !isShowing()) return;
+        const auto spl = model.splCal();
+        plot.yLabel = spl.unit(); plot.yMin = spl.calibrated ? 0 : -100; plot.yMax = spl.calibrated ? 140 : 0;
         plot.series.clear(); plot.barLo.clear(); plot.barHi.clear(); PlotComponent::Series s; s.c = C::accent(); s.label = "Live";
-        for (size_t i = 0; i < model.rtaDb.size() && i < model.rtaBands.size(); ++i) { auto& b = model.rtaBands[i]; plot.barLo.push_back(b.fLo); plot.barHi.push_back(b.fHi); s.f.push_back(b.fCenter); s.v.push_back(model.rtaDb[i]); }
+        for (size_t i = 0; i < model.rtaDb.size() && i < model.rtaBands.size(); ++i) { auto& b = model.rtaBands[i]; plot.barLo.push_back(b.fLo); plot.barHi.push_back(b.fHi); s.f.push_back(b.fCenter); s.v.push_back(spl.level(model.rtaDb[i], model.splSensitivity())); }
         plot.series.push_back(s); target.appendTo(plot); plot.note = model.calApplied ? "cal applied" : ""; plot.repaint();
     }
 private:
@@ -336,12 +338,12 @@ public:
             Colour c = db > -1 ? C::danger() : db > -12 ? C::warning() : db > -40 ? C::ok() : C::textAxis();
             g.setColour(c); g.fillRoundedRectangle(bar.withWidth(bar.getWidth() * frac), 3.f);
             g.setColour(C::textSecondary()); float x = bar.getX() + bar.getWidth() * (40.f / 60.f); g.fillRect(x, bar.getY() - 3, 1.f, bar.getHeight() + 6); // -20 dBFS target mark
-            String st = db > -1 ? u8("\xe2\x96\xa0 CLIP") : db > -40 ? u8("\xe2\x97\x8f ") + String(db, 1) + " dBFS" : u8("\xe2\x96\xb2 no signal");
+            String st = db > -1 ? u8("\xe2\x96\xa0 CLIP") : i == 0 && model.splCal().calibrated ? (model.micLevelReady() ? String(model.micLevel(), 1) + " dB SPL" : String("-- dB SPL")) : db > -40 ? u8("\xe2\x97\x8f ") + String(db, 1) + " dBFS" : u8("\xe2\x96\xb2 no signal");
             g.setColour(C::textPrimary()); g.setFont(FohLookAndFeel::numeric(T::small, false)); g.drawText(st, val, Justification::centredRight); }
         g.setColour(C::textSecondary()); g.setFont(FohLookAndFeel::font(T::axisTick)); g.drawText("target -20 dBFS on pink noise", r.removeFromTop(16), Justification::left);
     }
     void modelChanged(int w) override {
-        if (!(w & (AppModel::Levels | AppModel::Theme))) return;
+        if (!(w & (AppModel::Levels | AppModel::Theme | AppModel::Cal | AppModel::Settings))) return;
         auto upd = [](float& v, float lin) { float db = lin > 1e-6f ? 20.f * std::log10(lin) : -120.f; v = db > v ? db : v - 1.5f; v = std::max(v, -120.f); }; // fast attack, slow release
         upd(micDb, model.micPeak); upd(refDb, model.refPeak); repaint();
     }

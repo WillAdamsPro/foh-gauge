@@ -33,6 +33,7 @@ MainComponent::MainComponent() {
     content.addAndMakeVisible(view);
     content.addChildComponent(setup);
     setup.onDone = [this] { setup.setVisible(false); view.setVisible(true); openFloatingWindows(); };
+    content.addAndMakeVisible(splBtn); splBtn.onClick = [this] { openSetup(); setup.focusSplCalibration(); };
     content.addAndMakeVisible(setupBtn); setupBtn.onClick = [this] { openSetup(); };
     model.requestWorkspace = [this](const std::string& id) { selectWorkspace(id); };
     content.addAndMakeVisible(wsMenuBtn); wsMenuBtn.setButtonText(u8("Workspace \xe2\x96\xbe")); wsMenuBtn.onClick = [this] { showWorkspaceMenu(); };
@@ -246,6 +247,7 @@ void MainComponent::paintContent(Graphics& g) {
 void MainComponent::layoutContent() {
     const int top = D::statusBarHeight(), nw = sidebarVisible() ? D::navWidth() : 0;
     auto bar = content.getLocalBounds().removeFromTop(top).reduced(12, 0); bar.removeFromLeft(130);
+    splBtn.setBounds(bar.removeFromRight(80).withSizeKeepingCentre(80, 30)); bar.removeFromRight(8);
     setupBtn.setBounds(bar.removeFromRight(106).withSizeKeepingCentre(106, 30)); bar.removeFromRight(8);
     pauseBtn.setBounds(bar.removeFromRight(84).withSizeKeepingCentre(84, 30)); bar.removeFromRight(12);
     showModeBtn.setBounds(bar.removeFromRight(96).withSizeKeepingCentre(96, 30)); bar.removeFromRight(8);
@@ -280,7 +282,7 @@ void MainComponent::timerCallback() {
     auto lvl = [&](const char* n, float p) { return P::Pill{ String(n) + " " + dbs(p), p > 0.99f ? P::Poor : p > 0.01f ? P::Good : P::Caution }; };
     std::vector<P::Pill> v { { model.paused ? "Paused" : "Measuring", model.paused ? P::Caution : P::Good },
                              { dev ? dev->getName() + u8(" \xc2\xb7 ") + String((int) fs / 1000) + " kHz" : String("No device"), dev ? P::None : P::Poor },
-                             lvl("Mic", mp), lvl("Ref", rp), { model.calApplied ? "Cal on" : "Cal off", model.calApplied ? P::Good : P::None }, { "Ref delay " + String(model.refDelayMs, 2) + " ms", P::None } };
+                             P::Pill{ "Mic " + (model.splCal().calibrated ? (model.micLevelReady() ? String(model.micLevel(), 1) + " dB SPL" : String("-- dB SPL")) : dbs(mp)), mp > 0.99f ? P::Poor : P::None }, lvl("Ref", rp), { model.calApplied ? "Cal on" : "Cal off", model.calApplied ? P::Good : P::None }, { "Ref delay " + String(model.refDelayMs, 2) + " ms", P::None } };
     if (clip) v.push_back({ "CLIPPING", P::Poor });
     status.setPills(std::move(v));
 }

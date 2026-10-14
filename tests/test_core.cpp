@@ -559,7 +559,7 @@ TEST_CASE("D-SUBGD: sub delay from XO-band phase = 12.5 ms; alternatives +-1 per
 }
 // ---- Calibration (QA A4)
 static std::string slurp(const std::string& p) { std::ifstream f(p, std::ios::binary); std::stringstream ss; ss << f.rdbuf(); return ss.str(); }
-TEST_CASE("C4 Sens Factor parsed and exposed, never applied", "[PartA][C4]") {
+TEST_CASE("C4 Sens Factor excluded from frequency and TF correction", "[PartA][C4]") {
     auto base = slurp(std::string(FOH_TEST_DATA) + "/synthetic-mic-cal.csv"); base = base.substr(base.find('\n') + 1); // drop the file's own Sens Factor line
     auto with = parseMicCal("\"Sens Factor =-1.5dB, SERNO: 123\"\r\n" + base), without = parseMicCal(base);
     REQUIRE(with.ok()); REQUIRE(with.hasSensFactor); REQUIRE(with.sensitivityOffsetDb==Approx(-1.5)); REQUIRE(with.sensFactorLine=="Sens Factor =-1.5dB, SERNO: 123");
