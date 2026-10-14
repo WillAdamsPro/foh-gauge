@@ -5,7 +5,7 @@ EasySetup::EasySetup(AppModel& m) : model(m) {
     addAndMakeVisible(form);
     title.setText("Easy Setup (optional)", dontSendNotification);
     title.setFont(FohLookAndFeel::font(20, true));
-    instructions.setText("Choose the W guides for your rig. Skip keeps the current flow. Counts describe main speaker groups.", dontSendNotification);
+    instructions.setText("Choose the W guides for your rig. Skip restores the default flow. Counts describe main speaker groups.", dontSendNotification);
     instructions.setJustificationType(Justification::topLeft);
     clusterLabel.setText("Main speaker clusters", dontSendNotification);
     cabinetLabel.setText("Cabinets per cluster", dontSendNotification);
@@ -19,7 +19,7 @@ EasySetup::EasySetup(AppModel& m) : model(m) {
     arrangement.addItem("Centre", 1); arrangement.addItem("Left / right", 2);
     arrangement.addItem("Distributed", 3); arrangement.addItem("Other", 4);
     subs.onClick = [this] { arrangement.setEnabled(subs.getToggleState()); };
-    skip.onClick = [this] { auto close = onClose; if (close) close(); };
+    skip.onClick = [this] { model.rigProfile.reset(); model.notify(AppModel::Rig); if (onClose) onClose(); };
     apply.onClick = [this] {
         foh::RigProfile r;
         r.clusters = clusters.getText().getIntValue(); r.cabinetsPerCluster = cabinets.getText().getIntValue();

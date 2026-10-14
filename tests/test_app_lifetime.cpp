@@ -86,10 +86,19 @@ TEST_CASE("Session replacement destroys windows before replacing their borrowed 
     main.floatPanel("RTA");
     const auto session = temporary.folder.getChildFile("Synthetic.fohsession");
     REQUIRE(main.writeSession(session));
+    SECTION("Older session without rig answers") {}
+    SECTION("Invalid optional rig answers still restore the session") {
+        auto manifestFile = session.getChildFile("session.json");
+        auto manifest = foh::Json::parse(manifestFile.loadFileAsString().toStdString());
+        auto rig = foh::RigProfile{}.toJson(); rig.set("clusters", -1);
+        manifest.set("rigProfile", rig);
+        REQUIRE(manifestFile.replaceWithText(juce::String(manifest.dump())));
+    }
     REQUIRE(main.floatingCount() == 1);
     main.floating(0)->onClose();
     REQUIRE(main.readSession(session));
-    // The isolated model has no devices; dismiss the expected fallback notice.
+    // Session open must return before its asynchronous device/rig fallback notice
+    // is dismissed, including when JUCE modal loops are enabled.
     juce::ModalComponentManager::getInstance()->cancelAllModalComponents();
     drainMessages();
     main.selectWorkspace("rta-show");

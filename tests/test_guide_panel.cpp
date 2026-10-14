@@ -2,6 +2,7 @@
 #include "Panels.h"
 #include "Diagrams.h"
 #include "FloatingPanels.h"
+#include "WorkspaceView.h"
 #include <stdexcept>
 #include "ui_form_helpers.h"
 
@@ -28,7 +29,8 @@ void AppModel::setCalEnabled(bool on) { calOn = on && cal.ok(); notify(Cal); }
 void AppModel::clearSpl() { throw std::logic_error("Unexpected SPL calibration"); }
 foh::Json AppModel::splCalJson() const { return foh::Json::object(); }
 void AppModel::loadSplCalJson(const foh::Json&) {}
-void AppModel::requestDelay(bool, std::function<void()>) { throw std::logic_error("Unexpected delay request"); }
+static std::function<void()> guideDelay;
+void AppModel::requestDelay(bool, std::function<void()> then) { guideDelay = std::move(then); }
 void AppModel::lockDelayFromLast() { throw std::logic_error("Unexpected delay lock"); }
 static std::function<void(AppModel&, const juce::String&, std::function<void(bool)>)> guideCapture;
 void AppModel::beginCapture(const juce::String& name, std::function<void(bool)> then) {
@@ -215,6 +217,33 @@ TEST_CASE("Verify rejects reference-delay changes and stale completion after gui
     state.set("guide", 4); state.set("step", 0); panel->loadState(state); capture.finish(model);
     CHECK(panel->saveState()["guide"].asInt() == 4);
     CHECK(panel->saveState()["step"].asInt() == 0);
+}
+
+TEST_CASE("Pending Store and Verify completions expire when a guide is destroyed", "[app][guide][lifetime]") {
+    juce::ScopedJuceInitialiser_GUI gui;
+    for (int guide = 0; guide < 5; ++guide) {
+        for (bool verify : {false, true}) {
+            AppModel model; CaptureStub capture;
+            auto panel = makeGuidePanel(model); panel->setSize(260, 780);
+            auto state = fohws::Json::object(); state.set("guide", guide); state.set("step", 100);
+            panel->loadState(state);
+            button(*panel, "Measure before change").onClick();
+            if (verify) {
+                capture.finish(model);
+                button(*panel, guide == 4 ? "DSP state confirmed" : "I entered the change").onClick();
+                button(*panel, "Re-measure to verify").onClick();
+            }
+            REQUIRE(capture.pending);
+            panel.reset();
+            CHECK_FALSE(model.overlayBuilder);
+            // A replacement guide must remain untouched by its predecessor's callback.
+            auto replacement = makeGuidePanel(model);
+            const auto replacementState = replacement->saveState().dump();
+            capture.finish(model);
+            CHECK(replacement->saveState().dump() == replacementState);
+            CHECK(model.engine.gen.load() == AudioEngine::Off);
+        }
+    }
 }
 
 TEST_CASE("Guide requires a settled baseline and rejects captures with no comparable coherent bins", "[app][guide]") {
@@ -490,5 +519,214 @@ TEST_CASE("Verify controls stay reachable in small scaled guide windows", "[app]
                     CHECK(viewport->getViewArea().intersects(button(*panel, "Re-measure to verify").getBounds()));
             }
         }
+    }
+}
+
+namespace {
+void prepareVerify(Panel& panel, AppModel& model, CaptureStub& capture) {
+    auto state = fohws::Json::object(); state.set("guide", 3); state.set("step", 100);
+    panel.loadState(state);
+    button(panel, "Measure before change").onClick(); capture.finish(model);
+    button(panel, "I entered the change").onClick();
+}
+void cannotPass(Panel& panel) {
+    noteEditor(panel).setText("Synthetic edge case", false); noteEditor(panel).onTextChange();
+    CHECK_FALSE(button(panel, "Pass").isEnabled());
+    button(panel, "Pass").onClick();
+    CHECK_FALSE(labelContains(panel, "PASS:"));
+}
+}
+
+TEST_CASE("Verify needs a stored reference even after deletion during capture", "[app][guide][edges]") {
+    juce::ScopedJuceInitialiser_GUI gui;
+    AppModel model; CaptureStub capture;
+    auto panel = makeGuidePanel(model); panel->setSize(260, 780);
+    SECTION("Restored Verify has no baseline") {
+        auto state = fohws::Json::object(); state.set("guide", 3); state.set("step", 100);
+        panel->loadState(state);
+        CHECK(labelContains(*panel, "Store a new before trace"));
+        CHECK(capture.calls == 0);
+        cannotPass(*panel);
+    }
+    SECTION("Before trace removed before Verify") {
+        prepareVerify(*panel, model, capture);
+        model.removeTrace(0);
+        CHECK(labelContains(*panel, "Stored reference missing"));
+        CHECK(labelContains(*panel, "Store a new before trace"));
+        cannotPass(*panel);
+    }
+    SECTION("Before trace removed while Verify is pending") {
+        prepareVerify(*panel, model, capture);
+        button(*panel, "Re-measure to verify").onClick();
+        model.removeTrace(0); capture.finish(model);
+        CHECK(labelContains(*panel, "Store a new before trace"));
+        cannotPass(*panel);
+    }
+    SECTION("Invalid Store result cannot enable Apply") {
+        auto state = fohws::Json::object(); state.set("guide", 3); state.set("step", 100); panel->loadState(state);
+        button(*panel, "Measure before change").onClick();
+        foh::TFResult malformed; malformed.freq = {100, 1000}; malformed.magDb = {0}; malformed.coherence = {1, 1};
+        REQUIRE(model.traces.store(capture.name.toStdString(), malformed, 0));
+        auto then = std::move(capture.pending); then(true);
+        CHECK(button(*panel, "Measure before change").isVisible());
+        CHECK(labelContains(*panel, "Invalid before trace"));
+        cannotPass(*panel);
+    }
+}
+
+TEST_CASE("Guide rejects input lifecycle changes before and during capture", "[app][guide][edges]") {
+    juce::ScopedJuceInitialiser_GUI gui;
+    for (int change = 0; change < 4; ++change) {
+        for (bool during : {false, true}) {
+            CAPTURE(change, during);
+            AppModel model; CaptureStub capture;
+            auto panel = makeGuidePanel(model); panel->setSize(260, 780);
+            prepareVerify(*panel, model, capture);
+            if (during) button(*panel, "Re-measure to verify").onClick();
+            if (change == 0) model.engine.audioDeviceStopped();
+            if (change == 1) model.engine.audioDeviceError("synthetic disconnect");
+            if (change == 2) model.engine.captureEpoch.fetch_add(1); // device/channel restart
+            if (change == 3) model.engine.sampleRate.store(96000); // even without an epoch update
+            if (during) capture.finish(model);
+            else button(*panel, "Re-measure to verify").onClick();
+            CHECK(labelContains(*panel, "Store a new before trace"));
+            CHECK(capture.calls == (during ? 2 : 1));
+            cannotPass(*panel);
+        }
+    }
+    SECTION("Device change during Store cannot become the baseline") {
+        AppModel model; CaptureStub capture;
+        auto panel = makeGuidePanel(model); panel->setSize(260, 780);
+        auto state = fohws::Json::object(); state.set("guide", 3); state.set("step", 100); panel->loadState(state);
+        button(*panel, "Measure before change").onClick();
+        model.engine.captureEpoch.fetch_add(1); capture.finish(model);
+        CHECK(labelContains(*panel, "Store a new before trace"));
+        CHECK(button(*panel, "Measure before change").isVisible());
+    }
+    SECTION("Device change retires the current recorded verdict") {
+        AppModel model; CaptureStub capture;
+        auto panel = makeGuidePanel(model); panel->setSize(260, 780);
+        prepareVerify(*panel, model, capture);
+        button(*panel, "Re-measure to verify").onClick(); capture.finish(model);
+        noteEditor(*panel).setText("Synthetic comparison", false); noteEditor(*panel).onTextChange();
+        button(*panel, "Pass").onClick(); REQUIRE(labelContains(*panel, "PASS:"));
+        model.engine.captureEpoch.fetch_add(1); model.notify(AppModel::Settings);
+        CHECK(panel->saveState()["verificationNote"].asString().empty());
+        cannotPass(*panel);
+    }
+}
+
+TEST_CASE("Verify rejects silence clipping and invalid raw samples even with a coherent result", "[app][guide][edges]") {
+    juce::ScopedJuceInitialiser_GUI gui;
+    const float bad[] {0, 1, -1, std::numeric_limits<float>::quiet_NaN(),
+        std::numeric_limits<float>::infinity(), std::numeric_limits<float>::denorm_min()};
+    for (float sample : bad) for (int channel : {0, 1}) {
+        CAPTURE(sample, channel);
+        AppModel model; CaptureStub capture;
+        auto panel = makeGuidePanel(model); panel->setSize(260, 780);
+        prepareVerify(*panel, model, capture);
+        button(*panel, "Re-measure to verify").onClick();
+        float mic[32], ref[32];
+        std::fill_n(mic, 32, 0.1f); std::fill_n(ref, 32, 0.1f);
+        std::fill_n(channel == 0 ? mic : ref, 32, sample);
+        const float* inputs[] {mic, ref};
+        model.engine.audioDeviceIOCallbackWithContext(inputs, 2, nullptr, 0, 32, {});
+        // Later healthy input and meter resets must not erase the fault.
+        std::fill_n(mic, 32, 0.1f); std::fill_n(ref, 32, 0.1f);
+        model.engine.audioDeviceIOCallbackWithContext(inputs, 2, nullptr, 0, 32, {});
+        model.engine.micPeak.exchange(0); model.engine.refPeak.exchange(0);
+        capture.finish(model);
+        CHECK(labelContains(*panel, "Silence, clipping or invalid input"));
+        cannotPass(*panel);
+        button(*panel, "Re-measure to verify").onClick(); capture.finish(model);
+        CHECK(labelContains(*panel, "Mean change:")); // fault belongs only to the prior capture
+    }
+}
+
+TEST_CASE("Verify rejects partial frequency grids malformed vectors and nonfinite traces", "[app][guide][edges]") {
+    juce::ScopedJuceInitialiser_GUI gui;
+    for (int edge = 0; edge < 8; ++edge) {
+        CAPTURE(edge);
+        AppModel model; CaptureStub capture;
+        auto panel = makeGuidePanel(model); panel->setSize(260, 780);
+        prepareVerify(*panel, model, capture);
+        button(*panel, "Re-measure to verify").onClick();
+        foh::TFResult tf; tf.freq = {100, 1000}; tf.magDb = {0, 0}; tf.coherence = {1, 1}; tf.phaseDeg = {0, 0};
+        if (edge == 0) tf.freq[1] = 2000; // one matching bin must not enable a verdict
+        if (edge == 1) { tf.freq.push_back(2000); tf.magDb.push_back(0); tf.coherence.push_back(1); tf.phaseDeg.push_back(0); }
+        if (edge == 2) tf.fftSize = 8192;
+        if (edge == 3) tf.sampleRate = 96000;
+        if (edge == 4) tf.magDb.pop_back();
+        if (edge == 5) tf.magDb[1] = std::numeric_limits<double>::quiet_NaN();
+        if (edge == 6) tf.phaseDeg[1] = std::numeric_limits<double>::infinity();
+        if (edge == 7) tf.coherence[1] = std::numeric_limits<double>::quiet_NaN();
+        REQUIRE(model.traces.store(capture.name.toStdString(), tf, 0));
+        auto then = std::move(capture.pending); then(true);
+        CHECK(labelContains(*panel, "Frequency resolution mismatch or invalid trace"));
+        cannotPass(*panel);
+    }
+}
+
+TEST_CASE("Workspace and Show presentation changes retire pending guide work", "[app][guide][edges]") {
+    juce::ScopedJuceInitialiser_GUI gui;
+    for (bool show : {false, true}) {
+        CAPTURE(show);
+        AppModel model; CaptureStub capture;
+        auto& registry = PanelRegistry::standard();
+        fohws::Workspace first, second;
+        first.root = fohws::LayoutNode::leaf("GuideInspector"); second.root = fohws::LayoutNode::leaf("RTA");
+        WorkspaceView view(model, registry); view.setSize(400, 900); view.setVisible(true); view.setWorkspace(&first);
+        auto* panel = view.panel("GuideInspector"); REQUIRE(panel);
+        prepareVerify(*panel, model, capture);
+        button(*panel, "Re-measure to verify").onClick();
+        // Switch repeatedly while retaining the old completion, including returning
+        // to the very same step. The generation must not become valid again.
+        for (int i = 0; i < 5; ++i) {
+            if (show) { view.setShowMode(true); view.setShowMode(false); }
+            else { view.setWorkspace(&second); view.setWorkspace(&first); }
+        }
+        capture.finish(model, 3);
+        if (show) view.setShowMode(false); else view.setWorkspace(&first);
+        CHECK_FALSE(labelContains(*panel, "Mean change:"));
+        cannotPass(*panel);
+        CHECK((labelContains(*panel, "interrupted") || labelContains(*panel, "Store a new before trace")));
+    }
+    SECTION("Delay callback cannot advance a different guide") {
+        AppModel model; auto panel = makeGuidePanel(model); panel->setSize(260, 780);
+        auto state = fohws::Json::object(); state.set("guide", 0); state.set("step", 2); panel->loadState(state);
+        button(*panel, "Find + lock delay").onClick(); REQUIRE(guideDelay);
+        state.set("guide", 4); state.set("step", 0); panel->loadState(state);
+        auto then = std::move(guideDelay); then(); // a live callback would try to lock the delay
+        CHECK(panel->saveState()["step"].asInt() == 0);
+        CHECK(labelContains(*panel, "interrupted"));
+    }
+    SECTION("Dropped delay completion after device restart releases the guide buttons") {
+        AppModel model; auto panel = makeGuidePanel(model); panel->setSize(260, 780);
+        auto state = fohws::Json::object(); state.set("guide", 0); state.set("step", 2); panel->loadState(state);
+        button(*panel, "Find + lock delay").onClick(); REQUIRE(guideDelay);
+        CHECK_FALSE(button(*panel, "Find + lock delay").isEnabled());
+        model.engine.audioDeviceStopped(); model.notify(AppModel::Settings | AppModel::Capture);
+        auto then = std::move(guideDelay); then();
+        CHECK(button(*panel, "Find + lock delay").isEnabled());
+        CHECK(panel->saveState()["step"].asInt() == 2);
+        CHECK(labelContains(*panel, "interrupted"));
+    }
+    SECTION("Queued delay completion checks device state before the next model notification") {
+        AppModel model; auto panel = makeGuidePanel(model); panel->setSize(260, 780);
+        auto state = fohws::Json::object(); state.set("guide", 0); state.set("step", 2); panel->loadState(state);
+        button(*panel, "Find + lock delay").onClick(); REQUIRE(guideDelay);
+        model.engine.audioDeviceError("synthetic disconnect");
+        model.delay.confidence = 1; model.delay.arrivals.push_back({48, 1, 0, 0, false});
+        auto then = std::move(guideDelay); then(); // must not invoke lockDelayFromLast
+        CHECK(panel->saveState()["step"].asInt() == 2);
+        CHECK(labelContains(*panel, "interrupted"));
+    }
+    SECTION("Destroyed guide ignores a queued capture completion") {
+        AppModel model; CaptureStub capture;
+        auto panel = makeGuidePanel(model); panel->setSize(260, 780);
+        prepareVerify(*panel, model, capture);
+        button(*panel, "Re-measure to verify").onClick(); panel.reset();
+        capture.finish(model);
+        CHECK_FALSE(model.overlay.active);
     }
 }
