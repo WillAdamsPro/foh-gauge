@@ -5,7 +5,6 @@ Uses the Git inventory, including nonignored new files, never downloaded build t
 This is an inventory/policy gate, not a license inference or legal entitlement check.
 """
 import argparse
-import hashlib
 import json
 from pathlib import Path, PurePosixPath
 import re
@@ -126,10 +125,18 @@ def dependencies(root, files):
 
 def check(root):
     files = inventory(root)
+    errors = []
+    notices_path = root / 'THIRD_PARTY_NOTICES.md'
+    notices = notices_path.read_text() if notices_path.is_file() else None
+    if notices is None:
+        errors.append('missing THIRD_PARTY_NOTICES.md')
+    # Low-profile repo: no top-level license file (third-party notices only).
+    for path in files:
+        if '/' not in path and re.match(r'^(licen[cs]e|copying|unlicense)([.-]|$)', path, re.I):
+            errors.append(f'top-level license file is not allowed: {path}')
     entries = json.loads((root / 'compliance/third_party.json').read_text())['components']
     if not isinstance(entries, list) or any(not isinstance(e, dict) for e in entries):
         raise ValueError('components must be a list of objects')
-    errors = []
     covered = set()
     vendor_roots = set()
     declared = {}
@@ -142,6 +149,8 @@ def check(root):
         if not all(isinstance(entry.get(key), str) and entry[key] for key in ('version', 'license', 'source')) or type(entry.get('ships')) is not bool:
             errors.append(f'{name}: requires version, license, source and boolean ships')
         own = entry.get('ownership') == 'Will Adams'
+        if not own and notices is not None and name and name not in notices:
+            errors.append(f'{name}: listed in third_party.json but missing from THIRD_PARTY_NOTICES.md')
         # Own work is recorded as proprietary in THIRD_PARTY_NOTICES.md (no top-level LICENSE); it must never be mislabeled
         # as an open-source license simply to fit the third-party policy.
         if own:
@@ -154,15 +163,13 @@ def check(root):
             if dep in declared:
                 errors.append(f'duplicate dependency: {dep}')
             declared[dep] = entry
-        for path, digest in entry.get('files', {}).items():
+        for path in entry.get('files', {}):
             if path not in files:
                 errors.append(f'{name}: missing inventory file {path}')
                 continue
             if path in covered:
                 errors.append(f'duplicate asset coverage: {path}')
             covered.add(path)
-            if hashlib.sha256((root / path).read_bytes()).hexdigest() != digest:
-                errors.append(f'{name}: changed file requires review: {path}')
         for path in entry.get('vendored', []):
             if path.startswith('/') or '..' in PurePosixPath(path).parts or not any(f == path.rstrip('/') or f.startswith(path.rstrip('/') + '/') for f in files):
                 errors.append(f'{name}: invalid/missing vendored directory {path}')

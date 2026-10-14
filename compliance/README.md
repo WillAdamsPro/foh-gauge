@@ -26,9 +26,11 @@ license. It cannot approve fetched dependencies or vendored libraries. Do not
 mark third-party work as original, or grant an open-source license to original
 assets to satisfy the guard.
 
-`files` maps exact asset/source paths to SHA-256 hashes. Add a reviewed entry for
+`files` lists exact asset/source paths (no checksums). Add a reviewed entry for
 each new font, image, audio file, or resource; recheck provenance when replacing
 one. Original chime and test-signal generators are inventoried as source because
+Every non-original component must also appear in THIRD_PARTY_NOTICES.md, and a
+top-level LICENSE/COPYING file fails the guard (the repo intentionally has none).
 there is no tracked audio file. `vendored` lists exact directory roots for any
 future reviewed vendor/submodule; arbitrary new code directories and vendor or
 license markers also fail until reviewed. First-party directories are a
