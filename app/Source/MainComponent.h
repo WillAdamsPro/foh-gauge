@@ -64,6 +64,16 @@ public:
     foh::DelayResult res; double sampleRate = 48000; double preMs = 5, postMs = 45;
 };
 
+// Helper ("What am I looking at?") panel. Docked in the helper column, or, below 1360 px wide,
+// collapsed to a 48 px "?" rail that opens it as an overlay (layout-spec section 5).
+class HelpPanel : public juce::Component {
+public:
+    HelpPanel() { addAndMakeVisible(body); body.setJustificationType(juce::Justification::topLeft); }
+    void paint(juce::Graphics&) override;
+    void resized() override { body.setBounds(getLocalBounds().reduced(14, 0).withTrimmedTop(44).withTrimmedBottom(16)); }
+    juce::Label body; bool overlay = false;
+};
+
 // Status bar pills (layout-spec: auto width, h ~30, padding 6/12, radius 18, 1 px pillBorder, 13 px, 8x8 status mark).
 // Status is never colour-only: good = circle, caution = triangle, poor = square, always with a text label.
 class StatusPills : public juce::Component {
@@ -95,10 +105,14 @@ private:
     bool paused = false; foh::Band2 xover; std::vector<std::pair<juce::String, juce::String>> summaryRows; // step 09 Done card rows (label, value)
     // frame
     juce::OwnedArray<juce::TextButton> nav; int page = 0; StatusPills status; juce::TextButton pauseBtn {"Pause"};
-    juce::Label help, pageTitle;
+    HelpPanel helpPanel; juce::Label& help = helpPanel.body; juce::Label pageTitle; juce::TextButton helpBtn {"?"}; bool helpOpen = false;
+    static constexpr int narrowWidth = 1360, railWidth = 48;
+    bool railMode() const { return getWidth() < narrowWidth; }
+    int helperW() const { return railMode() ? railWidth : foh::ui::dim::helperWidth(); }
+    void layoutHelp();
     // setup
     juce::ComboBox micBox, refBox, outABox, outBBox, genBox; juce::Slider genGain; juce::TextButton calBtn {"Load mic cal..."}, calToggle {"Cal ON"};
-    juce::Label setupHelp, calLabel, levelLabel; juce::ComboBox themeBox;
+    juce::Label setupHelp, calLabel, levelLabel; juce::ComboBox themeBox, scaleBox;
     // TF
     PlotComponent magPlot, phasePlot, cohPlot; juce::ComboBox smoothBox, avgBox; juce::TextButton storeBtn {"Store"}, clearAvgBtn {"Reset avg"};
     juce::Label delayCaption, delayValue, delayDetail; juce::TextButton findBtn {"Find again"}, insertBtn {"Insert delay"};
