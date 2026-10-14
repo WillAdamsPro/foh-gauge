@@ -38,11 +38,31 @@ FloatingPanelWindow::FloatingPanelWindow(Panel& p, fohws::FloatingPanel& state)
     Component::addAndMakeVisible(*pin); Component::addAndMakeVisible(*dock);
     pin->onClick = [this] { setPinned(pin->getToggleState()); if (onChanged) onChanged(); };
     dock->onClick = [this] { if (onDock) onDock(); };
-    auto r = fohws::clampToDisplays(st, currentDisplays(), WS::floatMinWidth, WS::floatMinHeight); // display gone -> main display
-    setBounds(r.x, r.y, r.w, r.h); setPinned(st.alwaysOnTop); restyle();
+    restoreToDisplays(currentDisplays());
+    setPinned(st.alwaysOnTop); restyle();
     setVisible(true); ready = true;
 }
 FloatingPanelWindow::~FloatingPanelWindow() { ready = false; clearContentComponent(); }
+void FloatingPanelWindow::restoreToDisplays(const std::vector<fohws::DisplayInfo>& connected) {
+    // Suppress move/resize callbacks until the saved display has been resolved. Otherwise a
+    // callback can replace its ID midway through recovery with a different display's ID.
+    const bool wasReady = ready;
+    ready = false;
+    auto r = fohws::clampToDisplays(st, connected, WS::floatMinWidth, WS::floatMinHeight);
+    setBounds(r.x, r.y, r.w, r.h);
+    ready = wasReady;
+}
+void FloatingPanelWindow::parentSizeChanged() {
+    // JUCE's Displays::refresh calls this on desktop peers when the monitor arrangement or
+    // work area changes. Recover on the message thread before move callbacks replace the ID.
+    const bool wasReady = ready;
+    ready = false;
+    DocumentWindow::parentSizeChanged();
+    if (wasReady) restoreToDisplays(currentDisplays());
+    ready = wasReady;
+    if (!ready) return;
+    if (onChanged) onChanged();
+}
 void FloatingPanelWindow::setPinned(bool on) { st.alwaysOnTop = on; pin->setToggleState(on, dontSendNotification); setAlwaysOnTop(on); }
 void FloatingPanelWindow::restyle() { setBackgroundColour(TH().surfaces.background); repaint(); }
 void FloatingPanelWindow::moved() { DocumentWindow::moved(); if (!ready) return; auto b = getBounds(); st.bounds = { b.getX(), b.getY(), b.getWidth(), b.getHeight() }; st.displayId = displayIdFor(b); if (onChanged) onChanged(); }

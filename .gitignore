@@ -1,2 +1,8 @@
 build*/
 .DS_Store
+
+# Calibration files must stay local; only synthetic test fixtures may be tracked.
+*.cal
+*.frd
+*-cal.csv
+!tests/data/synthetic-*
