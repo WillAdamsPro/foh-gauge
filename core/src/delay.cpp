@@ -3,11 +3,12 @@
 #include <cmath>
 #include <limits>
 namespace foh {
-static int nextPow2(int n) { int p = 1; while (p < n) p <<= 1; return p; }
+static int nextPow2(int n) { int p = 1; while (p < n && p < (1 << 30)) p <<= 1; return p; } // callers keep n <= 2^24
 // float -> int samples, saturating (no UB for huge/NaN values)
 static int toSamples(double v, int lo, int hi) {
     if (!(v == v)) return lo; if (v <= lo) return lo; if (v >= hi) return hi; return (int) v; }
-static constexpr int kMaxWindow = 1 << 23; // ~175 s @ 48k; keeps FFT size within int
+static constexpr int kMaxWindow = 1 << 23;
+static constexpr double kMinLpHz = 10.0; // ~175 s @ 48k; keeps FFT size within int
 
 bool twoSpikeFlag(const std::vector<Arrival>& a) {
     return a.size() >= 2 && twoSpikeFlag(0.0, a[1].relLevelDb - a[0].relLevelDb, a[1].delayMs - a[0].delayMs);
@@ -27,8 +28,14 @@ DelayResult findDelay(const std::vector<float>& ref, const std::vector<float>& m
     if (!(fs > 0) || !std::isfinite(fs)) { res.error = "invalid sample rate"; return res; }
     size_t Ls = std::min(ref.size(), meas.size());
     if (Ls < 64) { res.error = "window too short (< 64 samples)"; return res; }
-    int L = (int) std::min(Ls, (size_t) kMaxWindow);
-    const int maxArr = std::clamp(opt.maxArrivals, 0, 16); const double c = opt.speedOfSound;
+    int L = (int) std::min(Ls, (size_t) kMaxWindow); res.samplesUsed = L; res.truncated = Ls > (size_t) kMaxWindow;
+    const int maxArr = std::clamp(opt.maxArrivals, 0, 16); const double c = std::isfinite(opt.speedOfSound) && opt.speedOfSound > 0 ? opt.speedOfSound : 343.0;
+    // band weighting sanity: lpHz floored at kMinLpHz (a 1e-12 Hz low-pass would zero the
+    // whole spectrum and leave only numerical noise), both edges clamped below Nyquist,
+    // non-finite edges ignored, and an empty band (hp >= lp) is an error, not a guess
+    double lpHz = std::isfinite(opt.lpHz) && opt.lpHz > 0 ? std::min(std::max(opt.lpHz, kMinLpHz), 0.5 * fs) : 0.0;
+    double hpHz = std::isfinite(opt.hpHz) && opt.hpHz > 0 ? std::min(opt.hpHz, 0.5 * fs) : 0.0;
+    if (lpHz > 0 && hpHz >= lpHz) { res.error = "empty band (hpHz >= lpHz)"; return res; }
     int N = nextPow2(2 * L); FFT fft(N);
     std::vector<cpx> X((size_t) N), Y((size_t) N), Tspec((size_t) N);
     bool anyX = false, anyY = false;
@@ -43,9 +50,9 @@ DelayResult findDelay(const std::vector<float>& ref, const std::vector<float>& m
     for (int k = 0; k < N; ++k) { cpx g = Y[(size_t) k] * std::conj(X[(size_t) k]);
         cpx gl = opt.levelMode == DelayOptions::LevelMode::RefWhitened ? g / (std::norm(X[(size_t) k]) + 1e-3 * meanPx + 1e-30) : g;
         double w = 1.0;
-        if (opt.lpHz > 0 || opt.hpHz > 0) { double f = (k <= N / 2 ? k : N - k) * fs / N;
-            if (opt.lpHz > 0) w *= 1.0 / std::sqrt(1.0 + std::pow(f / opt.lpHz, 8.0));
-            if (opt.hpHz > 0) w *= f > 0 ? 1.0 / std::sqrt(1.0 + std::pow(opt.hpHz / f, 8.0)) : 0.0; }
+        if (lpHz > 0 || hpHz > 0) { double f = (k <= N / 2 ? k : N - k) * fs / N;
+            if (lpHz > 0) w *= 1.0 / std::sqrt(1.0 + std::pow(f / lpHz, 8.0));
+            if (hpHz > 0) w *= f > 0 ? 1.0 / std::sqrt(1.0 + std::pow(hpHz / f, 8.0)) : 0.0; }
         cpx t = g;
         if (opt.phat) { double m = std::abs(g); t = m > 1e-20 ? g / m : cpx{}; }
         X[(size_t) k] = t * w; Tspec[(size_t) k] = t * w;
@@ -54,7 +61,7 @@ DelayResult findDelay(const std::vector<float>& ref, const std::vector<float>& m
         Y[(size_t) k] = gl * (w * h); }
     fft.inverse(X); fft.inverse(Y);
     // positive lags only (meas later than ref); bounded by maxDelayMs
-    if (opt.maxDelayMs > 0) L = std::min(L, std::max(2, toSamples(opt.maxDelayMs * 1e-3 * fs, 0, kMaxWindow) + 2));
+    if (std::isfinite(opt.maxDelayMs) && opt.maxDelayMs > 0) L = std::min(L, std::max(2, toSamples(opt.maxDelayMs * 1e-3 * fs, 0, kMaxWindow) + 2));
     std::vector<double> r((size_t) L), env((size_t) L);
     for (int i = 0; i < L; ++i) { r[(size_t) i] = X[(size_t) i].real(); env[(size_t) i] = std::abs(Y[(size_t) i]); }
     res.impulse = r;
@@ -97,7 +104,7 @@ DelayResult findDelay(const std::vector<float>& ref, const std::vector<float>& m
     for (auto& ar : res.arrivals) { double e = at(env, ar.delaySamples); ar.relLevelDb = (e0 > 0 && e > 0) ? 20.0 * std::log10(e / e0) : -120.0; }
     res.arrivals.erase(std::remove_if(res.arrivals.begin() + 1, res.arrivals.end(), [](const Arrival& a) { return a.relLevelDb < -26.0; }), res.arrivals.end());
     // confidence: peak vs RMS of the timing correlation outside the main lobe, mapped 0..1
-    int excl = std::max(sep, opt.lpHz > 0 ? toSamples(fs / opt.lpHz, 1, L) : sep);
+    int excl = std::max(sep, lpHz > 0 ? toSamples(fs / lpHz, 1, L) : sep);
     int b0 = (int) std::lround(res.arrivals[0].delaySamples);
     double s = 0; size_t cnt = 0;
     for (size_t i = 0; i < a.size(); ++i) if (std::abs((int) i - b0) > excl) { s += a[i] * a[i]; ++cnt; }
