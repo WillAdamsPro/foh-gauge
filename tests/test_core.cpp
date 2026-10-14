@@ -944,3 +944,28 @@ TEST_CASE("Trace store rapid deletion owns synthetic data and tolerates duplicat
         trace.H[0] = {1, 0};
     }
 }
+
+TEST_CASE("RT safety: invalid generator gains and damaged analysis frames allocate no scratch", "[rt][edges][generator]") {
+    constexpr int n = 1024;
+    PinkNoise pink; LogSweep sweep; sweep.prepare(48000, 20, 20000, 0.01, 0);
+    TransferFunction tf(n); RTA rta(n);
+    std::vector<float> block(2 * n);
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+    const float inf = std::numeric_limits<float>::infinity();
+    int allocs;
+    // Include the first frame, overlap, invalid gain -> valid gain, and sweep reset.
+    // Assertions/results stay outside the allocation audit.
+    { AllocGuard guard;
+        for (float value : {0.f, 1.f, -1.f, nan, inf, -inf, std::numeric_limits<float>::denorm_min()}) {
+            pink.setGainDb(value); sweep.setGainDb(value); sweep.reset();
+            pink.process(block.data(), int(block.size()));
+            tf.process(block.data(), block.data(), int(block.size())); rta.process(block.data(), int(block.size()));
+            sweep.process(block.data(), int(block.size()));
+            tf.process(block.data(), block.data(), int(block.size())); rta.process(block.data(), int(block.size()));
+            std::fill(block.begin(), block.end(), value);
+            tf.process(block.data(), block.data(), int(block.size())); rta.process(block.data(), int(block.size()));
+        }
+        allocs = g_allocs;
+    }
+    REQUIRE(allocs == 0);
+}

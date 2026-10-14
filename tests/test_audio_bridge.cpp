@@ -1,4 +1,5 @@
 #include <catch2/catch_test_macros.hpp>
+#include "ui_panel_window.h"
 #include <catch2/catch_approx.hpp>
 #include <catch2/generators/catch_generators.hpp>
 #include "Widgets.h"
@@ -6,6 +7,7 @@
 #include "SettleStatus.h"
 #include "Panels.h"
 #include "SetupPage.h"
+#include "MainComponent.h"
 #include <fohcore/session.h>
 #include <chrono>
 #include <string_view>
@@ -401,8 +403,14 @@ public:
     juce::String open(const juce::BigInteger&, const juce::BigInteger&, double, int) override { return {}; }
     void close() override {}
     bool isOpen() override { return true; }
-    void start(juce::AudioIODeviceCallback*) override {}
-    void stop() override {}
+    juce::AudioIODeviceCallback* callback = nullptr;
+    void start(juce::AudioIODeviceCallback* c) override {
+        callback = c; if (callback) callback->audioDeviceAboutToStart(this);
+    }
+    void stop() override {
+        if (callback) callback->audioDeviceStopped();
+        callback = nullptr;
+    }
     bool isPlaying() override { return true; }
     juce::String getLastError() override { return {}; }
     int getCurrentBufferSizeSamples() override { return block; }
@@ -1143,8 +1151,7 @@ TEST_CASE("Multi-mic TF average overlays the target with controls reachable", "[
     REQUIRE(panel);
     const auto minimum = panel->minSize();
     panel->setBounds(0, 0, minimum.w, minimum.h);
-    panel->addToDesktop(0);
-    panel->setVisible(true);
+    VisiblePanelWindow window(*panel);
     auto state = fohws::Json::object(); state.set("targetShown", true);
     panel->loadState(state);
     PlotComponent* plot = nullptr;
@@ -1598,7 +1605,8 @@ TEST_CASE("Target overlays and stored trace edits stay on the reader while live 
     AppModel model;
     auto panel = PanelRegistry::standard().create("TransferFunction", model);
     REQUIRE(panel);
-    panel->setSize(800, 600); panel->addToDesktop(0); panel->setVisible(true);
+    panel->setSize(800, 600);
+    VisiblePanelWindow window(*panel);
     model.analysis.start();
     ConcurrentCapture producer(model.engine);
     REQUIRE(waitFor([&] { return model.analysis.latest().tf.averages > 0; }));
@@ -1893,4 +1901,140 @@ TEST_CASE("W7 discards sweep tails and playback requests across rapid toggles", 
             feed(); silent(); CHECK(model.engine.micRing.available() == captured + 512);
         }
     }
+}
+
+namespace {
+class SessionTestMain : public MainComponent {
+public:
+    explicit SessionTestMain(const juce::File& folder) : MainComponent(folder) {}
+    AppModel& state() { return model; }
+};
+}
+
+TEST_CASE("Save As preserves live averaging and Open discards old session work", "[app][session][audio][regression]") {
+    juce::ScopedJuceInitialiser_GUI initialise;
+    const bool sweeping = GENERATE(false, true);
+    const int missingName = GENERATE(0, 1, 2); // available, missing input, missing output
+    struct Temporary {
+        juce::File folder = juce::File::getSpecialLocation(juce::File::tempDirectory)
+            .getNonexistentChildFile("foh-synthetic-session", "", false);
+        ~Temporary() { folder.deleteRecursively(); }
+    } temporary;
+    SessionTestMain main(temporary.folder.getChildFile("workspaces"));
+    auto& model = main.state();
+    model.dm.addAudioDeviceType(std::make_unique<SyntheticDeviceType>());
+    model.dm.setCurrentAudioDeviceType("Synthetic", true);
+    auto setup = model.dm.getAudioDeviceSetup();
+    setup.inputDeviceName = setup.outputDeviceName = "Synthetic";
+    setup.useDefaultInputChannels = setup.useDefaultOutputChannels = false;
+    setup.inputChannels = setup.outputChannels = juce::BigInteger(3);
+    REQUIRE(model.dm.setAudioDeviceSetup(setup, true).isEmpty());
+    model.engine.micCh = 0; model.engine.refCh = 1;
+    model.engine.outA = 0; model.engine.outB = 1;
+    model.dm.addAudioCallback(&model.engine);
+    // Match production destruction order even if a REQUIRE aborts the test.
+    struct CallbackGuard {
+        AppModel& model;
+        ~CallbackGuard() { model.dm.removeAudioCallback(&model.engine); }
+    } guard {model};
+    AnalysisEngineTestAccess consumer(model.analysis);
+    consumer.step();
+    std::vector<float> signal(32768);
+    for (size_t i = 0; i < signal.size(); ++i)
+        signal[i] = float(0.1 * std::sin(2 * juce::MathConstants<double>::pi * i / 48));
+    capture(model.engine, signal.data(), signal.data(), (int) signal.size()); consumer.step();
+    REQUIRE(model.analysis.latest().tf.averages > 0);
+    REQUIRE_FALSE(model.analysis.latest().rtaDb.empty());
+    const auto originalTf = model.analysis.latest().tf;
+    REQUIRE(model.traces.store("Synthetic averaged trace", originalTf, 0));
+    model.capture.active = true;
+    bool completed = false;
+    model.capture.then = [&](bool) { completed = true; };
+    model.engine.gen = AudioEngine::Pink;
+    const auto epoch = model.engine.captureEpoch.load();
+    const auto first = temporary.folder.getChildFile("First.fohsession");
+    const auto second = temporary.folder.getChildFile("SaveAs.fohsession");
+    REQUIRE(main.writeSession(first)); REQUIRE(main.writeSession(second));
+    CHECK(model.engine.captureEpoch.load() == epoch);
+    CHECK(model.engine.gen.load() == AudioEngine::Pink);
+    CHECK(model.capture.active); CHECK_FALSE(completed);
+    CHECK(model.analysis.latest().tf.H == originalTf.H);
+    foh::Session saved; std::string error;
+    REQUIRE(foh::loadSession(second.getFullPathName().toStdString(), saved, error));
+    REQUIRE(saved.captures.size() == 1);
+    CHECK(saved.captures[0].tf.H == originalTf.H);
+    if (sweeping) {
+        foh::Command sweep; sweep.type = foh::CommandType::MeasureSweep; sweep.id = 71;
+        REQUIRE(model.analysis.send(sweep)); consumer.step();
+        REQUIRE(model.analysis.latest().sweepCapturing);
+    }
+    // Leave both audio and a delayed sweep request queued across a same-device Open.
+    capture(model.engine, signal.data(), signal.data(), 512);
+    foh::Command stale; stale.type = foh::CommandType::MeasureSweep; stale.id = 72;
+    REQUIRE(model.analysis.send(stale));
+    REQUIRE(model.analysis.send(foh::Command::findDelay(false, 73)));
+    saved.mic = 1; saved.reference = 0; saved.outputA = 1; saved.outputB = 0;
+    saved.measurement.set("refDelayMs", 2.5);
+    if (missingName) {
+        if (missingName == 1) saved.inputDevice.clear();
+        else saved.outputDevice.clear();
+    }
+    REQUIRE(foh::saveSession(second.getFullPathName().toStdString(), saved, error));
+    REQUIRE(main.readSession(second));
+    CHECK(model.engine.captureEpoch.load() > epoch);
+    consumer.step();
+    const auto& fresh = model.analysis.latest();
+    CHECK_FALSE(fresh.sweepCapturing); CHECK(fresh.sweep.response.impulse.empty());
+    CHECK(fresh.tf.averages == 0); CHECK(fresh.convergence.frames == 0);
+    CHECK(fresh.delaySeq == 0); CHECK_FALSE(fresh.delay.ok());
+    CHECK(fresh.refDelaySamples == 120);
+    CHECK(model.engine.micRing.available() == 0); CHECK(model.engine.refRing.available() == 0);
+    CHECK(model.engine.gen.load() == AudioEngine::Off);
+    CHECK_FALSE(model.capture.active); CHECK_FALSE(model.capture.then); CHECK_FALSE(completed);
+    CHECK(model.engine.micCh.load() == (missingName ? -1 : saved.mic));
+    CHECK(model.engine.refCh.load() == (missingName ? -1 : saved.reference));
+    CHECK(model.engine.outA.load() == (missingName ? -1 : saved.outputA));
+    CHECK(model.engine.outB.load() == (missingName ? -1 : saved.outputB));
+    if (missingName) {
+        CHECK(model.dm.getCurrentAudioDevice() == nullptr);
+        main.selectWorkspace("alignment");
+        CHECK(model.engine.micCh.load() == -1); CHECK(model.engine.refCh.load() == -1);
+        CHECK(model.engine.outA.load() == -1); CHECK(model.engine.outB.load() == -1);
+    } else {
+        REQUIRE(model.dm.getCurrentAudioDevice());
+        // A fresh capture can resume with the restored channel map.
+        capture(model.engine, signal.data(), signal.data(), (int) signal.size()); consumer.step();
+        CHECK(model.analysis.latest().tf.averages > 0);
+        CHECK(model.analysis.latest().refDelaySamples == 120);
+    }
+}
+
+TEST_CASE("Damaged signal callbacks keep generator output and peak meters finite without allocations", "[app][audio][rt][edges][generator]") {
+    AudioEngine engine; SyntheticDevice device;
+    engine.audioDeviceAboutToStart(&device); engine.outB = -1;
+    std::vector<float> input(2048), output(2048), drained(2048);
+    const float* inputs[] {input.data(), input.data()}; float* outputs[] {output.data()};
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+    const float inf = std::numeric_limits<float>::infinity();
+    for (int mode : {AudioEngine::Off, AudioEngine::Pink, AudioEngine::Sweep}) {
+        engine.gen = mode;
+        for (float gain : {-30.f, nan, inf, -inf, -30.f}) {
+            engine.genGainDb = gain;
+            for (float value : {0.f, 1.f, -1.f, nan, inf, -inf, std::numeric_limits<float>::denorm_min()}) {
+                INFO("mode=" << mode << " gain=" << gain << " input=" << value);
+                std::fill(input.begin(), input.end(), value);
+                engine.analysisEpoch = engine.captureEpoch.load();
+                callbackAllocations = 0; auditAllocations = true;
+                engine.audioDeviceIOCallbackWithContext(inputs, 2, outputs, 1, int(input.size()), {});
+                auditAllocations = false;
+                REQUIRE(callbackAllocations == 0);
+                for (float sample : output) REQUIRE(std::isfinite(sample));
+                REQUIRE(std::isfinite(engine.micPeak.exchange(0)));
+                REQUIRE(std::isfinite(engine.refPeak.exchange(0)));
+                engine.micRing.pop(drained.data(), int(drained.size()));
+                engine.refRing.pop(drained.data(), int(drained.size()));
+            }
+        }
+    }
+    engine.audioDeviceStopped();
 }

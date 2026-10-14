@@ -1,5 +1,6 @@
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/catch_approx.hpp>
+#include <memory>
 #include "fohcore/fohcore.h"
 using Catch::Approx;
 static void tone(foh::LeqMeter& meter, double fs, double seconds, double amplitude=0.1, double frequency=1000) {
@@ -177,7 +178,8 @@ TEST_CASE("Leq retains energy and sample counts over a 25 hour session", "[leq][
 
 TEST_CASE("Leq silence and isolated corrupt samples have finite guarded readings", "[leq][edges]") {
     for (float bad : {1.f, -1.f, 2.f, -2.f, NAN, INFINITY, -INFINITY}) {
-        foh::LeqMeter meter(8000); tone(meter, 8000, 0.2);
+        auto storage = std::make_unique<foh::LeqMeter>(8000);
+        auto& meter = *storage; tone(meter, 8000, 0.2);
         REQUIRE(meter.reading().valid);
         meter.process(&bad, 1); tone(meter, 8000, 0.2);
         CHECK_FALSE(meter.reading().valid);
@@ -187,7 +189,8 @@ TEST_CASE("Leq silence and isolated corrupt samples have finite guarded readings
         meter.reset(); tone(meter, 8000, 0.2);
         CHECK(meter.reading().valid);
     }
-    foh::LeqMeter meter(8000); tone(meter, 8000, 0.2);
+    auto storage = std::make_unique<foh::LeqMeter>(8000);
+    auto& meter = *storage; tone(meter, 8000, 0.2);
     std::vector<float> silence(8000, 0); meter.process(silence.data(), int(silence.size()));
     auto r = meter.reading(); CHECK_FALSE(r.valid);
     CHECK(r.level[2] == -120); CHECK(std::isfinite(r.session[2]));
@@ -195,7 +198,10 @@ TEST_CASE("Leq silence and isolated corrupt samples have finite guarded readings
     CHECK_FALSE(uncalibrated.calibrated);
     CHECK(uncalibrated.level(r.session[2]) == r.session[2]);
     // Subnormals mixed into otherwise usable AC input behave exactly like zeros.
-    foh::LeqMeter clean(8000), denormal(8000);
+    auto cleanStorage = std::make_unique<foh::LeqMeter>(8000);
+    auto denormalStorage = std::make_unique<foh::LeqMeter>(8000);
+    auto& clean = *cleanStorage;
+    auto& denormal = *denormalStorage;
     std::vector<float> signal(8000), dirty(8000);
     for (int i = 0; i < 8000; ++i) {
         signal[i] = i % 2 ? (i % 4 == 1 ? 0.1f : -0.1f) : 0.f;

@@ -26,7 +26,11 @@ optional fields mean uncalibrated/no targets.
 Opening restores the current workspace and session-wide routing. Saved devices
 are checked against the available device type/input/output names. A missing
 device or unavailable device configuration opens Setup and displays a notice.
-The generator is off after opening. Session I/O runs on the message thread;
+An unnamed device with routed channels also requires Setup. Opening stops audio
+through JUCE while state and channels are restored, even for the same device and
+sample rate; old averaging history and pending measurement requests are discarded.
+The generator is off after opening. Saving leaves measurement running and stores
+only completed stored traces. Session I/O runs on the message thread;
 the audio callback remains allocation-, lock- and I/O-free.
 
 Saves write a sibling `.saving` folder, move the previous bundle to `.backup`,

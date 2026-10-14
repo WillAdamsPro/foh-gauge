@@ -28,7 +28,7 @@ TEST_CASE("Questionnaire is optional in Setup and Skip preserves the default flo
     auto panel = makeGuidePanel(model); auto& box = guideBox(*panel);
     CHECK(box.getNumItems() == 6);
     button(page, "Rig questionnaire").onClick(); CHECK(questionnaire->isVisible());
-    for (auto* child : questionnaire->getChildren())
+    for (auto* child : formCanvas(*questionnaire).getChildren())
         if (auto* e = dynamic_cast<juce::TextEditor*>(child)) e->setText("0");
     button(*questionnaire, "Skip").onClick(); CHECK_FALSE(questionnaire->isVisible());
     CHECK_FALSE(model.rigProfile); CHECK(box.getNumItems() == 6);
@@ -191,4 +191,33 @@ TEST_CASE("Session reload closes Setup drafts before queued Apply or Finish", "[
     for (int i = 0; i < 3; ++i) clickWizard("Next");
     model.notify(AppModel::Session); model.engine.micCh = 1;
     clickWizard("Finish"); CHECK(model.engine.micCh.load() == 1); CHECK_FALSE(wizard->isVisible());
+}
+
+TEST_CASE("Empty questionnaire counts stay local and Skip then reopen discards the invalid draft", "[app][rig][edges]") {
+    juce::ScopedJuceInitialiser_GUI gui;
+    for (const char* field : {"Clusters", "Cabinets per cluster"}) {
+        for (const char* invalid : {"", "0", "257"}) {
+            CAPTURE(field, invalid);
+            AppModel model; model.rigProfile = foh::RigProfile{};
+            model.rigProfile->clusters = 3; model.rigProfile->cabinetsPerCluster = 4;
+            auto original = model.rigProfile->toJson();
+            EasySetup questionnaire(model);
+            int closed = 0; questionnaire.onClose = [&] { ++closed; };
+            juce::TextEditor* count = nullptr;
+            for (auto* child : formCanvas(questionnaire).getChildren())
+                if (auto* e = dynamic_cast<juce::TextEditor*>(child); e && e->getName() == field) count = e;
+            REQUIRE(count);
+            count->setText(invalid);
+            button(questionnaire, "Use these answers").onClick();
+            CHECK(closed == 0); REQUIRE(model.rigProfile);
+            CHECK(model.rigProfile->toJson() == original);
+            button(questionnaire, "Skip").onClick();
+            CHECK(closed == 1); CHECK_FALSE(model.rigProfile);
+            questionnaire.begin();
+            const foh::RigProfile defaults;
+            CHECK(count->getText() == juce::String(count->getName() == "Clusters" ? defaults.clusters : defaults.cabinetsPerCluster));
+            button(questionnaire, "Use these answers").onClick();
+            CHECK(closed == 2); REQUIRE(model.rigProfile); CHECK(model.rigProfile->valid());
+        }
+    }
 }

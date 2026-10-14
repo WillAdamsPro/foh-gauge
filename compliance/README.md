@@ -26,7 +26,7 @@ license. It cannot approve fetched dependencies or vendored libraries. Do not
 mark third-party work as original, or grant an open-source license to original
 assets to satisfy the guard.
 
-`files` maps exact asset/source paths to SHA-256 hashes. Add a reviewed entry for
+`files` lists exact asset/source paths (no checksums). Add a reviewed entry for
 each new font, image, audio file, or resource; recheck provenance when replacing
 one. Original chime and test-signal generators are inventoried as source because
 there is no tracked audio file. `vendored` lists exact directory roots for any
@@ -36,6 +36,9 @@ fixed list in the guard; new directories must be reviewed even if they contain
 only data with an unfamiliar extension; expanding that list requires review. New CMake
 FetchContent/ExternalProject declarations require literal source and pins.
 Variables in those fields fail closed rather than being evaluated as PR code.
+
+Every non-original component must also appear in THIRD_PARTY_NOTICES.md, and a
+top-level LICENSE/COPYING file fails the guard (the repo intentionally has none).
 
 The guard scans Git-tracked and nonignored new files, including all CMake files,
 not ignored build/download trees. It checks inventory coverage and policy; it

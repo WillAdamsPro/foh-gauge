@@ -36,12 +36,12 @@
       "license": "OFL-1.1",
       "source": "https://github.com/rsms/inter",
       "ships": true,
-      "files": {
-        "app/Resources/Fonts/Inter-Bold.ttf": "288316099b1e0a47a4716d159098005eef7c0066921f34e3200393dbdb01947f",
-        "app/Resources/Fonts/Inter-OFL-LICENSE.txt": "262481e844521b326f5ecd053e59b98c8b2da78c8ee1bdbb6e8174305e54935a",
-        "app/Resources/Fonts/Inter-Regular.ttf": "40d692fce188e4471e2b3cba937be967878f631ad3ebbbdcd587687c7ebe0c82",
-        "app/Resources/Fonts/Inter-SemiBold.ttf": "78a843fade9d4612a5567302fb595b56976eb5fcebf4fea5a5912d638bafcde3"
-      }
+      "files": [
+        "app/Resources/Fonts/Inter-Bold.ttf",
+        "app/Resources/Fonts/Inter-OFL-LICENSE.txt",
+        "app/Resources/Fonts/Inter-Regular.ttf",
+        "app/Resources/Fonts/Inter-SemiBold.ttf"
+      ]
     },
     {
       "name": "NumPy",
@@ -98,11 +98,11 @@
       "source": "THIRD_PARTY_NOTICES.md",
       "ships": true,
       "ownership": "Will Adams",
-      "files": {
-        "resources/targets/target-plus6.txt": "5eb40229117d00fca9d639ea32e535f78a6d5fa395a2bcbf7222a480aa2cbf64",
-        "resources/targets/target-plus9.txt": "3c54d8ea1fc1656ef39c204df2ecc1e5c084855528eb28ed1b78a4f1ffe1ffe5",
-        "resources/targets/target-plus12.txt": "29a0fdc2dbf260b432992a107263229e341d4fefee9aa65befc91471f82bacbb"
-      }
+      "files": [
+        "resources/targets/target-plus12.txt",
+        "resources/targets/target-plus6.txt",
+        "resources/targets/target-plus9.txt"
+      ]
     },
     {
       "name": "Will's tolerance target fixture",
@@ -111,9 +111,9 @@
       "source": "THIRD_PARTY_NOTICES.md",
       "ships": false,
       "ownership": "Will Adams",
-      "files": {
-        "resources/targets/target-flat-tolerance.txt": "c8d577aeeb415a1230be9ccdeefecdb7211664b9d41a56adbe8bf0468fd928bc"
-      }
+      "files": [
+        "resources/targets/target-flat-tolerance.txt"
+      ]
     },
     {
       "name": "Generated setup chime",
@@ -122,9 +122,9 @@
       "source": "THIRD_PARTY_NOTICES.md",
       "ships": true,
       "ownership": "Will Adams",
-      "files": {
-        "app/Source/AudioEngine.cpp": "b9c6cc15cb0e3c445aa44651bc396696365e459a83a727be2c8134d83ce0ad4a"
-      },
+      "files": [
+        "app/Source/AudioEngine.cpp"
+      ],
       "description": "Original synthesized decaying sine partials; generated in memory, no audio file."
     },
     {
@@ -134,9 +134,9 @@
       "source": "THIRD_PARTY_NOTICES.md",
       "ships": false,
       "ownership": "Will Adams",
-      "files": {
-        "tools/gen_golden.py": "78eac416c48072ca50c4aab50c0fda68a4d92f289d13d18d3c44941635781e09"
-      },
+      "files": [
+        "tools/gen_golden.py"
+      ],
       "description": "Generated WAVs live only in the ignored build tree."
     }
   ]

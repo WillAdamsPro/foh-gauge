@@ -425,15 +425,17 @@ TEST_CASE("Plots skip painting when workspace sizing leaves no plot area", "[app
         for (const auto size : {juce::Point<int>{0, 0}, {1, 1}, {60, 100}, {100, 32}}) {
             plot.setSize(size.x, size.y);
             juce::Image image(juce::Image::ARGB, 120, 120, true);
-            juce::Graphics graphics(image); plot.paint(graphics);
+            { juce::Graphics graphics(image); plot.paint(graphics); }
             CHECK(image.getPixelAt(50, 10).getAlpha() == 0);
             CHECK(image.getPixelAt(1, 1).getAlpha() == 0);
         }
     }
     plot.setSize(120, 120);
     juce::Image image(juce::Image::ARGB, 120, 120, true);
-    juce::Graphics graphics(image); plot.paint(graphics);
-    CHECK(image.getPixelAt(50, 10).getAlpha() != 0);
+    { juce::Graphics graphics(image); plot.paint(graphics); }
+    // Read after the graphics context flushes its platform drawing commands.
+    // Sample inside the plot well, clear of text and grid lines.
+    CHECK(image.getPixelAt(75, 50).getAlpha() != 0);
 }
 
 TEST_CASE("Session replacement destroys windows before replacing their borrowed state", "[app][lifetime]") {
@@ -828,6 +830,7 @@ TEST_CASE("Audio recovery overrides corrupt common preferences and tolerates fre
     REQUIRE(fohapp::recoverAudioPreferences(prefs));
     CHECK(prefs.getValue("audioDeviceState").isEmpty()); CHECK(prefs.getIntValue("micChannel") == -1);
     CHECK_FALSE(prefs.getBoolValue("setupComplete"));
+    CHECK(prefs.getValue("setupComplete") == "0");
     CHECK_FALSE(fohapp::recoverAudioPreferences(prefs)); // Recovery remains safe on the next launch.
     prefs.setFallbackPropertySet(nullptr);
 }

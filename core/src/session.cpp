@@ -102,8 +102,8 @@ bool saveSession(const Path& folder, const Session& s, std::string& error) {
             for (const auto& entry : s.splCal->members())
                 if (!SplCal::fromJson(entry.second).calibrated) throw std::runtime_error("Invalid SPL calibration");
         }
-        for (const auto& t : s.captures) captureFromJson(captureJson(t));
         if (s.captures.size() > TraceStore::kMax) throw std::runtime_error("Too many captures");
+        for (const auto& t : s.captures) captureFromJson(captureJson(t));
         if (std::filesystem::exists(staging) || std::filesystem::is_symlink(staging) || std::filesystem::exists(backup) || std::filesystem::is_symlink(backup)) throw std::runtime_error("A session save recovery folder already exists");
         std::filesystem::create_directories(staging); staged = true;
         std::filesystem::create_directory(staging / "captures"); std::filesystem::create_directory(staging / "targets");
@@ -219,6 +219,10 @@ bool loadSession(const Path& folder, Session& out, std::string& error, std::stri
 }
 bool sessionDevicesAvailable(const Session& s, const std::string& type, const std::vector<std::string>& inputs, const std::vector<std::string>& outputs) {
     auto contains = [](const auto& names, const auto& name) { return name.empty() || std::find(names.begin(), names.end(), name) != names.end(); };
-    return type == s.deviceType && contains(inputs, s.inputDevice) && contains(outputs, s.outputDevice);
+    // Empty names are valid for an unused direction, never for routed channels.
+    return type == s.deviceType && (!s.inputDevice.empty() || !s.outputDevice.empty())
+        && (!(s.mic >= 0 || s.reference >= 0) || !s.inputDevice.empty())
+        && (!(s.outputA >= 0 || s.outputB >= 0) || !s.outputDevice.empty())
+        && contains(inputs, s.inputDevice) && contains(outputs, s.outputDevice);
 }
 }
