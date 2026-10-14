@@ -1,16 +1,53 @@
 #include "AppModel.h"
+#include <fohcore/input.h>
+#include "FileValidation.h"
 using namespace juce;
 
 AppModel::AppModel() {
     PropertiesFile::Options o; o.applicationName = "FOH Gauge"; o.filenameSuffix = ".settings"; o.folderName = "FOH Gauge"; o.osxLibrarySubFolder = "Application Support";
+    // Preserve rejected preferences for recovery; never let JUCE recursively
+    // parse an oversized/deep XML tree or compressed arbitrary input.
+    for (bool common : {false, true}) {
+        auto options = o; options.commonToAllUsers = common;
+        auto file = options.getDefaultFile();
+        if (!file.exists()) continue;
+        try {
+            auto text = foh::input::read(file.getFullPathName().toStdString());
+            if (!fohapp::boundedXml(text)) throw std::runtime_error("Invalid or oversized preferences XML");
+            auto xml = juce::parseXML(String::fromUTF8(text.data(), (int) text.size()));
+            if (!xml || !xml->hasTagName("PROPERTIES")) throw std::runtime_error("Invalid preferences XML");
+        } catch (const std::exception& e) {
+            auto backup = file.getParentDirectory().getNonexistentChildFile(file.getFileName() + ".invalid", "", false);
+            if (!file.moveFileTo(backup)) {
+                // A file we cannot quarantine must never reach the XML parser.
+                o.applicationName = "FOH Gauge Recovery"; o.doNotSave = true;
+            }
+            AlertWindow::showMessageBoxAsync(AlertWindow::WarningIcon, "Preferences load failed", String(e.what()) + ". Using defaults; the original file has been preserved.");
+        }
+    }
     settings.setStorageParameters(o);
     auto* prefs = settings.getUserSettings();
-    auto savedDevice = prefs ? prefs->getXmlValue("audioDeviceState") : nullptr;
+    auto deviceText = prefs ? prefs->getValue("audioDeviceState").toStdString() : std::string{};
+    auto savedDevice = fohapp::boundedXml(deviceText) ? juce::parseXML(String(deviceText)) : nullptr;
     dm.initialise(4, 4, savedDevice.get(), true);
     if (!savedDevice) { auto s = dm.getAudioDeviceSetup(); s.sampleRate = 48000; dm.setAudioDeviceSetup(s, true); }
     if (prefs) {
-        engine.micCh = prefs->getIntValue("micChannel", 0); engine.refCh = prefs->getIntValue("refChannel", 1);
-        engine.outA = prefs->getIntValue("generatorChannel", 0); engine.outB = prefs->getIntValue("loopbackChannel", 1);
+        auto channel = [&](const char* key, int fallback) {
+            double value;
+            if (!prefs->containsKey(key)) return fallback;
+            if (!foh::input::number(prefs->getValue(key).toStdString(), value) || value < -1 || value > 1023 || std::floor(value) != value) {
+                AlertWindow::showMessageBoxAsync(AlertWindow::WarningIcon, "Preferences load failed", String("Invalid channel preference: ") + key);
+                return fallback;
+            }
+            return (int) value;
+        };
+        engine.micCh = channel("micChannel", 0); engine.refCh = channel("refChannel", 1);
+        engine.outA = channel("generatorChannel", 0); engine.outB = channel("loopbackChannel", 1);
+    }
+    if (prefs && prefs->containsKey("splCalibration")) {
+        std::string error; auto j = foh::Json::parse(prefs->getValue("splCalibration").toStdString(), &error);
+        if (!error.empty() || !j.isObject()) AlertWindow::showMessageBoxAsync(AlertWindow::WarningIcon, "Preferences load failed", "Invalid SPL calibration preferences");
+        else loadSplCalJson(j);
     }
     if (prefs) loadSplCalJson(foh::Json::parse(prefs->getValue("splCalibration").toStdString()));
     dm.addAudioCallback(&engine);
@@ -85,9 +122,16 @@ void AppModel::beginCapture(const String& name, std::function<void(bool)> then) 
     capture.active = true; capture.unsettled = false; capture.name = name; capture.startMs = Time::getMillisecondCounterHiRes(); capture.then = std::move(then); conv = {}; notify(Capture);
 }
 void AppModel::loadCalFile(const File& f) {
-    calText = f.loadFileAsString().toStdString();
-    cal = foh::parseMicCal(calText); calFile = f.getFileName(); calOn = cal.ok();
-    analysis.setCal(cal.ok() ? std::make_shared<foh::MicCal>(cal) : nullptr, calFile); notify(Cal);
+    try {
+        auto text = foh::input::read(f.getFullPathName().toStdString());
+        auto parsed = foh::parseMicCal(text);
+        if (!parsed.ok()) throw std::runtime_error(parsed.error);
+        auto published = std::make_shared<foh::MicCal>(parsed);
+        calText = std::move(text); cal = std::move(parsed); calFile = f.getFileName(); calOn = true;
+        analysis.setCal(std::move(published), calFile); notify(Cal);
+    } catch (const std::exception& e) {
+        AlertWindow::showMessageBoxAsync(AlertWindow::WarningIcon, "Mic calibration import failed", String(e.what()));
+    }
 }
 void AppModel::setCalEnabled(bool on) {
     calOn = on && cal.ok(); analysis.setCal(calOn ? std::make_shared<foh::MicCal>(cal) : nullptr, calFile); notify(Cal);
@@ -119,11 +163,14 @@ foh::Json AppModel::splCalJson() const {
     return j;
 }
 void AppModel::loadSplCalJson(const foh::Json& j) {
-    splCals.clear();
+    if (!j.isObject()) return;
+    decltype(splCals) candidate;
     for (const auto& entry : j.members()) {
         auto c = foh::SplCal::fromJson(entry.second);
-        if (c.calibrated) splCals[entry.first] = c;
+        if (!c.calibrated) { AlertWindow::showMessageBoxAsync(AlertWindow::WarningIcon, "SPL calibration load failed", "Invalid saved calibration"); return; }
+        candidate[entry.first] = c;
     }
+    splCals = std::move(candidate);
     notify(Cal | Settings);
 }
 

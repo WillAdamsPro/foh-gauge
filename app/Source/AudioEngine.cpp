@@ -102,6 +102,7 @@ void AudioEngine::audioDeviceAboutToStart(AudioIODevice* d) {
 }
 void AudioEngine::audioDeviceIOCallbackWithContext(const float* const* in, int nIn, float* const* out, int nOut, int n,
                                                    const AudioIODeviceCallbackContext&) {
+    foh::ScopedFlushDenormals ftz;
     if (n <= 0) return;
     for (int c = 0; c < nOut; ++c) if (out && out[c]) FloatVectorOperations::clear(out[c], n);
     if (deviceFailed.load(std::memory_order_acquire) || state.load(std::memory_order_acquire) == Stopped) return;
@@ -177,8 +178,10 @@ void AudioEngine::audioDeviceIOCallbackWithContext(const float* const* in, int n
         const float* rp = in[rc] + off;
         micRing.push(mp, m); refRing.push(rp, m);
         auto peakOf = [m](const float* data) {
-            auto range = FloatVectorOperations::findMinAndMax(data, m);
-            return std::max(std::abs(range.getStart()), std::abs(range.getEnd()));
+            float peak = 0;
+            for (int i = 0; i < m; ++i)
+                if (std::isfinite(data[i])) peak = std::max(peak, std::abs(data[i]));
+            return peak;
         };
         fetch_max(micPeak, peakOf(mp));
         fetch_max(refPeak, peakOf(rp));
