@@ -44,9 +44,11 @@ public:
         shown.onClick = band.onClick = [this] { changed(); };
         offset.onValueChange = [this] { changed(); };
         import.onClick = [this] {
-            chooser = std::make_unique<FileChooser>("Import Smaart target", File{}, "*.txt;*.asc;*.csv");
+            chooser = std::make_unique<juce::FileChooser>(juce::String("Import Smaart target"),
+                juce::File(), juce::String("*.txt;*.asc;*.csv"));
+            const juce::Component::SafePointer<TargetControls> safe(this);
             chooser->launchAsync(FileBrowserComponent::openMode | FileBrowserComponent::canSelectFiles,
-                [safe = Component::SafePointer<TargetControls>(this)](const FileChooser& fc) {
+                [safe](const juce::FileChooser& fc) {
                     if (!safe || fc.getResult() == File{}) return;
                     std::string text;
                     try { text = foh::input::read(fc.getResult().getFullPathName().toStdString()); }
@@ -101,7 +103,14 @@ public:
             if (parsed.ok()) { source = std::move(text); target = std::move(parsed);
                 if (choice.getNumItems() == 3) choice.addItem(String(j["targetName"].asString("Imported target")), 4);
                 choice.setSelectedId(4, dontSendNotification); }
-            else { AlertWindow::showMessageBoxAsync(AlertWindow::WarningIcon, "Saved target", String(parsed.error)); return; }
+            else {
+                source.clear();
+                choice.setSelectedId(1, dontSendNotification); selectBuiltin();
+                shown.setToggleState(false, dontSendNotification);
+                band.setToggleState(false, dontSendNotification);
+                changed();
+                AlertWindow::showMessageBoxAsync(AlertWindow::WarningIcon, "Saved target", String(parsed.error)); return;
+            }
         } else { choice.setSelectedId(jlimit(1, 3, id), dontSendNotification); selectBuiltin(); }
         shown.setToggleState(j["targetShown"].asBool(), dontSendNotification);
         band.setToggleState(j["targetBand"].asBool(target.useTolerance), dontSendNotification);
@@ -198,6 +207,10 @@ public:
         plot.note = "averages " + String(model.tf.averages) + (model.calApplied ? u8(" \xc2\xb7 cal applied") : "")
                     + u8(" \xc2\xb7 ") + u8(fohui::settleStatusText(model.conv, model.capture.active, model.capture.unsettled))
                     + " | Multi-mic: " + String(model.positionCount) + "/3 positions (2 required)";
+        if (model.positionCount >= 2 && (model.multiPosition.H.empty()
+            || std::none_of(model.multiPosition.coherence.begin(), model.multiPosition.coherence.end(),
+                            [](double c) { return std::isfinite(c) && c > 0; })))
+            plot.note += " | No coherent positions; check mic/ref routing and capture again";
         plot.repaint();
     }
 private:
@@ -281,7 +294,7 @@ public:
         plot.yLabel = spl.unit(); plot.yMin = spl.calibrated ? 0 : -100; plot.yMax = spl.calibrated ? 140 : 0;
         plot.series.clear(); plot.barLo.clear(); plot.barHi.clear(); PlotComponent::Series s; s.c = C::accent(); s.label = "Live";
         for (size_t i = 0; i < model.rtaDb.size() && i < model.rtaBands.size(); ++i) { auto& b = model.rtaBands[i]; plot.barLo.push_back(b.fLo); plot.barHi.push_back(b.fHi); s.f.push_back(b.fCenter); s.v.push_back(spl.level(model.rtaDb[i], model.splSensitivity())); }
-        plot.series.push_back(s); target.appendTo(plot); plot.note = model.calApplied ? "cal applied" : ""; plot.repaint();
+        plot.series.push_back(s); target.appendTo(plot); plot.note = model.rtaDb.empty() ? "No valid spectrum" : (model.calApplied ? "cal applied" : ""); plot.repaint();
     }
 private:
     TargetControls target {-40}; PlotComponent plot; ComboBox frac;
@@ -319,6 +332,7 @@ public:
         status.setBounds(controlRow(r, 44)); tfPlot.setBounds(r.removeFromTop(r.getHeight() / 2)); rtaPlot.setBounds(r);
     }
     void modelChanged(int w) override {
+        if (w & AppModel::Session) { stopMonitoring(); reference.setSelectedId(0, dontSendNotification); refreshReferences(); }
         if ((w & AppModel::Traces) && !active) refreshReferences();
     }
 private:
@@ -335,6 +349,7 @@ private:
         status.setText("W7: select a stored TF and Monitor. Use console programme as reference.", dontSendNotification);
     }
     void timerCallback() override {
+        if (!active) return;
         const bool signal = !model.paused && model.micLevelValid && model.refPeak > 0.00001f
             && !model.engine.deviceFailed.load() && model.engine.state.load() == AudioEngine::Ready;
         const auto drift = signal ? fohui::showDrift(model.tf, baseline.tf) : fohui::ShowDrift{};
@@ -637,7 +652,10 @@ public:
         auto line=[&](const String& text) { g.drawText(text,r.removeFromTop(24),Justification::centredLeft); };
         const auto c=model.splCal();
         if (!c.calibrated) { line("Calibrate SPL in Setup"); return; }
-        if (!model.micLevelReady() || model.leqRevision != model.analysis.leqRevision.load() || !model.leq.valid) { line("-- SPL / Leq (invalid or no live signal)"); return; }
+        if (!model.micLevelReady() || model.leqRevision != model.analysis.leqRevision.load() || !model.leq.valid) {
+            if (model.micPeak >= 0.99f) line("WARNING: input clipping");
+            line("-- SPL / Leq (invalid or no live signal)"); return;
+        }
         size_t w=static_cast<size_t>(weighting.getSelectedId()-1);
         auto level=[&](double db) { return c.level(db-(model.calOn ? model.cal.dbAt(1000) : 0), model.splSensitivity()); };
         auto value=[&](const char* label, double db) { line(String(label)+String(level(db),1)+" dB"+weighting.getText()); };

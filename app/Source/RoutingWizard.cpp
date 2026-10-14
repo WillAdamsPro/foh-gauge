@@ -19,14 +19,16 @@ RoutingWizard::RoutingWizard(AudioEngine& e) : engine(e) {
     for (auto* label : { &title, &explanation, &presetNotice, &testStatus }) addAndMakeVisible(label);
     addAndMakeVisible(channel);
     for (auto* button : { &back, &next, &skip, &test }) addAndMakeVisible(button);
-    channel.onChange = [this] { if (!refreshing) { cancelTest(); draft[(size_t) step] = channel.getSelectedId() - 2; results.fill({}); refresh(); } };
-    back.onClick = [this] { if (step > 0) { cancelTest(); --step; refresh(); } };
+    channel.onChange = [this] { if (!refreshing && active) { cancelTest(); draft[(size_t) step] = channel.getSelectedId() - 2; results.fill({}); refresh(); } };
+    back.onClick = [this] { if (active && step > 0) { cancelTest(); --step; refresh(); } };
     next.onClick = [this] { advance(); };
-    skip.onClick = [this] { cancelTest(); if (onClose) onClose(); };
+    skip.onClick = [this] { if (!active) return; cancel(); auto close = onClose; if (close) close(); };
     test.onClick = [this] { runTest(); };
     begin();
 }
 RoutingWizard::~RoutingWizard() { cancelTest(); }
+void RoutingWizard::cancel() { active = false; cancelTest(); }
+void RoutingWizard::visibilityChanged() { if (!isVisible()) cancel(); }
 void RoutingWizard::cancelTest() {
     stopTimer();
     if (testingStep >= 0) {
@@ -37,12 +39,15 @@ void RoutingWizard::cancelTest() {
 }
 void RoutingWizard::setDevices(const String& input, const String& output) {
     if (input == inputDevice && output == outputDevice) return;
+    const int interrupted = testingStep;
     cancelTest(); results.fill({});
+    if (interrupted >= 0) results[(size_t)interrupted] = "Fail: audio device changed. Check Audio Setup and test again.";
     inputDevice = input; outputDevice = output;
     suggestion = "Unknown interface: choose channels manually.";
     refresh();
 }
 void RoutingWizard::runTest() {
+    if (!active || testingStep >= 0) return;
     cancelTest();
     const int expected = step == 0 || step == 3 ? draft[0] : draft[1];
     const int output = step == 0 || step == 3 ? draft[3] : draft[2];
@@ -52,6 +57,7 @@ void RoutingWizard::runTest() {
     refresh(); startTimer(50);
 }
 void RoutingWizard::timerCallback() {
+    if (!active || testingStep < 0) { stopTimer(); return; }
     const auto result = engine.connectionResult();
     if (result == foh::ConnectionResult::pending) {
         if (Time::getMillisecondCounterHiRes() - testStartedMs < 2500) return;
@@ -74,10 +80,16 @@ void RoutingWizard::begin() {
         draft = { preset->micInput, preset->referenceInput, preset->loopbackOutput, preset->consoleOutput };
         suggestion = String(preset->name) + ": suggested channels below; change them if needed.";
     }
-    step = 0; refresh();
+    active = true; step = 0;
+    if (channelsKnown) setChannels(inputNames, outputNames); else refresh();
 }
 void RoutingWizard::setChannels(const StringArray& inputs, const StringArray& outputs) {
-    if (inputs != inputNames || outputs != outputNames) { cancelTest(); results.fill({}); }
+    channelsKnown = true;
+    if (inputs != inputNames || outputs != outputNames) {
+        const int interrupted = testingStep;
+        cancelTest(); results.fill({});
+        if (interrupted >= 0) results[(size_t)interrupted] = "Fail: audio channels changed. Check Audio Setup and test again.";
+    }
     inputNames = inputs; outputNames = outputs;
     for (size_t i = 0; i < draft.size(); ++i) {
         auto count = i < 2 ? inputNames.size() : outputNames.size();
@@ -107,11 +119,14 @@ void RoutingWizard::refresh() {
     repaint();
 }
 void RoutingWizard::advance() {
+    if (!active) return;
     cancelTest();
     if (step < 3) { ++step; refresh(); return; }
     engine.micCh = draft[0]; engine.refCh = draft[1]; engine.outB = draft[2]; engine.outA = draft[3];
-    if (onApplied) onApplied();
-    if (onClose) onClose();
+    active = false;
+    SafePointer<RoutingWizard> safe(this);
+    auto applied = onApplied; if (applied) applied();
+    if (safe) { auto close = safe->onClose; if (close) close(); }
 }
 void RoutingWizard::resized() {
     auto r = getLocalBounds().reduced(16);

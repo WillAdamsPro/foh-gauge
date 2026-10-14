@@ -18,8 +18,8 @@ inline double consoleMs(double ms) { return std::round(ms * 100.0) / 100.0; }
 
 // Audio engine: generator out + capture of mic/ref into lock-free rings. RT-safe callback.
 class AudioEngine : public juce::AudioIODeviceCallback {
-    int lastMicChannel = 0, lastRefChannel = 1, lastInputCount = -1;
-    bool lastInputsValid = true;
+    int lastMicChannel = 0, lastRefChannel = 1, lastInputCount = -1, lastOutputCount = -1;
+    bool lastInputsValid = true, lastOutputsValid = true;
 public:
     AudioEngine(); // Synthesizes the immutable chime before the audio callback is registered.
     // Message-thread commands; one atomic packet keeps channel selection and request together.
@@ -84,6 +84,9 @@ public:
     FohLookAndFeel();
     void applyTheme(); // re-read ColourIds from the current Theme
     juce::Typeface::Ptr getTypefaceForFont(const juce::Font&) override;
+    juce::AlertWindow* createAlertWindow(const juce::String& title, const juce::String& message,
+        const juce::String& button1, const juce::String& button2, const juce::String& button3,
+        juce::MessageBoxIconType icon, int numButtons, juce::Component* associated) override;
     void drawButtonBackground(juce::Graphics&, juce::Button&, const juce::Colour&, bool, bool) override;
     void drawDocumentWindowTitleBar(juce::DocumentWindow&, juce::Graphics&, int w, int h, int titleSpaceX, int titleSpaceW, const juce::Image*, bool drawTitleTextOnLeft) override; // floating panel chrome (ws spec §5)
     static juce::Font font(float size, bool bold = false, bool semibold = false);

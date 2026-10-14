@@ -1,5 +1,6 @@
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/catch_approx.hpp>
+#include <catch2/generators/catch_generators.hpp>
 #include "Widgets.h"
 #include "AnalysisEngine.h"
 #include "SettleStatus.h"
@@ -9,6 +10,23 @@
 #include <chrono>
 #include <string_view>
 #include <thread>
+
+// Sole consumer in synchronous bridge tests; never start the analysis worker.
+class AnalysisEngineTestAccess {
+public:
+    explicit AnalysisEngineTestAccess(AnalysisEngine& engine)
+        : analysis(engine), mic(size_t(engine.fftN)), ref(size_t(engine.fftN)),
+          silence(size_t(engine.fftN), 0.f) {}
+    void step() {
+        foh::ScopedFlushDenormals ftz;
+        analysis.processPendingAudio(mic, ref, silence, epoch);
+        analysis.publish();
+    }
+private:
+    AnalysisEngine& analysis;
+    std::vector<float> mic, ref, silence;
+    uint64_t epoch = 0;
+};
 
 namespace {
 void capture(AudioEngine& engine, const float* mic, const float* ref, int n) {
@@ -253,47 +271,90 @@ TEST_CASE("Output chime is bounded, routed and stops at each sample rate", "[app
 }
 
 TEST_CASE("SPL level snapshots measure the selected input and reset on routing changes", "[app][audio][splcal]") {
-    AudioEngine engine; AnalysisEngine analysis(engine); analysis.start();
+    AudioEngine engine;
+    AnalysisEngine analysis(engine);
+    AnalysisEngineTestAccess worker(analysis);
     REQUIRE(analysis.send(foh::Command::resetAverages(1)));
-    REQUIRE(waitFor([&] { return analysis.latest().resetSeq == 1; }));
-    std::vector<float> mic(4800), ref(4800);
+    worker.step();
+    REQUIRE(analysis.latest().resetSeq == 1);
+    REQUIRE_FALSE(analysis.latest().micLevelValid);
+
+    // Five fixed 20 ms blocks, with an integral number of 1 kHz cycles per block.
+    // Publish only after all 4800 samples have been consumed: no timer or thread.
+    constexpr int blockSamples = 960, blocks = 5;
+    std::vector<float> mic(blockSamples), ref(blockSamples);
     for (size_t i = 0; i < mic.size(); ++i) {
         mic[i] = float(0.1 * std::sin(2 * juce::MathConstants<double>::pi * 1000 * double(i) / 48000));
         ref[i] = mic[i] * 0.5f;
     }
-    capture(engine, mic.data(), ref.data(), int(mic.size()));
-    REQUIRE(waitFor([&] { return analysis.latest().micLevelValid; }));
-    auto first = analysis.latest();
+    auto feed = [&] {
+        for (int i = 0; i < blocks; ++i)
+            capture(engine, mic.data(), ref.data(), blockSamples);
+        REQUIRE(engine.micRing.available() == blockSamples * blocks);
+        REQUIRE(engine.refRing.available() == blockSamples * blocks);
+        worker.step();
+        REQUIRE(engine.micRing.available() == 0);
+        REQUIRE(engine.refRing.available() == 0);
+    };
+    feed();
+    const auto first = analysis.latest();
+    REQUIRE(first.micLevelValid);
     REQUIRE(first.micChannel == 0);
+    REQUIRE(first.inputEpoch == engine.captureEpoch.load());
     REQUIRE(first.micLevelDbfs == Catch::Approx(-20).margin(0.01));
     foh::SplCal cal; REQUIRE(cal.calibrate(first.micLevelDbfs, 94));
     REQUIRE(cal.level(first.micLevelDbfs) == Catch::Approx(94).margin(0.1));
-    REQUIRE(first.leq.seconds == Catch::Approx(0.1));
+    REQUIRE(first.leq.seconds == Catch::Approx(0.1).margin(1e-9));
     for (int w : {0, 1, 2}) {
         REQUIRE(cal.level(first.leq.level[w]) == Catch::Approx(94).margin(0.1));
         REQUIRE(cal.level(first.leq.session[w]) == Catch::Approx(94).margin(0.1));
     }
     analysis.paused = true;
-    capture(engine, mic.data(), ref.data(), int(mic.size()));
-    REQUIRE(waitFor([&] { return engine.micRing.available() == 0; }));
-    REQUIRE(waitFor([&] { return !analysis.latest().micLevelValid; }));
-    REQUIRE(analysis.latest().leq.seconds == Catch::Approx(0.1));
+    feed();
+    REQUIRE_FALSE(analysis.latest().micLevelValid);
+    REQUIRE(analysis.latest().leq.seconds == Catch::Approx(0.1).margin(1e-9));
     ++analysis.leqRevision;
-    REQUIRE(waitFor([&] { return analysis.latest().leqRevision == 1; }));
+    worker.step();
+    REQUIRE(analysis.latest().leqRevision == 1);
     REQUIRE(analysis.latest().leq.seconds == 0);
     analysis.paused = false;
+    feed(); // Routing must clear a populated meter, independently of leqRevision.
+    REQUIRE(analysis.latest().micLevelValid);
+    REQUIRE(analysis.latest().leq.seconds == Catch::Approx(0.1).margin(1e-9));
+
+    // Leave old-route audio queued to verify the reset drains it before ack.
+    capture(engine, mic.data(), ref.data(), blockSamples);
+    REQUIRE(engine.micRing.available() == blockSamples);
     engine.micCh = 1;
-    capture(engine, mic.data(), ref.data(), int(mic.size())); // Discard while routing restart is acknowledged.
-    REQUIRE(waitFor([&] { return engine.analysisEpoch.load() == engine.captureEpoch.load(); }));
-    capture(engine, mic.data(), ref.data(), int(mic.size()));
-    REQUIRE(waitFor([&] { const auto& s = analysis.latest(); return s.micLevelValid && s.micChannel == 1; }));
+    capture(engine, mic.data(), ref.data(), blockSamples);
+    REQUIRE(engine.captureEpoch.load() == first.inputEpoch + 1);
+    REQUIRE(engine.analysisEpoch.load() == first.inputEpoch);
+    REQUIRE(engine.micRing.available() == blockSamples); // New-route block was discarded.
+    REQUIRE(engine.refRing.available() == blockSamples);
+    worker.step();
+    REQUIRE(engine.analysisEpoch.load() == engine.captureEpoch.load());
+    REQUIRE(engine.micRing.available() == 0);
+    REQUIRE(engine.refRing.available() == 0);
+    const auto reset = analysis.latest();
+    REQUIRE(reset.inputEpoch == first.inputEpoch + 1);
+    REQUIRE(reset.micChannel == 1);
+    REQUIRE_FALSE(reset.micLevelValid);
+    REQUIRE(reset.micLevelDbfs == -120);
+    REQUIRE(reset.leq.seconds == 0);
+    for (int w : {0, 1, 2}) REQUIRE(reset.leq.session[w] == -120);
+
+    feed();
     const auto second = analysis.latest();
-    REQUIRE(second.inputEpoch != first.inputEpoch);
-    REQUIRE(second.leq.seconds == Catch::Approx(0.1));
+    REQUIRE(second.micLevelValid);
+    REQUIRE(second.micChannel == 1);
+    REQUIRE(second.inputEpoch == first.inputEpoch + 1);
+    REQUIRE(second.leq.seconds == Catch::Approx(0.1).margin(1e-9));
     REQUIRE(second.leq.session[2] == Catch::Approx(-26.0206).margin(0.01));
     REQUIRE(second.micLevelDbfs == Catch::Approx(-26.0206).margin(0.01));
-    REQUIRE(waitFor([&] { return !analysis.latest().micLevelValid; })); // Never calibrate a stale snapshot.
-    analysis.stop();
+    worker.step(); // An explicit publication with no new audio invalidates the level.
+    REQUIRE_FALSE(analysis.latest().micLevelValid); // Never calibrate a stale snapshot.
+    REQUIRE(analysis.latest().micLevelDbfs == -120);
+    REQUIRE(analysis.latest().leq.seconds == Catch::Approx(0.1).margin(1e-9));
 }
 
 TEST_CASE("Connection tests isolate output and report synthetic input routing", "[app][audio][routing]") {
@@ -328,7 +389,7 @@ namespace {
 class SyntheticDevice : public juce::AudioIODevice {
 public:
     SyntheticDevice() : AudioIODevice("Synthetic", "Synthetic") {}
-    double rate = 48000; int block = 256;
+    double rate = 48000; int block = 256; int activeOutputs = 3;
     juce::StringArray getOutputChannelNames() override { return {"1", "2"}; }
     juce::StringArray getInputChannelNames() override { return {"1", "2"}; }
     juce::Array<double> getAvailableSampleRates() override { return {rate}; }
@@ -344,11 +405,40 @@ public:
     int getCurrentBufferSizeSamples() override { return block; }
     double getCurrentSampleRate() override { return rate; }
     int getCurrentBitDepth() override { return 32; }
-    juce::BigInteger getActiveOutputChannels() const override { return juce::BigInteger(3); }
+    juce::BigInteger getActiveOutputChannels() const override { return juce::BigInteger(activeOutputs); }
     juce::BigInteger getActiveInputChannels() const override { return juce::BigInteger(3); }
     int getOutputLatencyInSamples() override { return 0; }
     int getInputLatencyInSamples() override { return 0; }
 };
+}
+
+TEST_CASE("Interrupted connection tests fail and fresh tests recover", "[app][audio][routing][edges]") {
+    AudioEngine engine; SyntheticDevice device;
+    constexpr int block = 256;
+    float signal[block], silence[block] {}, a[block] {}, b[block] {};
+    std::fill(std::begin(signal), std::end(signal), 0.1f);
+    const float* inputs[] {signal, silence}; float* outputs[] {a, b};
+    auto feed = [&] { engine.audioDeviceIOCallbackWithContext(inputs, 2, outputs, 2, block, {}); };
+    for (int event = 0; event < 5; ++event) {
+        engine.audioDeviceAboutToStart(&device);
+        engine.testConnection(0, 0); feed();
+        REQUIRE(engine.connectionResult() == foh::ConnectionResult::pending);
+        if (event == 0) engine.audioDeviceStopped();
+        if (event == 1) engine.audioDeviceError("Synthetic unplug");
+        if (event == 2) { device.rate = 96000; engine.audioDeviceAboutToStart(&device); }
+        if (event == 3) engine.audioDeviceAboutToStart(&device); // replacement with same shape/rate
+        if (event == 4) {
+            engine.audioDeviceIOCallbackWithContext(inputs, 1, outputs, 2, block, {});
+            for (int i = 0; i < 400; ++i) feed();
+        }
+        CHECK(engine.connectionResult() == foh::ConnectionResult::invalid);
+        engine.audioDeviceAboutToStart(&device);
+        for (int i = 0; i < 400; ++i) feed();
+        CHECK(engine.connectionResult() == foh::ConnectionResult::invalid); // never resumes the old test
+        engine.testConnection(0, 0);
+        for (int i = 0; i < 400; ++i) feed();
+        CHECK(engine.connectionResult() == foh::ConnectionResult::pass);
+    }
 }
 
 namespace {
@@ -475,6 +565,48 @@ TEST_CASE("Device stop and rate/buffer restarts cancel playback and clear analys
     analysis.stop();
 }
 
+TEST_CASE("Device rebuild rejects queued capture commands but preserves settings", "[app][audio][delay]") {
+    AudioEngine engine; AnalysisEngine analysis(engine); SyntheticDevice device;
+    engine.audioDeviceAboutToStart(&device); analysis.start();
+    REQUIRE(waitFor([&] { return engine.analysisEpoch.load() == engine.captureEpoch.load(); }));
+    analysis.stop();
+    // Deterministically enqueue work using the old device's history and sample units.
+    REQUIRE(analysis.send(foh::Command::referenceDelay(240)));
+    REQUIRE(analysis.send(foh::Command::findDelay(true, 75)));
+    REQUIRE(analysis.send(foh::Command::resetAverages(75)));
+    REQUIRE(analysis.send(foh::Command::micPosition(0, 5)));
+    foh::Command sweep; sweep.type = foh::CommandType::MeasureSweep;
+    REQUIRE(analysis.send(sweep));
+    REQUIRE(analysis.send(foh::Command::averages(4)));
+    REQUIRE(analysis.send(foh::Command::rtaFraction(6)));
+    const auto oldEpoch = engine.captureEpoch.load();
+    engine.audioDeviceStopped(); device.rate = 96000; device.block = 64;
+    engine.audioDeviceAboutToStart(&device);
+    // A UI lock may arrive after the rebuild while carrying an old snapshot's samples.
+    REQUIRE(analysis.send(foh::Command::referenceDelay(480), oldEpoch));
+    analysis.start();
+    REQUIRE(waitFor([&] { return analysis.latest().inputEpoch == engine.captureEpoch.load(); }));
+    const auto snapshot = analysis.latest();
+    CHECK(snapshot.tf.sampleRate == 96000);
+    CHECK(snapshot.refDelaySamples == 0);
+    CHECK(snapshot.delaySeq == 0);
+    CHECK_FALSE(snapshot.delayWasSub);
+    CHECK(snapshot.resetSeq != 75);
+    CHECK(snapshot.positionCount == 0);
+    CHECK_FALSE(snapshot.sweepCapturing);
+    CHECK(engine.gen.load() == AudioEngine::Off);
+    CHECK(snapshot.rtaFraction == 6);
+    // Commands submitted before the worker acknowledges the new device must survive.
+    analysis.stop();
+    engine.audioDeviceStopped(); device.block = 1024;
+    engine.audioDeviceAboutToStart(&device);
+    REQUIRE(analysis.send(foh::Command::referenceDelay(96)));
+    REQUIRE(analysis.send(foh::Command::resetAverages(76)));
+    analysis.start();
+    REQUIRE(waitFor([&] { return analysis.latest().resetSeq == 76; }));
+    CHECK(analysis.latest().refDelayMs == Catch::Approx(1));
+}
+
 TEST_CASE("Reference rerouting and unavailable channels invalidate capture", "[app][audio]") {
     AudioEngine engine;
     float signal[64] {}; const float* inputs[] {signal, signal};
@@ -599,9 +731,11 @@ namespace {
 // restarts with I/O. The test thread acts only as the message-thread consumer.
 class ConcurrentCapture {
 public:
-    explicit ConcurrentCapture(AudioEngine& e) : engine(e), worker([this] { run(); }) {}
+    explicit ConcurrentCapture(AudioEngine& e, bool constantEnergy = false)
+        : engine(e), fixedEnergy(constantEnergy), worker([this] { run(); }) {}
     ~ConcurrentCapture() { done.store(true); worker.join(); }
     std::atomic<double> requestedRate{48000}, runningRate{0};
+    std::atomic<int> requestedBlock{1024}, runningBlock{0};
     std::atomic<bool> requestedRunning{true}, running{false};
     std::atomic<uint64_t> blocks{0}, allocations{0}, audibleBlocks{0}, silentBlocks{0};
     std::atomic<bool> finiteOutput{true};
@@ -613,7 +747,17 @@ private:
         float* outputs[] {left, right};
         foh::PinkNoise noise(43);
         noise.process(signal, 1024);
+        if (fixedEnergy) {
+            // Balanced synthetic broadband pairs: every supported block has
+            // zero DC and exactly -20 dBFS energy, independent of buffer length.
+            for (int i = 0; i < 1024; i += 2) {
+                signal[i] = signal[i] >= 0 ? 0.07071068f : -0.07071068f;
+                signal[i + 1] = -signal[i];
+            }
+        }
+        device.block = requestedBlock.load();
         engine.audioDeviceAboutToStart(&device);
+        runningBlock.store(device.block);
         runningRate.store(device.rate);
         running.store(true);
         while (!done.load()) {
@@ -627,10 +771,12 @@ private:
                 running.store(true);
             }
             const auto rate = requestedRate.load();
-            if (rate != device.rate) {
+            const auto block = requestedBlock.load();
+            if (rate != device.rate || block != device.block) {
                 engine.audioDeviceStopped();
-                device.rate = rate;
+                device.rate = rate; device.block = block;
                 engine.audioDeviceAboutToStart(&device);
+                runningBlock.store(block);
                 runningRate.store(rate);
             }
             // Exercise handoffs, not worker throughput: an instrumented Debug
@@ -639,11 +785,11 @@ private:
             // This pacing belongs only to the test producer, never the callback.
             if (engine.micRing.available() < 4096 && engine.refRing.available() < 4096) {
                 callbackAllocations = 0; auditAllocations = true;
-                engine.audioDeviceIOCallbackWithContext(inputs, 2, outputs, 2, 1024, {});
+                engine.audioDeviceIOCallbackWithContext(inputs, 2, outputs, 2, device.block, {});
                 auditAllocations = false;
                 allocations.fetch_add(uint64_t(callbackAllocations));
                 bool audible = false;
-                for (int i = 0; i < 1024; ++i) {
+                for (int i = 0; i < device.block; ++i) {
                     if (!std::isfinite(left[i]) || !std::isfinite(right[i])) finiteOutput.store(false);
                     audible |= left[i] != 0 || right[i] != 0;
                 }
@@ -656,6 +802,7 @@ private:
         engine.audioDeviceStopped();
     }
     AudioEngine& engine;
+    const bool fixedEnergy;
     std::atomic<bool> done{false};
     std::thread worker;
 };
@@ -678,6 +825,61 @@ TEST_CASE("Sample-rate changes overlap live analysis and snapshot reads", "[app]
         REQUIRE(snapshot.rtaDb.size() == snapshot.rtaBands.size());
         for (auto level : snapshot.rtaDb) REQUIRE(std::isfinite(level));
     }
+}
+
+TEST_CASE("Buffer and rate rebuilds clear live history while retaining stored traces and calibration", "[app][audio][concurrent][multipos][spl]") {
+    AudioEngine engine; AnalysisEngine analysis(engine);
+    analysis.start(); ConcurrentCapture producer(engine, true);
+    const auto cal = std::make_shared<const foh::MicCal>(foh::parseMicCal("20 2\n1000 2\n20000 2\n"));
+    REQUIRE(cal->ok()); analysis.setCal(cal, "Synthetic");
+    foh::TraceStore traces;
+    foh::SplCal spl; REQUIRE(spl.calibrate(-20, 94));
+    for (const auto config : {std::pair<double, int>{48000, 64}, {96000, 256}, {96000, 1024},
+                              {44100, 128}, {48000, 1024}}) {
+        REQUIRE(waitFor([&] { const auto& s = analysis.latest(); return s.tf.averages > 0 && s.micLevelValid && s.leq.valid && s.calApplied; }));
+        REQUIRE(analysis.send(foh::Command::micPosition(0, 2.5)));
+        REQUIRE(analysis.send(foh::Command::findDelay(false, 75)));
+        REQUIRE(waitFor([&] { return analysis.latest().positionCount == 1 && analysis.latest().delaySeq == 75; }));
+        const auto before = analysis.latest();
+        REQUIRE(before.delay.ok());
+        if (traces.count() == 0) REQUIRE(traces.store("Synthetic before", before.tf, before.refDelayMs));
+        const auto stored = traces.at(0);
+        producer.requestedRunning.store(false);
+        REQUIRE(waitFor([&] { const auto& s = analysis.latest(); return !producer.running.load()
+            && s.inputEpoch == engine.captureEpoch.load() && s.tf.averages == 0; }));
+        const auto cleared = analysis.latest();
+        CHECK(cleared.leq.seconds == 0); CHECK_FALSE(cleared.leq.valid);
+        CHECK_FALSE(cleared.micLevelValid); CHECK(cleared.positionMask == 0);
+        CHECK(cleared.positionCount == 0); CHECK(cleared.multiPosition.H.empty());
+        CHECK_FALSE(cleared.delay.ok()); CHECK(cleared.delaySeq == 0); CHECK_FALSE(cleared.delayWasSub);
+        CHECK(cleared.refDelaySamples == 0);
+        // A delay request while stopped must not recover the previous device's history.
+        REQUIRE(analysis.send(foh::Command::findDelay(true, 76)));
+        REQUIRE(waitFor([&] { return analysis.latest().delaySeq == 76; }));
+        CHECK_FALSE(analysis.latest().delay.ok());
+        producer.requestedRate.store(config.first); producer.requestedBlock.store(config.second);
+        producer.requestedRunning.store(true);
+        REQUIRE(waitFor([&] { const auto& s = analysis.latest(); return producer.runningRate.load() == config.first
+            && producer.runningBlock.load() == config.second && s.inputEpoch == engine.captureEpoch.load()
+            && s.tf.sampleRate == config.first && s.tf.averages > 0 && s.leq.valid && s.micLevelValid; }));
+        const auto after = analysis.latest();
+        CHECK(after.positionMask == 0); CHECK(after.delaySeq == 0); CHECK(after.calApplied);
+        // Rate/buffer changes must not add an SPL offset to the unweighted signal.
+        CHECK(after.leq.level[2] == Catch::Approx(before.leq.level[2]).margin(0.05));
+        CHECK(spl.level(after.leq.level[2]) == Catch::Approx(94).margin(0.05));
+        CHECK(traces.at(0).tf.H == stored.tf.H); CHECK(traces.at(0).tf.sampleRate == stored.tf.sampleRate);
+        CHECK(traces.at(0).refDelayMs == stored.refDelayMs);
+    }
+    CHECK(producer.allocations.load() == 0); CHECK(producer.finiteOutput.load());
+}
+
+TEST_CASE("A device epoch change invalidates the UI delay before its next timer tick", "[app][audio][delay]") {
+    juce::ScopedJuceInitialiser_GUI initialise;
+    AppModel model;
+    model.delay.confidence = 1; model.delay.arrivals.push_back({240, 5, 0, 0, false});
+    REQUIRE(model.delayLocked());
+    model.engine.audioDeviceStopped();
+    CHECK_FALSE(model.delayLocked());
 }
 
 TEST_CASE("Capture reset and pause commands overlap the analysis job", "[app][audio][concurrent]") {
@@ -736,6 +938,45 @@ TEST_CASE("Settings and calibration changes overlap a synthetic measurement", "[
         REQUIRE(snapshot.rtaDb.size() == snapshot.rtaBands.size());
         REQUIRE(snapshot.inputEpoch == engine.captureEpoch.load());
     }
+}
+
+namespace {
+class PortDeviceType : public SyntheticDeviceType {
+public:
+    explicit PortDeviceType(bool independent) : separate(independent) {}
+    bool separate;
+    juce::StringArray getDeviceNames(bool) const override { return {"Synthetic", "Synthetic 2"}; }
+    bool hasSeparateInputsAndOutputs() const override { return separate; }
+    juce::AudioIODevice* createDevice(const juce::String& output, const juce::String& input) override {
+        if (!separate && input.isNotEmpty() && output.isNotEmpty() && input != output) return nullptr;
+        return new SyntheticDevice;
+    }
+};
+}
+
+TEST_CASE("Audio Setup pairs unified devices and preserves independent endpoints", "[app][devices]") {
+    juce::ScopedJuceInitialiser_GUI initialise;
+    const bool separate = GENERATE(false, true); // ASIO-style and WASAPI-style backends
+    AppModel model;
+    model.dm.addAudioDeviceType(std::make_unique<PortDeviceType>(separate));
+    model.dm.setCurrentAudioDeviceType("Synthetic", true);
+    auto state = model.dm.getAudioDeviceSetup();
+    state.inputDeviceName = state.outputDeviceName = "Synthetic";
+    REQUIRE(model.dm.setAudioDeviceSetup(state, true).isEmpty());
+    SetupPage page(model);
+    auto* input = routingChoice(page, "Input");
+    auto* output = routingChoice(page, "Output");
+    REQUIRE(input != nullptr); REQUIRE(output != nullptr);
+    input->setSelectedId(3, juce::dontSendNotification); input->onChange();
+    state = model.dm.getAudioDeviceSetup();
+    CHECK(state.inputDeviceName == "Synthetic 2");
+    CHECK(state.outputDeviceName == (separate ? "Synthetic" : "Synthetic 2"));
+    CHECK(output->getSelectedId() == (separate ? 2 : 3));
+    output->setSelectedId(separate ? 3 : 2, juce::dontSendNotification); output->onChange();
+    state = model.dm.getAudioDeviceSetup();
+    CHECK(state.outputDeviceName == (separate ? "Synthetic 2" : "Synthetic"));
+    CHECK(state.inputDeviceName == (separate ? "Synthetic 2" : "Synthetic"));
+    CHECK(model.dm.getCurrentAudioDevice() != nullptr);
 }
 
 TEST_CASE("Multi-mic worker captures replaces clears and compensates reference delay", "[app][audio][multipos]") {
@@ -823,6 +1064,7 @@ TEST_CASE("Multi-mic TF average overlays the target with controls reachable", "[
     REQUIRE(panel->getLocalBounds().contains(show->getBounds()));
     REQUIRE(show->getWidth() > 80);
     model.multiPosition.fftSize = 1024;
+    model.multiPosition.H.assign(513, std::pow(10.0, 2.0 / 20.0));
     model.multiPosition.magDb.assign(513, 2);
     model.multiPosition.coherence.assign(513, 1);
     model.positionCount = 2;
@@ -836,12 +1078,59 @@ TEST_CASE("Multi-mic TF average overlays the target with controls reachable", "[
         for (double value : series.v) REQUIRE(value == 2);
     }
     REQUIRE(hasSeries("Target +6"));
+    model.multiPosition.coherence.assign(513, 0);
+    model.multiPosition.blanked.assign(513, 1);
+    panel->modelChanged(AppModel::Snapshot);
+    CHECK(plot->note.contains("No coherent positions"));
+    model.multiPosition.coherence.assign(513, 1);
+    model.multiPosition.blanked.assign(513, 0);
+    panel->modelChanged(AppModel::Snapshot);
+    CHECK_FALSE(plot->note.contains("No coherent positions"));
     show->setToggleState(false, juce::dontSendNotification); show->onClick();
     REQUIRE_FALSE(hasSeries("Multi-mic average"));
     REQUIRE(hasSeries("Target +6"));
     show->setToggleState(true, juce::dontSendNotification);
     model.positionCount = 1; panel->modelChanged(AppModel::Snapshot);
     REQUIRE_FALSE(hasSeries("Multi-mic average"));
+}
+
+TEST_CASE("Clearing positions and losing a mic during a sweep discards capture state", "[app][audio][sweep][multipos][edges]") {
+    AudioEngine engine; SyntheticDevice device; engine.audioDeviceAboutToStart(&device);
+    AnalysisEngine analysis(engine); AnalysisEngineTestAccess consumer(analysis);
+    consumer.step();
+    std::vector<float> noise(32768); foh::PinkNoise generator;
+    generator.process(noise.data(), int(noise.size()));
+    std::vector<float> outA(noise.size()), outB(noise.size());
+    float* outputs[] {outA.data(), outB.data()};
+    const float* connected[] {noise.data(), noise.data()};
+    engine.audioDeviceIOCallbackWithContext(connected, 2, outputs, 2, int(noise.size()), {});
+    consumer.step();
+    REQUIRE(analysis.send(foh::Command::micPosition(0, 0))); consumer.step();
+    REQUIRE(analysis.latest().positionCount == 1);
+    foh::Command sweep; sweep.type = foh::CommandType::MeasureSweep;
+    REQUIRE(analysis.send(sweep)); consumer.step();
+    REQUIRE(analysis.latest().sweepCapturing);
+    engine.audioDeviceIOCallbackWithContext(connected, 2, outputs, 2, 512, {});
+    consumer.step();
+    REQUIRE(analysis.latest().sweepCapturing);
+    foh::Command clear; clear.type = foh::CommandType::ClearMicPositions;
+    REQUIRE(analysis.send(clear)); consumer.step();
+    CHECK(analysis.latest().positionCount == 0);
+    CHECK(analysis.latest().multiPosition.H.empty());
+    CHECK(analysis.latest().sweepCapturing);
+    // A missing physical input is published by I/O as a new capture epoch.
+    const float* disconnected[] {nullptr, noise.data()};
+    engine.audioDeviceIOCallbackWithContext(disconnected, 2, outputs, 2, 512, {});
+    REQUIRE(engine.state.load() == AudioEngine::InvalidInputs);
+    consumer.step();
+    const auto snapshot = analysis.latest();
+    CHECK_FALSE(snapshot.sweepCapturing);
+    CHECK_FALSE(snapshot.sweep.response.error.empty());
+    CHECK(snapshot.sweep.response.impulse.empty()); CHECK(snapshot.sweep.etcDb.empty());
+    CHECK(snapshot.positionMask == 0); CHECK(snapshot.positionCount == 0);
+    CHECK(engine.gen.load() == AudioEngine::Off);
+    for (double c : snapshot.tf.coherence) CHECK(std::isfinite(c));
+    for (double db : snapshot.tf.magDb) CHECK(std::isfinite(db));
 }
 
 TEST_CASE("Sweep measurement captures loopback and publishes impulse and ETC", "[app][audio][sweep]") {
@@ -913,6 +1202,168 @@ TEST_CASE("Pausing cancels a sweep capture and stops playback", "[app][audio][sw
     CHECK(analysis.latest().sweep.response.impulse.empty());
     CHECK(engine.gen.load() == AudioEngine::Off);
     analysis.stop();
+}
+
+TEST_CASE("Analysis engines join pending sweep and meter work on repeated destruction", "[app][audio][lifetime][stress]") {
+    for (int pass = 0; pass < 12; ++pass) {
+        AudioEngine engine; SyntheticDevice device;
+        device.rate = pass % 3 == 0 ? 44100 : pass % 3 == 1 ? 48000 : 96000;
+        engine.audioDeviceAboutToStart(&device);
+        auto analysis = std::make_unique<AnalysisEngine>(engine);
+        analysis->start();
+        REQUIRE(waitFor([&] { return engine.analysisEpoch.load() == engine.captureEpoch.load(); }));
+        std::array<float, 16384> signal {};
+        for (size_t i = 0; i < signal.size(); ++i)
+            signal[i] = float(0.1 * std::sin(2 * juce::MathConstants<double>::pi * 1000 * i / device.rate));
+        capture(engine, signal.data(), signal.data(), int(signal.size()));
+        REQUIRE(waitFor([&] { return analysis->latest().leq.seconds > 0; }));
+        foh::Command sweep; sweep.type = foh::CommandType::MeasureSweep;
+        REQUIRE(analysis->send(sweep));
+        REQUIRE(waitFor([&] { return analysis->latest().sweepCapturing; }));
+        capture(engine, signal.data(), signal.data(), int(signal.size()));
+        analysis->setCal(std::make_shared<foh::MicCal>(), "Synthetic");
+        REQUIRE(analysis->send(foh::Command::findDelay(false, pass + 1)));
+        // Match JUCE's shutdown order: quiesce I/O before joining the worker.
+        engine.audioDeviceStopped();
+        analysis.reset();
+        CHECK(engine.gen.load() == AudioEngine::Off);
+    }
+}
+
+struct AppModelMeasurementTestAccess {
+    static void poll(AppModel& model) { model.timerCallback(); }
+};
+
+TEST_CASE("Hotplug and device errors discard TF RTA SPL and delay history", "[app][audio][hotplug]") {
+    AudioEngine engine; AnalysisEngine analysis(engine); SyntheticDevice device;
+    engine.audioDeviceAboutToStart(&device); analysis.start();
+    float signal[4096]; foh::PinkNoise noise(64); noise.process(signal, 4096);
+    float a[4096] {}, b[4096] {}; float* outputs[] {a, b};
+    const float* inputs[] {signal, signal};
+    for (int event = 0; event < 5; ++event) {
+        CAPTURE(event);
+        REQUIRE(waitFor([&] { return engine.analysisEpoch.load() == engine.captureEpoch.load(); }));
+        REQUIRE(waitFor([&] {
+            engine.audioDeviceIOCallbackWithContext(inputs, 2, outputs, 2, 4096, {});
+            std::this_thread::sleep_for(std::chrono::duration<double>(4096.0 / device.rate));
+            return analysis.latest().tf.averages > 0 && analysis.latest().leq.seconds > 0;
+        }));
+        REQUIRE(analysis.send(foh::Command::findDelay(false, event + 1)));
+        REQUIRE(waitFor([&] { return analysis.latest().delaySeq == uint64_t(event + 1); }));
+        REQUIRE(engine.micPeak.load() > 0);
+        const auto oldSeq = analysis.latest().seq;
+        if (event == 0) engine.audioDeviceStopped(); // unplug, with no subsequent callbacks
+        if (event == 1) { device.rate = 96000; engine.audioDeviceAboutToStart(&device); }
+        if (event == 2) { // lost generator output while inputs still work
+            engine.gen = AudioEngine::Pink;
+            engine.audioDeviceIOCallbackWithContext(inputs, 2, outputs, 1, 256, {});
+            CHECK(engine.state.load() == AudioEngine::InvalidOutputs);
+            CHECK(engine.gen.load() == AudioEngine::Off);
+            CHECK(std::string_view(engine.statusText()).find("Setup") != std::string_view::npos);
+        }
+        if (event == 3) {
+            engine.refCh = 4;
+            engine.audioDeviceIOCallbackWithContext(inputs, 2, outputs, 2, 256, {});
+            CHECK(engine.state.load() == AudioEngine::InvalidInputs);
+        }
+        if (event == 4) {
+            std::thread error([&] { engine.audioDeviceError("Synthetic unplug"); }); error.join();
+        }
+        REQUIRE(waitFor([&] {
+            const auto& s = analysis.latest();
+            return s.seq > oldSeq && s.inputEpoch == engine.captureEpoch.load()
+                && s.tf.averages == 0 && s.leq.seconds == 0;
+        }));
+        const auto cleared = analysis.latest();
+        CHECK_FALSE(cleared.micLevelValid);
+        CHECK_FALSE(cleared.delay.ok());
+        CHECK(cleared.convergence.frames == 0);
+        for (auto level : cleared.rtaDb) CHECK(level <= -100);
+        CHECK(engine.micPeak.load() == 0); CHECK(engine.refPeak.load() == 0);
+        // Replacement with the same name/rate is still a new measurement epoch.
+        engine.refCh = 1; engine.audioDeviceAboutToStart(&device);
+    }
+}
+
+TEST_CASE("Device changes cancel model captures without storing a trace or stale SPL", "[app][audio][hotplug]") {
+    juce::ScopedJuceInitialiser_GUI gui;
+    for (int event = 0; event < 4; ++event) {
+        CAPTURE(event);
+        AppModel model;
+        AppModelMeasurementTestAccess::poll(model);
+        model.tf.magDb = {3}; model.rtaDb = {3}; model.leq.seconds = 42;
+        model.leq.session = {94, 94, 94}; model.micLevelValid = true;
+        model.micPeak = model.refPeak = 0.5f;
+        bool completed = false;
+        model.capture.active = true;
+        model.capture.then = [&](bool settled) { completed = true; CHECK_FALSE(settled); };
+        SyntheticDevice device;
+        if (event == 0) model.engine.audioDeviceStopped();
+        if (event == 1) model.engine.audioDeviceAboutToStart(&device);
+        if (event == 2) model.engine.audioDeviceError("Synthetic unplug");
+        if (event == 3) {
+            float signal[64] {}; const float* inputs[] {signal, signal};
+            model.engine.micCh = 4;
+            model.engine.audioDeviceIOCallbackWithContext(inputs, 2, nullptr, 0, 64, {});
+        }
+        AppModelMeasurementTestAccess::poll(model);
+        CHECK(completed); CHECK_FALSE(model.capture.active);
+        CHECK(model.traces.count() == 0);
+        CHECK(model.tf.magDb.empty()); CHECK(model.rtaDb.empty());
+        CHECK(model.leq.seconds == 0); CHECK_FALSE(model.micLevelValid);
+        CHECK(model.micPeak == 0); CHECK(model.refPeak == 0);
+        if (event != 1) { // A capture attempted while still unavailable also fails promptly.
+            completed = false; model.capture.active = true;
+            model.capture.then = [&](bool settled) { completed = true; CHECK_FALSE(settled); };
+            AppModelMeasurementTestAccess::poll(model);
+            CHECK(completed); CHECK_FALSE(model.capture.active);
+            CHECK(model.traces.count() == 0);
+        }
+    }
+}
+
+TEST_CASE("A replacement missing a configured output requires Setup even with generator off", "[app][audio][hotplug]") {
+    AudioEngine engine; SyntheticDevice device;
+    engine.audioDeviceAboutToStart(&device);
+    const auto before = engine.captureEpoch.load();
+    device.activeOutputs = 1; engine.audioDeviceAboutToStart(&device);
+    CHECK(engine.captureEpoch.load() > before);
+    CHECK(engine.state.load() == AudioEngine::InvalidOutputs);
+    float signal[64] {}, output[64]; const float* inputs[] {signal, signal}; float* outputs[] {output};
+    engine.analysisEpoch = engine.captureEpoch.load();
+    for (int i = 0; i < 3; ++i)
+        engine.audioDeviceIOCallbackWithContext(inputs, 2, outputs, 1, 64, {});
+    CHECK(engine.state.load() == AudioEngine::InvalidOutputs);
+    CHECK(engine.micRing.available() == 0);
+    CHECK(std::string_view(engine.statusText()).find("Setup") != std::string_view::npos);
+    engine.outB = -1; // Correct the map in Setup, then resume with fresh history.
+    engine.audioDeviceIOCallbackWithContext(inputs, 2, outputs, 1, 64, {});
+    CHECK(engine.state.load() == AudioEngine::Ready);
+    engine.analysisEpoch = engine.captureEpoch.load();
+    engine.audioDeviceIOCallbackWithContext(inputs, 2, outputs, 1, 64, {});
+    CHECK(engine.micRing.available() == 64);
+}
+
+TEST_CASE("Asynchronous device errors overlap live analysis without retaining measurements", "[app][audio][hotplug][concurrent]") {
+    AudioEngine engine; AnalysisEngine analysis(engine); analysis.start();
+    ConcurrentCapture producer(engine);
+    REQUIRE(waitFor([&] { return analysis.latest().tf.averages > 0 && analysis.latest().leq.seconds > 0; }));
+    engine.audioDeviceError("Synthetic unplug during analysis");
+    REQUIRE(waitFor([&] {
+        const auto& s = analysis.latest();
+        return s.tf.averages == 0 && s.leq.seconds == 0 && !s.micLevelValid;
+    }));
+    const auto blocks = producer.blocks.load();
+    REQUIRE(waitFor([&] { return producer.blocks.load() > blocks + 8; }));
+    CHECK(analysis.latest().tf.averages == 0);
+    CHECK(engine.micPeak.load() == 0); CHECK(engine.refPeak.load() == 0);
+    // A serialized replacement recovers, but only new audio is averaged.
+    producer.requestedRate.store(96000);
+    REQUIRE(waitFor([&] {
+        const auto& s = analysis.latest();
+        return !engine.deviceFailed.load() && s.tf.sampleRate == 96000 && s.tf.averages > 0
+            && s.inputEpoch == engine.captureEpoch.load();
+    }));
 }
 
 TEST_CASE("Device stop and restart during capture discard old analysis and sweep state", "[app][audio][concurrent]") {
@@ -1174,4 +1625,67 @@ TEST_CASE("Analysis applies stored loopback only to its capture epoch", "[app][a
     revision = analysis.setLoopback(nullptr, 2);
     CHECK(acknowledged().tf.magDb[100] == Catch::Approx(-6.0206).margin(.1));
     analysis.stop();
+}
+
+TEST_CASE("Guide sweep cancellation is scoped to its accepted request", "[app][audio][sweep][guide][edges]") {
+    AudioEngine engine; SyntheticDevice device; engine.audioDeviceAboutToStart(&device);
+    AnalysisEngine analysis(engine); analysis.start();
+    REQUIRE(waitFor([&] { return engine.analysisEpoch.load() == engine.captureEpoch.load(); }));
+    foh::Command sweep; sweep.type = foh::CommandType::MeasureSweep; sweep.id = 42;
+    REQUIRE(analysis.send(sweep));
+    REQUIRE(waitFor([&] { return analysis.latest().sweepCapturing && analysis.latest().sweepSeq == 42; }));
+    foh::Command cancel; cancel.type = foh::CommandType::CancelSweep; cancel.id = 42;
+    REQUIRE(analysis.send(cancel));
+    REQUIRE(waitFor([&] { return !analysis.latest().sweepCapturing; }));
+    CHECK(engine.gen.load() == AudioEngine::Off);
+    sweep.id = 43; REQUIRE(analysis.send(sweep));
+    REQUIRE(waitFor([&] { return analysis.latest().sweepCapturing && analysis.latest().sweepSeq == 43; }));
+    const auto seq = analysis.latest().seq;
+    REQUIRE(analysis.send(cancel)); // delayed cancellation from the retired guide
+    REQUIRE(waitFor([&] { return analysis.latest().seq > seq; }));
+    CHECK(analysis.latest().sweepCapturing); CHECK(analysis.latest().sweepSeq == 43);
+    cancel.id = 43; REQUIRE(analysis.send(cancel));
+    REQUIRE(waitFor([&] { return !analysis.latest().sweepCapturing; }));
+    CHECK(engine.gen.load() == AudioEngine::Off); analysis.stop();
+}
+
+TEST_CASE("Changing SPL calibration during active integration discards old exposure", "[app][audio][splcal][edges]") {
+    juce::ScopedJuceInitialiser_GUI initialise;
+    AppModel model;
+    model.analysis.stop(); model.dm.removeAudioCallback(&model.engine);
+    model.engine.micCh = 0; model.engine.refCh = 1;
+    model.engine.state = AudioEngine::Ready; model.engine.deviceFailed = false;
+    AnalysisEngineTestAccess worker(model.analysis);
+    auto calibrate = [&](double measured, double known) {
+        foh::SplCal cal; REQUIRE(cal.calibrate(measured, known));
+        auto json = foh::Json::object(); json.set(model.splInputKey(), cal.toJson());
+        const auto revision = model.analysis.leqRevision.load();
+        model.loadSplCalJson(json);
+        REQUIRE(model.analysis.leqRevision.load() == revision + 1);
+        worker.step();
+        CHECK(model.analysis.latest().leqRevision == revision + 1);
+        CHECK(model.analysis.latest().leq.seconds == 0);
+        CHECK_FALSE(model.analysis.latest().leq.valid);
+    };
+    auto feed = [&](double amplitude) {
+        std::vector<float> block(960);
+        for (int i = 0; i < 960; ++i)
+            block[i] = float(amplitude * std::sin(2 * juce::MathConstants<double>::pi * 1000 * i / 48000));
+        for (int i = 0; i < 10; ++i) capture(model.engine, block.data(), block.data(), 960);
+        worker.step();
+        const auto r = model.analysis.latest().leq;
+        REQUIRE(r.valid); CHECK(r.seconds == Catch::Approx(0.2));
+        return r;
+    };
+    calibrate(-20, 94);
+    CHECK(model.splCal().level(feed(0.1).session[2]) == Catch::Approx(94).margin(0.01));
+    calibrate(-40, 114);
+    CHECK(model.splCal().level(feed(0.01).session[2]) == Catch::Approx(114).margin(0.01));
+    // Removing calibration also resets history; the next reading remains in dBFS.
+    const auto revision = model.analysis.leqRevision.load();
+    model.loadSplCalJson(foh::Json::object()); worker.step();
+    CHECK(model.analysis.latest().leqRevision == revision + 1);
+    CHECK(model.analysis.latest().leq.seconds == 0);
+    CHECK_FALSE(model.splCal().calibrated);
+    CHECK(model.splCal().level(feed(0.01).session[2]) == Catch::Approx(-40).margin(0.01));
 }

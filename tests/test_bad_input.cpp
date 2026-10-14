@@ -81,3 +81,46 @@ TEST_CASE("Damaged calibration rows containing Hz are not treated as headings", 
     CHECK_FALSE(foh::parseMicCal("2000Hz 1\n20 0\n1000 1\n").ok());
     CHECK(foh::parseMicCal("Freq(Hz) dB Phase\n20 0\n1000 1\n").ok());
 }
+
+TEST_CASE("Truncated curve cells and inconsistent columns never publish partial data", "[files]") {
+    const std::string good = "20 0\n1000 1\n";
+    for (const auto* row : {"2000 2e", "2000 2e+", "2000 2e-", "2000 2 3e", "2000 2 0 1e",
+                            "2000 2 0 1", "NAN 0", "INF 0", "INFINITY 0"}) {
+        INFO(row);
+        auto cal = foh::parseMicCal(good + row);
+        REQUIRE_FALSE(cal.ok()); REQUIRE_FALSE(cal.error.empty());
+        REQUIRE(cal.hz.empty()); REQUIRE(cal.db.empty()); REQUIRE(cal.phaseDeg.empty());
+        auto target = foh::parseTarget(good + row);
+        REQUIRE_FALSE(target.ok()); REQUIRE_FALSE(target.error.empty());
+        REQUIRE(target.hz.empty()); REQUIRE(target.db.empty());
+    }
+    for (const auto* text : {"20 0\n1000 1\nfrequency bad row",
+                            "20 0\n1000 1\nbadHz 3"}) REQUIRE_FALSE(foh::parseMicCal(text).ok());
+    REQUIRE_FALSE(foh::parseTarget("20 0 0 1\n1000 1").ok());
+    REQUIRE_FALSE(foh::parseTarget(good + "2000 2 0").ok());
+    REQUIRE(foh::parseMicCal("20 0 0\n1000 1").ok()); // optional mic phase is a supported format
+    for (const auto* text : {"20 0", "20 0\n20 1", "Tolerance: nan\n20 0\n1000 1"}) {
+        auto target = foh::parseTarget(text); REQUIRE_FALSE(target.ok()); REQUIRE(target.hz.empty());
+    }
+    // Complete final records need no trailing newline; conventional headers still work.
+    REQUIRE(foh::parseMicCal("Frequency Hz dB\n20 0 0\n1000 1 0").ok());
+    REQUIRE(foh::parseTarget("Frequency (Hz) Magnitude (dB)\n20 0 0 1\n1000 1 0 1").ok());
+}
+
+TEST_CASE("Curve file paths reject empty paths directories and missing files", "[files]") {
+    for (const auto& path : {std::string{}, std::filesystem::temp_directory_path().string(),
+                             (std::filesystem::temp_directory_path() / "foh-synthetic-missing-input.csv").string()}) {
+        INFO(path);
+        auto cal = foh::loadMicCal(path); REQUIRE_FALSE(cal.ok()); REQUIRE_FALSE(cal.error.empty()); REQUIRE(cal.hz.empty());
+        REQUIRE_THROWS(foh::input::read(path)); // also the target import's bounded file reader
+    }
+}
+
+TEST_CASE("Synthetic truncated CSV FRD and ASCII files fail through the import readers", "[files]") {
+    for (const auto* name : {"synthetic-truncated-cal.csv", "synthetic-truncated-cal.frd"}) {
+        auto cal = foh::loadMicCal(std::string(FOH_TEST_DATA) + "/" + name);
+        REQUIRE_FALSE(cal.ok()); REQUIRE_FALSE(cal.error.empty()); REQUIRE(cal.hz.empty());
+    }
+    auto target = foh::parseTarget(foh::input::read(std::string(FOH_TEST_DATA) + "/synthetic-truncated-target.txt"));
+    REQUIRE_FALSE(target.ok()); REQUIRE_FALSE(target.error.empty()); REQUIRE(target.hz.empty());
+}

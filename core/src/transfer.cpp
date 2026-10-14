@@ -60,17 +60,33 @@ void TransferFunction::process(const float* ref, const float* meas, int n) {
     if (!ref || !meas || n <= 0) return;
     int H = (int) refHistory.size();
     for (int i = 0; i < n; ++i) {
-        refHistory[(size_t) histPos] = detail::cleanSample(ref[i]);
+        refHistory[(size_t) histPos] = ref[i];
         float delayed = refHistory[(size_t) ((histPos - refDelayInt + H) % H)];
         histPos = (histPos + 1) % H;
-        xbuf[(size_t) fill] = delayed; ybuf[(size_t) fill] = detail::cleanSample(meas[i]);
+        xbuf[(size_t) fill] = delayed; ybuf[(size_t) fill] = meas[i];
         if (++fill == N) { frame(); // 50% overlap
             std::copy(xbuf.begin() + N / 2, xbuf.end(), xbuf.begin());
             std::copy(ybuf.begin() + N / 2, ybuf.end(), ybuf.begin()); fill = N / 2; }
     }
 }
 void TransferFunction::frame() {
-    for (int i = 0; i < N; ++i) { X[(size_t) i] = xbuf[(size_t) i] * win[(size_t) i]; Y[(size_t) i] = ybuf[(size_t) i] * win[(size_t) i]; }
+    double xm = 0, ym = 0;
+    bool valid = detail::frameMean(xbuf, xm) && detail::frameMean(ybuf, ym);
+    double xe = 0, ye = 0;
+    if (valid) for (int i = 0; i < N; ++i) {
+        xe += std::pow(detail::cleanSample(xbuf[(size_t) i]) - xm, 2);
+        ye += std::pow(detail::cleanSample(ybuf[(size_t) i]) - ym, 2);
+    }
+    valid = valid && xe > 1e-30 && ye > 1e-30;
+    if (!valid) {
+        std::fill(Sxx.begin(), Sxx.end(), 0.0); std::fill(Syy.begin(), Syy.end(), 0.0);
+        std::fill(Sxy.begin(), Sxy.end(), cpx{});
+        convHavePrev = false; if (settle.settled()) settle.reset();
+    }
+    for (int i = 0; i < N; ++i) {
+        X[(size_t) i] = valid ? (detail::cleanSample(xbuf[(size_t) i]) - xm) * win[(size_t) i] : 0;
+        Y[(size_t) i] = valid ? (detail::cleanSample(ybuf[(size_t) i]) - ym) * win[(size_t) i] : 0;
+    }
     fft.forward(X); fft.forward(Y);
     if (refDelayFrac != 0) for (int k = 0; k <= N / 2; ++k) X[(size_t) k] *= fracRot[(size_t) k];
     ++frameCount;
@@ -102,7 +118,7 @@ TFResult TransferFunction::result(int frac, const LoopbackCorrection* loopback) 
         r.H[k] = h; r.magDb[k] = 20.0 * std::log10(std::abs(h) + 1e-12);
         r.phaseDeg[k] = std::arg(h) * 180.0 / M_PI;
         double den = sxx[k] * syy[k]; r.coherence[k] = den > 1e-40 ? std::min(1.0, std::norm(sxy[k]) / den) : 0.0;
-        if (blankThr > 0 && r.coherence[k] < blankThr) r.blanked[k] = 1;
+        if (sxx[k] <= 1e-30 || syy[k] <= 1e-30 || (blankThr > 0 && r.coherence[k] < blankThr)) r.blanked[k] = 1;
     }
     return r;
 }
@@ -111,13 +127,17 @@ bool TraceStore::store(const std::string& name, const TFResult& tf, double ms) {
     if ((int) traces.size() >= kMax) return false; traces.push_back({name, tf, ms, true}); return true; }
 bool TraceStore::remove(int i) { if (i < 0 || i >= count()) return false; traces.erase(traces.begin() + i); return true; }
 Band2 acousticCrossover(const TFResult& a, const TFResult& b, double within, double fmin, double fmax) {
-    Band2 out; size_t n = std::min(a.freq.size(), b.freq.size());
+    Band2 out;
+    if (a.freq != b.freq || a.magDb.size() != a.freq.size() || b.magDb.size() != b.freq.size()) return out;
+    size_t n = a.freq.size();
     for (size_t k = 1; k < n; ++k) { double f = a.freq[k]; if (f < fmin || f > fmax) continue;
         if (std::fabs(a.magDb[k] - b.magDb[k]) <= within) { if (!out.found) { out.lo = f; out.found = true; } out.hi = f; } }
     return out;
 }
 PhaseOffset phaseOffset(const TFResult& a, const TFResult& b, double lo, double hi) {
-    cpx acc{}; double wsum = 0, fsum = 0; size_t n = std::min(a.H.size(), b.H.size());
+    if (a.freq != b.freq || a.H.size() != a.freq.size() || b.H.size() != b.freq.size()
+        || a.coherence.size() != a.freq.size() || b.coherence.size() != b.freq.size()) return {};
+    cpx acc{}; double wsum = 0, fsum = 0; size_t n = a.H.size();
     for (size_t k = 1; k < n; ++k) { double f = a.freq[k]; if (f < lo || f > hi) continue;
         double w = std::min(a.coherence[k], b.coherence[k]);
         cpx d = b.H[k] * std::conj(a.H[k]); double m = std::abs(d); if (m < 1e-20) continue;
@@ -162,7 +182,16 @@ SubDelayEstimate subDelayFromPhase(const TFResult& a, const TFResult& b, double 
     return e;
 }
 TFResult virtualSum(const TFResult& a, const TFResult& b) {
-    TFResult r = a; size_t n = std::min(a.H.size(), b.H.size());
+    // TFResult is public data: imported/synthetic callers need not have all
+    // parallel arrays populated. Reject incomplete or incompatible inputs
+    // before indexing them, just as the stored-trace preview does.
+    const size_t n = a.freq.size();
+    auto complete = [n](const TFResult& t) {
+        return t.freq.size() == n && t.H.size() == n && t.magDb.size() == n
+            && t.phaseDeg.size() == n && t.coherence.size() == n;
+    };
+    if (n == 0 || !complete(a) || !complete(b) || a.freq != b.freq) return {};
+    TFResult r = a;
     for (size_t k = 0; k < n; ++k) { r.H[k] = a.H[k] + b.H[k];
         r.magDb[k] = 20.0 * std::log10(std::abs(r.H[k]) + 1e-12); r.phaseDeg[k] = std::arg(r.H[k]) * 180.0 / M_PI;
         r.coherence[k] = std::min(a.coherence[k], b.coherence[k]);

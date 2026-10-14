@@ -90,16 +90,22 @@ bool MainComponent::writeSession(const File& folder) {
     s.measurement.set("smoothing", model.smoothingFraction); s.measurement.set("averages", model.averages); s.measurement.set("rtaFraction", model.rtaFraction); s.measurement.set("blankThreshold", model.blankThreshold); s.measurement.set("refDelayMs", model.lockedDelayMs); s.measurement.set("showMode", showMode);
     std::string error;
     if (!foh::saveSession(folder.getFullPathName().toStdString(), s, error)) {
-        AlertWindow::showMessageBoxAsync(MessageBoxIconType::WarningIcon, "Session save failed", String(error), {}, nullptr, ModalCallbackFunction::create([](int) {})); return false;
+        showSessionNotice("Session save failed", String(error)); return false;
     }
     sessionFolder = folder; return true;
 }
-// Supply callbacks so session notices stay asynchronous even when JUCE modal
-// loops are enabled (as in app tests).
+void MainComponent::showSessionNotice(const String& title, const String& message) {
+    sessionNotice = AlertWindow::showScopedAsync(MessageBoxOptions()
+        .withIconType(MessageBoxIconType::WarningIcon).withTitle(title)
+        .withMessage(message).withButton("OK").withAssociatedComponent(this), nullptr);
+}
+
+// Scoped notices remain asynchronous even when JUCE modal loops are enabled.
 bool MainComponent::readSession(const File& folder) {
+    sessionNotice.close();
     foh::Session s; std::string error, notice; fohws::Workspace workspace;
     if (!foh::loadSession(folder.getFullPathName().toStdString(), s, error, &notice) || !fohws::fromJson(s.workspace, workspace, error)) {
-        AlertWindow::showMessageBoxAsync(MessageBoxIconType::WarningIcon, "Session open failed", String(error), {}, nullptr, ModalCallbackFunction::create([](int) {})); return false;
+        showSessionNotice("Session open failed", String(error)); return false;
     }
     // Device enumeration and all file operations run on the message thread.
     AudioIODeviceType* type = nullptr;
@@ -110,6 +116,7 @@ bool MainComponent::readSession(const File& folder) {
     // Opening a session always leaves the generator off, including a device fallback.
     model.engine.gen = AudioEngine::Off;
     model.cancelSessionOperations();
+    model.notify(AppModel::Session);
     if (available) {
         model.dm.setCurrentAudioDeviceType(String(s.deviceType), true);
         auto setup = model.dm.getAudioDeviceSetup();
@@ -160,10 +167,10 @@ bool MainComponent::readSession(const File& folder) {
     sessionFolder = folder;
     if (!available) {
         selectWorkspace("setup");
-        AlertWindow::showMessageBoxAsync(MessageBoxIconType::WarningIcon, "Session audio setup needed", "The saved audio device is missing or its settings are unavailable. Choose an input and output in Setup before measuring." + (notice.empty() ? String() : "\n\n" + String(notice)), {}, nullptr, ModalCallbackFunction::create([](int) {}));
+        showSessionNotice("Session audio setup needed", "The saved audio device is missing or its settings are unavailable. Choose an input and output in Setup before measuring." + (notice.empty() ? String() : "\n\n" + String(notice)));
     } else {
         if (s.measurement["showMode"].asBool()) setShowMode(true);
-        if (!notice.empty()) AlertWindow::showMessageBoxAsync(MessageBoxIconType::WarningIcon, "Session rig setup", String(notice), {}, nullptr, ModalCallbackFunction::create([](int) {}));
+        if (!notice.empty()) showSessionNotice("Session rig setup", String(notice));
     }
     return true;
 }

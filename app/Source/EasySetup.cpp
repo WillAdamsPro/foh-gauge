@@ -19,8 +19,14 @@ EasySetup::EasySetup(AppModel& m) : model(m) {
     arrangement.addItem("Centre", 1); arrangement.addItem("Left / right", 2);
     arrangement.addItem("Distributed", 3); arrangement.addItem("Other", 4);
     subs.onClick = [this] { arrangement.setEnabled(subs.getToggleState()); };
-    skip.onClick = [this] { model.rigProfile.reset(); model.notify(AppModel::Rig); if (onClose) onClose(); };
+    skip.onClick = [this] {
+        if (!active) return;
+        active = false; SafePointer<EasySetup> safe(this);
+        model.rigProfile.reset(); model.notify(AppModel::Rig);
+        if (safe) { auto close = safe->onClose; if (close) close(); }
+    };
     apply.onClick = [this] {
+        if (!active) return;
         foh::RigProfile r;
         r.clusters = clusters.getText().getIntValue(); r.cabinetsPerCluster = cabinets.getText().getIntValue();
         r.control = control.getSelectedId() == 2 ? foh::RigProfile::Control::Individual : foh::RigProfile::Control::Grouped;
@@ -28,7 +34,7 @@ EasySetup::EasySetup(AppModel& m) : model(m) {
         r.subArrangement = static_cast<foh::RigProfile::SubArrangement>(arrangement.getSelectedId() - 1);
         if (!r.valid()) { status.setText("Enter cluster and cabinet counts from 1 to 256.", dontSendNotification); return; }
         // A model listener may close the host during the synchronous notification.
-        SafePointer<EasySetup> safe(this);
+        active = false; SafePointer<EasySetup> safe(this);
         model.rigProfile = r; model.notify(AppModel::Rig);
         if (safe) { auto close = safe->onClose; if (close) close(); }
     };
@@ -37,6 +43,7 @@ EasySetup::EasySetup(AppModel& m) : model(m) {
     resized();
 }
 void EasySetup::begin() {
+    active = true;
     auto r = model.rigProfile.value_or(foh::RigProfile{});
     clusters.setText(String(r.clusters)); cabinets.setText(String(r.cabinetsPerCluster));
     control.setSelectedId(r.control == foh::RigProfile::Control::Individual ? 2 : 1, dontSendNotification);

@@ -194,3 +194,30 @@ TEST_CASE("Display-list churn preserves floating state through transient empty l
     for (int index = 0; index < manager.count(); ++index)
         CHECK(fohws::toJson(relaunched.at(index)) == fohws::toJson(manager.at(index)));
 }
+
+TEST_CASE("Floating resize limits track small work areas and resolution changes", "[app][workspace][scale]") {
+    juce::ScopedJuceInitialiser_GUI initialise;
+    AppModel model;
+    Panel panel(model, "Synthetic", "Synthetic");
+    fohws::FloatingPanel state {"Synthetic", {40, 65, 500, 300}, "synthetic"};
+    FloatingPanelWindow window(panel, state);
+    // Detach the native peer: AppKit otherwise corrects synthetic off-screen
+    // coordinates against the physical display before JUCE can inspect them.
+    window.setVisible(false);
+    window.removeFromDesktop();
+    for (auto area : {fohws::Rect{100, 40, 160, 100}, {-2560, -100, 2560, 1400}, {0, 25, 1512, 957}}) {
+        state.bounds = {9000, 9000, 8000, 5000};
+        state.displayId = "synthetic";
+        window.restoreToDisplays({{"synthetic", area, true}});
+        CHECK(window.getBounds() == juce::Rectangle<int>{area.x, area.y, area.w, area.h});
+        CHECK(window.getConstrainer()->getMinimumWidth() == juce::jmin(foh::theme::ws::floatMinWidth, area.w));
+        CHECK(window.getConstrainer()->getMinimumHeight() == juce::jmin(foh::theme::ws::floatMinHeight, area.h));
+        CHECK(window.getConstrainer()->getMaximumWidth() == area.w);
+        CHECK(window.getConstrainer()->getMaximumHeight() == area.h);
+        const auto bounds = window.getBounds();
+        window.restoreToDisplays({});
+        CHECK(window.getBounds() == bounds);
+        CHECK(&window.panel == &panel);
+        CHECK(panel.getParentComponent() == &window);
+    }
+}
