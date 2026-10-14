@@ -41,7 +41,8 @@ void AnalysisEngine::publish() {
     s.refDelaySamples = tf->referenceDelaySamples(); s.refDelayMs = s.refDelaySamples / fs * 1000.0;
     s.calApplied = cal != nullptr; s.setCalName(cal ? calName.c_str() : "");
     s.micLevelDbfs = levelSamples > 0 ? 10 * std::log10(2 * levelEnergy / levelSamples + 1e-20) : -120;
-    s.micLevelValid = levelSamples > 0 && !paused.load();
+    s.micLevelValid = levelSamples > 0 && !paused.load() && !engine.deviceFailed.load()
+        && engine.state.load() != AudioEngine::Stopped && engine.state.load() != AudioEngine::InvalidInputs;
     s.inputEpoch = inputEpoch; s.micChannel = micChannel;
     levelEnergy = 0; levelSamples = 0;
     s.resetSeq = resetSeq; s.convergence = tf->convergence();
@@ -62,7 +63,7 @@ void AnalysisEngine::run() {
                 while (ring->available() > 0) ring->pop(m.data(), std::min(ring->available(), fftN));
             rebuild(engine.sampleRate.load()); // also clears both delay histories
             delay = {};
-            epoch = nextEpoch; inputEpoch = epoch; micChannel = engine.micCh.load();
+            epoch = nextEpoch; inputEpoch = epoch; micChannel = engine.captureMicChannel.load();
             engine.analysisEpoch.store(epoch, std::memory_order_release);
         }
         { std::lock_guard<std::mutex> l(calLock);

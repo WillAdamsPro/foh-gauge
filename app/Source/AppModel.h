@@ -91,6 +91,7 @@ private:
     std::string levelInputKey; uint64_t levelInputEpoch = 0; double levelTimeMs = 0;
     void timerCallback() override;
     juce::ListenerList<Listener> listeners;
+    uint64_t lastInputEpoch = 0; bool lastDeviceFailed = false;
     uint64_t lastSeq = 0, lastDelaySeq = 0, nextDelayId = 0, nextCaptureId = 0;
     struct { uint64_t id = 0; std::function<void()> then; } pendingDelay;
 };
