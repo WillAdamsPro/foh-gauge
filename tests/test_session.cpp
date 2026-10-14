@@ -104,10 +104,14 @@ TEST_CASE("Session asset corruption leaves the entire prior session intact", "[s
     SECTION("huge manifest") { std::filesystem::resize_file(bundle.path / "session.json", 17 * 1024 * 1024); }
     SECTION("wrong encoding") { std::ofstream(bundle.path / "session.json", std::ios::binary) << "\xff\xfe{}"; }
     SECTION("empty mic cal") { std::ofstream(bundle.path / "mic-cal.txt"); }
+    SECTION("huge mic cal") { std::filesystem::resize_file(bundle.path / "mic-cal.txt", 17 * 1024 * 1024); }
     SECTION("bad mic row") { std::ofstream(bundle.path / "mic-cal.txt") << "20 0\n1000 1\n2000 nan\n"; }
     SECTION("missing target") { std::filesystem::remove(bundle.path / "targets/targets.json"); }
     SECTION("garbled target") { std::ofstream(bundle.path / "targets/targets.json") << "{x"; }
     SECTION("wrong target type") { std::ofstream(bundle.path / "targets/targets.json") << "[]"; }
+    SECTION("empty target") { std::ofstream(bundle.path / "targets/targets.json"); }
+    SECTION("huge target") { std::filesystem::resize_file(bundle.path / "targets/targets.json", 17 * 1024 * 1024); }
+    SECTION("huge capture") { std::filesystem::resize_file(bundle.path / "captures/0.json", 17 * 1024 * 1024); }
     SECTION("truncated capture") { std::ofstream(bundle.path / "captures/0.json") << "{\"freq\":[0,"; }
     SECTION("bad capture frequencies") { rewrite("captures/0.json", [](auto& j) { auto a = foh::Json::array(); a.push(20); a.push(10); j.set("freq", a); }); }
     SECTION("duplicate capture frequencies") { rewrite("captures/0.json", [](auto& j) { auto a = foh::Json::array(); a.push(0); a.push(0); j.set("freq", a); }); }

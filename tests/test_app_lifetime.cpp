@@ -2,6 +2,7 @@
 #include <catch2/catch_test_macros.hpp>
 #include "MainComponent.h"
 #include <thread>
+#include "PreferencesRecovery.h"
 
 namespace {
 struct TemporaryWorkspaces {
@@ -543,6 +544,9 @@ TEST_CASE("Session traces colours and delays survive a different live sample rat
     CHECK(main.workspace().id == "setup");
     CHECK(model.positionCount == 0); CHECK(model.positionMask == 0); CHECK(model.multiPosition.freq.empty());
     CHECK(model.engine.gen.load() == AudioEngine::Off);
+    CHECK(model.engine.micCh.load() == -1); CHECK(model.engine.refCh.load() == -1);
+    CHECK(model.engine.outA.load() == -1); CHECK(model.engine.outB.load() == -1);
+    CHECK(model.dm.getCurrentAudioDevice() == nullptr);
     REQUIRE(model.traces.count() == 1); CHECK(model.traces.at(0).tf.sampleRate == 96000);
     CHECK(model.traces.at(0).tf.freq == tf.freq); CHECK(model.traces.at(0).tf.H == tf.H);
     CHECK(model.traces.at(0).refDelayMs == 2.5); CHECK_FALSE(model.traces.at(0).visible);
@@ -558,4 +562,65 @@ TEST_CASE("Session traces colours and delays survive a different live sample rat
         juce::Thread::sleep(5);
     }
     CHECK(delaySamples == 120);
+}
+
+TEST_CASE("Audio preferences recover as a unit before device initialization", "[app][prefs][regression]") {
+    juce::ScopedJuceInitialiser_GUI initialise;
+    const juce::String device = "<DEVICESETUP deviceType=\"Synthetic\" audioDeviceRate=\"48000\" audioDeviceBufferSize=\"256\" audioDeviceInChans=\"11\"/>";
+    juce::PropertySet prefs;
+    prefs.setValue("setupComplete", true); prefs.setValue("audioDeviceState", device);
+    prefs.setValue("micChannel", 2); prefs.setValue("refChannel", 3);
+    prefs.setValue("generatorChannel", 2); prefs.setValue("loopbackChannel", -1);
+    prefs.setValue("appearance", "sunlight");
+    SECTION("valid") {
+        CHECK_FALSE(fohapp::recoverAudioPreferences(prefs));
+        CHECK(prefs.getIntValue("micChannel") == 2); CHECK(prefs.getBoolValue("setupComplete")); return;
+    }
+    SECTION("missing device") { prefs.removeValue("audioDeviceState"); }
+    SECTION("empty device") { prefs.setValue("audioDeviceState", ""); }
+    SECTION("truncated device") { prefs.setValue("audioDeviceState", "<DEVICESETUP"); }
+    SECTION("wrong root") { prefs.setValue("audioDeviceState", "<PROPERTIES/>"); }
+    SECTION("empty setup") { prefs.setValue("audioDeviceState", "<DEVICESETUP/>"); }
+    SECTION("oversized device") { prefs.setValue("audioDeviceState", juce::String(std::string(1024 * 1024 + 1, ' '))); }
+    SECTION("oversized mask") { prefs.setValue("audioDeviceState", "<DEVICESETUP deviceType=\"Synthetic\" audioDeviceInChans=\"" + juce::String(std::string(1025, '1')) + "\"/>"); }
+    SECTION("bad rate") { prefs.setValue("audioDeviceState", device.replace("48000", "nan")); }
+    SECTION("bad buffer") { prefs.setValue("audioDeviceState", device.replace("256", "-1")); }
+    SECTION("bad channel") { prefs.setValue("refChannel", "oops"); }
+    SECTION("missing channel") { prefs.removeValue("refChannel"); }
+    SECTION("fractional channel") { prefs.setValue("micChannel", "1.5"); }
+    SECTION("oversized channel") { prefs.setValue("generatorChannel", "1024"); }
+    SECTION("wrong completion type") { prefs.setValue("setupComplete", "true"); }
+    REQUIRE(fohapp::recoverAudioPreferences(prefs));
+    CHECK_FALSE(prefs.getBoolValue("setupComplete")); CHECK(prefs.getValue("audioDeviceState").isEmpty());
+    for (const auto* key : {"micChannel", "refChannel", "generatorChannel", "loopbackChannel"}) CHECK(prefs.getIntValue(key) == -1);
+    CHECK(prefs.getValue("appearance") == "sunlight");
+}
+
+TEST_CASE("Interface preference corruption cannot publish a partial calibration map", "[app][prefs][regression]") {
+    foh::LoopbackCorrection cal{48000, 2, {{1, 0}, {1, 0}}}; REQUIRE(cal.valid());
+    std::map<std::string, foh::LoopbackCorrection> out{{"previous", cal}};
+    auto j = foh::Json::object(); j.set("first", cal.toJson()); j.set("broken", foh::Json::object());
+    for (const auto& text : {std::string(), std::string("{"), std::string("[]"), std::string("null"),
+            std::string(foh::input::maxBytes + 1, ' '), j.dump()}) {
+        CHECK_FALSE(fohapp::loadLoopbackPreferences(text, out));
+        REQUIRE(out.size() == 1); CHECK(out.at("previous").H == cal.H);
+    }
+    j = foh::Json::object(); j.set("first", cal.toJson());
+    REQUIRE(fohapp::loadLoopbackPreferences(j.dump(), out));
+    REQUIRE(out.size() == 1); CHECK(out.at("first").H == cal.H);
+    CHECK(fohapp::loadLoopbackPreferences("{}", out)); CHECK(out.empty());
+}
+
+TEST_CASE("Audio recovery overrides corrupt common preferences and tolerates fresh defaults", "[app][prefs][regression]") {
+    juce::ScopedJuceInitialiser_GUI initialise;
+    juce::PropertySet prefs, common;
+    CHECK_FALSE(fohapp::recoverAudioPreferences(prefs));
+    CHECK_FALSE(prefs.getBoolValue("setupComplete"));
+    common.setValue("setupComplete", true); common.setValue("audioDeviceState", "<wrong/>");
+    common.setValue("micChannel", "bad"); prefs.setFallbackPropertySet(&common);
+    REQUIRE(fohapp::recoverAudioPreferences(prefs));
+    CHECK(prefs.getValue("audioDeviceState").isEmpty()); CHECK(prefs.getIntValue("micChannel") == -1);
+    CHECK_FALSE(prefs.getBoolValue("setupComplete"));
+    CHECK_FALSE(fohapp::recoverAudioPreferences(prefs)); // Recovery remains safe on the next launch.
+    prefs.setFallbackPropertySet(nullptr);
 }

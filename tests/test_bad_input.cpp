@@ -72,3 +72,12 @@ TEST_CASE("JSON rejects invalid grammar escapes encoding and excessive complexit
     for (double v : {1e100, -1e100, std::numeric_limits<double>::infinity(), std::numeric_limits<double>::quiet_NaN()})
         REQUIRE(foh::Json(v).asInt(42) == 42);
 }
+
+TEST_CASE("Damaged calibration rows containing Hz are not treated as headings", "[files][regression]") {
+    for (const auto* row : {"2000Hz 1", "frequency-broken 1", "bad Hz", "Hz 1"}) {
+        INFO(row);
+        CHECK_FALSE(foh::parseMicCal(std::string("20 0\n1000 1\n") + row).ok());
+    }
+    CHECK_FALSE(foh::parseMicCal("2000Hz 1\n20 0\n1000 1\n").ok());
+    CHECK(foh::parseMicCal("Freq(Hz) dB Phase\n20 0\n1000 1\n").ok());
+}

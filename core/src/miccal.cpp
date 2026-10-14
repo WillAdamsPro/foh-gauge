@@ -49,7 +49,10 @@ MicCal parseMicCal(const std::string& text) {
             double d;
             if (!input::number(tok, d)) {
                 // Conventional column headings are allowed, never partly numeric rows.
-                if (v.empty() && (low.find("freq") != std::string::npos || low.find("hz") != std::string::npos)) break;
+                std::string heading = tok;
+                std::transform(heading.begin(), heading.end(), heading.begin(), [](unsigned char ch) { return (char) std::tolower(ch); });
+                if (rows.empty() && v.empty() && (heading == "hz" || heading == "freq" || heading == "frequency"
+                    || heading == "freq(hz)" || heading == "frequency(hz)")) break;
                 return bad("Invalid mic calibration number on row " + std::to_string(nrows + 1));
             }
             v.push_back(d);
