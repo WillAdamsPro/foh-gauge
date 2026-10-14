@@ -8,6 +8,26 @@ namespace foh::detail {
 inline float cleanSample(float x) noexcept {
     return std::isfinite(x) && std::abs(x) >= std::numeric_limits<float>::min() ? x : 0.f;
 }
+// Analysis frames reject clipping/nonfinite input and remove DC before windowing.
+inline bool frameMean(const std::vector<float>& samples, double& mean) {
+    mean = 0;
+    int rails = 0, plateau = 0;
+    float previous = 0;
+    for (float x : samples) {
+        if (!std::isfinite(x) || std::abs(x) > 1e6f) return false;
+        // Rail hits alone include a valid full-scale sine's isolated peaks.
+        // Reject sustained digital clipping, including alternating rail samples.
+        if (std::abs(x) == 1.f) {
+            ++rails; plateau = x == previous ? plateau + 1 : 1;
+            if (plateau >= 3) return false;
+        } else plateau = 0;
+        previous = x;
+        mean += cleanSample(x);
+    }
+    if (rails > (int) samples.size() / 4) return false;
+    mean /= samples.size();
+    return true;
+}
 // Keep public spectrum operations away from overflow, including prefix sums and norms.
 inline double cleanSpectrum(double x) {
     return std::isfinite(x) ? std::clamp(x, -1e100, 1e100) : 0.0;
