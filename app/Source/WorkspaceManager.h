@@ -7,6 +7,7 @@
 #pragma once
 #include "LayoutModel.h"
 #include <juce_core/juce_core.h>
+#include <deque>
 
 class WorkspaceManager {
 public:
@@ -35,5 +36,8 @@ private:
     bool readFile(const juce::File& f, fohws::Workspace& w) const;
     void writeFile(const juce::File& f, const fohws::Workspace& w) const;
     mutable juce::StringArray errors;
-    juce::File dir; std::vector<fohws::Workspace> list, saved, presets;
+    // Views and floating windows retain references into the live workspaces.
+    // Save As must not invalidate those references when appending a workspace.
+    juce::File dir; std::deque<fohws::Workspace> list;
+    std::vector<fohws::Workspace> saved, presets;
 };

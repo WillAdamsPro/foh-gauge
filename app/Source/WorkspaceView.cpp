@@ -227,7 +227,10 @@ void WorkspaceView::closePanel(const std::string& id) {
     rebuild(); if (onLayoutEdited) onLayoutEdited();
 }
 void WorkspaceView::activateTab(const std::vector<int>& path, int index) {
-    if (auto* n = nodeAt(display, path)) n->active = index;
+    if (!ws || showMode) return;
+    auto* tab = nodeAt(display, path);
+    if (!tab || tab->kind != LayoutNode::Tabs || index < 0 || index >= (int) tab->children.size()) return;
+    tab->active = index;
     if (!collapsed) if (auto* r = nodeAt(ws->root, path)) r->active = index;
     if (auto* n = nodeAt(display, path)) { if (n->kind == LayoutNode::Tabs && index < (int) n->children.size()) focused = n->children[(size_t) index].panel; }
     rootComp.reset(); for (auto& [id, p] : panels) if (!(isFloating && isFloating(id))) releasePanel(id, p.get());

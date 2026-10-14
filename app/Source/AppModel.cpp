@@ -49,16 +49,31 @@ AppModel::AppModel() {
         if (!error.empty() || !j.isObject()) AlertWindow::showMessageBoxAsync(AlertWindow::WarningIcon, "Preferences load failed", "Invalid SPL calibration preferences");
         else loadSplCalJson(j);
     }
-    dm.addAudioCallback(&engine); analysis.start();
+    if (prefs) loadSplCalJson(foh::Json::parse(prefs->getValue("splCalibration").toStdString()));
+    dm.addAudioCallback(&engine);
+    if (!dm.getCurrentAudioDevice()) engine.audioDeviceStopped();
+    analysis.start();
     send(foh::Command::averages(averages)); send(foh::Command::smoothing(smoothingFraction)); send(foh::Command::blankThreshold(blankThreshold)); send(foh::Command::rtaFraction(rtaFraction));
     startTimerHz(15);
 }
-AppModel::~AppModel() { stopTimer(); analysis.stop(); dm.removeAudioCallback(&engine); if (auto* pf = settings.getUserSettings()) pf->saveIfNeeded(); }
+AppModel::~AppModel() { stopTimer(); dm.removeAudioCallback(&engine); analysis.stop(); if (auto* pf = settings.getUserSettings()) pf->saveIfNeeded(); }
 
 void AppModel::timerCallback() {
     int what = Levels; sampleRate = engine.sampleRate.load();
+    const auto epoch = engine.captureEpoch.load(std::memory_order_acquire);
+    const bool deviceFailed = engine.deviceFailed.load(std::memory_order_acquire);
+    if (epoch != lastInputEpoch || deviceFailed != lastDeviceFailed) {
+        lastDeviceFailed = deviceFailed;
+        lastInputEpoch = epoch;
+        auto then = std::move(capture.then);
+        cancelSessionOperations();
+        tf = {}; rtaDb.clear(); rtaBands.clear(); conv = {}; micLevelValid = false;
+        lockedDelayMs = 0; refDelaySamples = 0; refDelayMs = 0;
+        what |= Snapshot | Delay | Capture | Settings;
+        if (then) then(false); // never store a trace interrupted by a device/routing change
+    }
     { const auto& snap = analysis.latest(); // single reader thread (this timer); copy out what we keep
-      if (snap.seq != lastSeq) { lastSeq = snap.seq; what |= Snapshot;
+      if (!deviceFailed && snap.seq != lastSeq && snap.inputEpoch == epoch) { lastSeq = snap.seq; what |= Snapshot;
           micLevelDbfs = snap.micLevelDbfs;
           levelInputKey = splInputKey(); levelInputEpoch = snap.inputEpoch;
           levelTimeMs = Time::getMillisecondCounterHiRes();
