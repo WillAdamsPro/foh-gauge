@@ -20,7 +20,12 @@ public:
     enum Gen { Off = 0, Pink = 1, Sweep = 2 };
     std::atomic<int> gen{Off}, micCh{0}, refCh{1}, outA{0}, outB{1};
     std::atomic<float> genGainDb{-20.f};
+    static_assert(std::atomic<float>::is_always_lock_free);
+    static_assert(std::atomic<uint64_t>::is_always_lock_free);
     std::atomic<float> micPeak{0}, refPeak{0};
+    // Device restart handshake: capture waits for the analysis consumer to discard
+    // both old-rate queues and reset history before accepting new-rate samples.
+    std::atomic<uint64_t> captureEpoch{0}, analysisEpoch{0};
     foh::RingBuffer micRing{1 << 19}, refRing{1 << 19};
     std::atomic<double> sampleRate{48000};
     void audioDeviceIOCallbackWithContext(const float* const* in, int nIn, float* const* out, int nOut, int n,
