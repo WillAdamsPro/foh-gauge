@@ -497,3 +497,17 @@ TEST_CASE("Delay finder robustness (Echo crash triage): edge inputs never throw 
     REQUIRE(impulseFromTF(TFResult{}).empty()); TFResult bad; bad.fftSize=1000; REQUIRE(impulseFromTF(bad).empty());
     TFResult small; small.fftSize=16384; small.H.resize(10); REQUIRE(impulseFromTF(small).size()==16384);
 }
+TEST_CASE("D-INS fractional reference delay: inserting 230.4 samples leaves < 1 deg at 10 kHz") {
+    auto src = pink(1<<18, 91); auto meas = fdel(src, 230.4); // mic 4.80 ms later than ref
+    auto phaseAt = [&](double d, double f) { TransferFunction tf(16384,48000); tf.setAverages(0); tf.setReferenceDelaySamples(d);
+        tf.process(src.data(), meas.data(), (int)src.size()); auto r = tf.result(); return std::pair<double,double>(r.phaseDeg[binOf(r,f)], r.coherence[binOf(r,f)]); };
+    auto [p, coh] = phaseAt(230.4, 10000); REQUIRE(std::fabs(p) < 1.0); REQUIRE(coh > 0.99);
+    for (double f : {100.0, 1000.0, 5000.0, 15000.0}) REQUIRE(std::fabs(phaseAt(230.4, f).first) < 1.0);
+    auto rounded = phaseAt(230.0, 10000).first; REQUIRE(std::fabs(rounded) == Approx(30.0).margin(2.0)); // 0.4 smp @10k = 30 deg: a rounded insert fails
+    // finder -> insert round trip uses the full sub-sample value
+    auto d = findDelay(head(src, 48000), head(meas, 48000), 48000); REQUIRE(d.arrivals[0].delaySamples==Approx(230.4).margin(0.1));
+    REQUIRE(std::fabs(phaseAt(d.arrivals[0].delaySamples, 10000).first) < 5.0);
+    TransferFunction tf(16384,48000); tf.setReferenceDelaySamples(230.4); REQUIRE(tf.referenceDelaySamples()==Approx(230.4));
+    REQUIRE(tf.referenceDelayMs()==Approx(4.8)); tf.setReferenceDelaySamples(-3); REQUIRE(tf.referenceDelaySamples()==0);
+    tf.setReferenceDelaySamples(NAN); REQUIRE(tf.referenceDelaySamples()==0); tf.setReferenceDelaySamples(1e9); REQUIRE(tf.referenceDelaySamples()==131071);
+}

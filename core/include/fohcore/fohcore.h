@@ -200,8 +200,12 @@ public:
     // Feed blocks of reference (x) and measurement (y) samples; 50% overlap Welch.
     void process(const float* ref, const float* meas, int n);
     // Delay applied to the reference (positive = ref delayed, compensating acoustic delay).
-    void setReferenceDelaySamples(int d);
-    int referenceDelaySamples() const { return refDelay; }
+    // Fractional (sub-sample) delay applied to the reference: positive = mic later than ref.
+    // Integer part: sample history; fractional part: linear phase e^{-j w frac} on the
+    // reference spectrum of every frame. Clamped to [0, 131071]. Resets the averages.
+    void setReferenceDelaySamples(double d);
+    double referenceDelaySamples() const { return refDelayInt + refDelayFrac; }
+    double referenceDelayMs() const { return referenceDelaySamples() * 1000.0 / fs; }
     // averages: 0 = infinite (cumulative); otherwise exponential with ~N frame memory
     void setAverages(int n) { avgN = n; }
     // Bins with coherence below t (0..1) are flagged in TFResult::blanked. 0 disables.
@@ -225,7 +229,8 @@ private:
     void resetConvergence();
     ConvergenceSettings conv; ConvergenceState cstate;
     SettleDetector settle; int convLo = 1, convHi = 0; std::vector<double> convPrevDb; bool convHavePrev = false;
-    FFT fft; int N; double fs; int avgN = 16; int refDelay = 0; double blankThr = 0.0;
+    FFT fft; int N; double fs; int avgN = 16; int refDelayInt = 0; double refDelayFrac = 0; double blankThr = 0.0;
+    std::vector<cpx> fracRot; // per-bin e^{-j 2 pi k frac / N}, k = 0..N/2
     std::vector<double> win; std::vector<float> xbuf, ybuf; int fill = 0;
     std::vector<float> refHistory; int histPos = 0;
     std::vector<double> Sxx, Syy; std::vector<cpx> Sxy; int frameCount = 0;
