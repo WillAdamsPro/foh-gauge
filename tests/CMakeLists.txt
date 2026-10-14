@@ -5,3 +5,7 @@ target_compile_definitions(fohcore_tests PRIVATE FOH_TEST_DATA="${CMAKE_CURRENT_
 include(CTest)
 include(Catch)
 catch_discover_tests(fohcore_tests)
+add_executable(golden_tests test_golden.cpp)
+target_link_libraries(golden_tests PRIVATE fohcore Catch2::Catch2WithMain)
+target_compile_definitions(golden_tests PRIVATE FOH_TEST_DATA="${CMAKE_CURRENT_SOURCE_DIR}/data")
+catch_discover_tests(golden_tests TEST_PREFIX "golden:")
