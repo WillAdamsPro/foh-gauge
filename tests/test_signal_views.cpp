@@ -101,3 +101,112 @@ TEST_CASE("SPL panel retains the clipping warning when exposure is invalid", "[a
     model.leq.valid = true; model.leq.session = {120, 120, 120};
     CHECK(samePixels(uncalibrated, paint()));
 }
+
+TEST_CASE("Transfer function controls fit minimum width and preserve disclosure state", "[app][layout][tf]") {
+    juce::ScopedJuceInitialiser_GUI initialise;
+    FohLookAndFeel look;
+    AppModel model;
+    model.tf.fftSize = 1024; model.tf.sampleRate = 48000; model.tf.averages = 8;
+    model.tf.magDb.assign(513, 0); model.tf.coherence.assign(513, 1);
+    model.tf.blanked.assign(513, 0);
+    for (int i = 3; i < 12; ++i) model.tf.blanked[(size_t)i] = 1;
+    model.calApplied = true;
+    auto panel = PanelRegistry::standard().create("TransferFunction", model);
+    panel->setLookAndFeel(&look);
+    panel->addToDesktop(juce::ComponentPeer::windowIsTemporary); panel->setVisible(true);
+    auto checkChildren = [](juce::Component& parent, auto&& self) -> void {
+        for (int i = 0; i < parent.getNumChildComponents(); ++i) {
+            auto* child = parent.getChildComponent(i);
+            if (!child->isVisible()) continue;
+            INFO(child->getName().toStdString());
+            CHECK(parent.getLocalBounds().contains(child->getBounds()));
+            for (int j = i + 1; j < parent.getNumChildComponents(); ++j) {
+                auto* other = parent.getChildComponent(j);
+                if (other->isVisible()) CHECK_FALSE(child->getBounds().intersects(other->getBounds()));
+            }
+            // Slider internals are JUCE's responsibility; check our containers.
+            if (!dynamic_cast<juce::Slider*>(child) && !dynamic_cast<juce::ComboBox*>(child)) self(*child, self);
+        }
+    };
+    CHECK_FALSE(panel->saveState()["multiMicExpanded"].asBool());
+    CHECK(panel->helpText.startsWith("This plot shows"));
+    for (const auto& theme : foh::theme::ThemeManager::get().all()) {
+        foh::theme::ThemeManager::get().setTheme(theme.id); look.applyTheme(); panel->sendLookAndFeelChange();
+        for (bool expanded : {false, true}) for (int width : {foh::theme::ws::plotPanelMinWidth, 800}) {
+            auto state = panel->saveState(); state.set("multiMicExpanded", expanded); panel->loadState(state);
+            panel->setSize(width, 500); model.notify(AppModel::Snapshot); checkChildren(*panel, checkChildren);
+            CHECK(panel->saveState()["multiMicExpanded"].asBool() == expanded);
+            PlotComponent* plot = nullptr;
+            for (int i = 0; i < panel->getNumChildComponents(); ++i)
+                if (auto* p = dynamic_cast<PlotComponent*>(panel->getChildComponent(i))) plot = p;
+            REQUIRE(plot);
+            if (!expanded) CHECK(plot->getHeight() >= panel->getHeight() * 0.75);
+            // Render both logical UI scales using the same transform as the host.
+            for (int scale : {1, 2}) {
+                juce::Image image(juce::Image::ARGB, width * scale, 500 * scale, true);
+                juce::Graphics g(image); g.fillAll(foh::ui::col::cardBackground());
+                g.addTransform(juce::AffineTransform::scale((float)scale)); panel->paintEntireComponent(g, true);
+                if (auto* directory = std::getenv("FOH_UI_SNAPSHOT_DIR")) {
+                    juce::File file = juce::File(directory).getChildFile(theme.id + "-tf-" + juce::String(width) + (expanded ? "-expanded-" : "-collapsed-") + juce::String(scale) + ".png");
+                    file.deleteFile(); auto stream = file.createOutputStream(); REQUIRE(stream); juce::PNGImageFormat().writeImageToStream(image, *stream);
+                }
+            }
+        }
+    }
+    panel->setLookAndFeel(nullptr);
+    foh::theme::ThemeManager::get().setTheme("apple-pro-dark");
+}
+
+TEST_CASE("Low coherence advice can be dismissed without hiding the hatching", "[app][layout][tf]") {
+    juce::ScopedJuceInitialiser_GUI initialise;
+    PlotComponent plot; plot.showLowCohCallout = true; plot.lowCoh = {{100, 500}};
+    render(plot); REQUIRE(plot.dismissLowCoh.isVisible());
+    CHECK(plot.getLocalBounds().contains(plot.dismissLowCoh.getBounds()));
+    plot.dismissLowCoh.onClick(); render(plot);
+    CHECK_FALSE(plot.dismissLowCoh.isVisible()); CHECK(plot.lowCoh.size() == 1);
+}
+
+TEST_CASE("Target popover preserves edits and closes safely with its panel", "[app][layout][tf][target]") {
+    juce::ScopedJuceInitialiser_GUI initialise;
+    FohLookAndFeel look;
+    AppModel model;
+    auto findButton = [](juce::Component& root, auto&& self) -> juce::TextButton* {
+        for (auto* child : root.getChildren()) {
+            if (auto* button = dynamic_cast<juce::TextButton*>(child); button && button->getButtonText().startsWith("Target ")) return button;
+            if (auto* button = self(*child, self)) return button;
+        }
+        return nullptr;
+    };
+    for (const auto& theme : foh::theme::ThemeManager::get().all()) {
+        foh::theme::ThemeManager::get().setTheme(theme.id); look.applyTheme();
+        auto panel = PanelRegistry::standard().create("TransferFunction", model);
+        panel->setLookAndFeel(&look); panel->setSize(800, 500);
+        panel->addToDesktop(juce::ComponentPeer::windowIsTemporary); panel->setVisible(true);
+        auto* button = findButton(*panel, findButton); REQUIRE(button);
+        button->onClick();
+        auto* callout = dynamic_cast<juce::CallOutBox*>(juce::Component::getCurrentlyModalComponent()); REQUIRE(callout);
+        juce::Slider* offset = nullptr;
+        auto findSlider = [&](juce::Component& root, auto&& self) -> void {
+            for (auto* child : root.getChildren()) {
+                if (auto* slider = dynamic_cast<juce::Slider*>(child)) offset = slider;
+                else self(*child, self);
+            }
+        };
+        findSlider(*callout, findSlider); REQUIRE(offset); CHECK(offset->getTextValueSuffix() == " dB");
+        offset->setValue(3.5, juce::dontSendNotification); offset->onValueChange();
+        CHECK(panel->saveState()["targetOffset"].asNumber() == 3.5);
+        for (int scale : {1, 2}) if (auto* directory = std::getenv("FOH_UI_SNAPSHOT_DIR")) {
+            auto image = callout->createComponentSnapshot(callout->getLocalBounds(), true, (float)scale);
+            auto file = juce::File(directory).getChildFile(theme.id + "-target-" + juce::String(scale) + ".png");
+            file.deleteFile(); auto stream = file.createOutputStream(); REQUIRE(stream); juce::PNGImageFormat().writeImageToStream(image, *stream);
+        }
+        callout->dismiss(); juce::MessageManager::getInstance()->runDispatchLoopUntil(250);
+        REQUIRE_FALSE(panel->isCurrentlyBlockedByAnotherModalComponent());
+        // Reopening keeps the same controls and edited values.
+        button->onClick(); REQUIRE(juce::Component::getCurrentlyModalComponent());
+        panel->setLookAndFeel(nullptr); panel.reset();
+        juce::MessageManager::getInstance()->runDispatchLoopUntil(250);
+        CHECK(juce::Component::getCurrentlyModalComponent() == nullptr);
+    }
+    foh::theme::ThemeManager::get().setTheme("apple-pro-dark");
+}

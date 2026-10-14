@@ -1226,13 +1226,13 @@ TEST_CASE("Multi-mic TF average overlays the target with controls reachable", "[
     const auto minimum = panel->minSize();
     panel->setBounds(0, 0, minimum.w, minimum.h);
     VisiblePanelWindow window(*panel);
-    auto state = fohws::Json::object(); state.set("targetShown", true);
+    auto state = fohws::Json::object(); state.set("targetShown", true); state.set("multiMicExpanded", true);
     panel->loadState(state);
     PlotComponent* plot = nullptr;
     juce::ToggleButton* show = nullptr;
     for (auto* child : panel->getChildren()) {
         if (auto* p = dynamic_cast<PlotComponent*>(child)) plot = p;
-        if (auto* b = dynamic_cast<juce::ToggleButton*>(child); b && b->getButtonText() == "Multi-mic") show = b;
+        if (auto* b = dynamic_cast<juce::ToggleButton*>(child); b && b->getButtonText() == "Show positions") show = b;
         if (auto* b = dynamic_cast<juce::TextButton*>(child)) {
             if (b->getButtonText() == "Lock delay" || b->getButtonText() == "Capture position" || b->getButtonText() == "Clear") {
                 REQUIRE(panel->getLocalBounds().contains(b->getBounds()));

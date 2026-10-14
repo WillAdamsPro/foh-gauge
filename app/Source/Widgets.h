@@ -95,6 +95,7 @@ public:
     juce::AlertWindow* createAlertWindow(const juce::String& title, const juce::String& message,
         const juce::String& button1, const juce::String& button2, const juce::String& button3,
         juce::MessageBoxIconType icon, int numButtons, juce::Component* associated) override;
+    void drawCallOutBoxBackground(juce::CallOutBox&, juce::Graphics&, const juce::Path&, juce::Image&) override;
     void drawButtonBackground(juce::Graphics&, juce::Button&, const juce::Colour&, bool, bool) override;
     void drawDocumentWindowTitleBar(juce::DocumentWindow&, juce::Graphics&, int w, int h, int titleSpaceX, int titleSpaceW, const juce::Image*, bool drawTitleTextOnLeft) override; // floating panel chrome (ws spec §5)
     static juce::Font font(float size, bool bold = false, bool semibold = false);
@@ -105,6 +106,18 @@ public:
 
 class PlotComponent : public juce::Component {
 public:
+    PlotComponent() {
+        addChildComponent(dismissLowCoh);
+        dismissLowCoh.setTooltip("Dismiss low coherence advice");
+        dismissLowCoh.onClick = [this] { lowCohDismissed = true; dismissLowCoh.setVisible(false); repaint(); };
+    }
+    juce::StringArray legendChips;
+    bool topLegend = false;
+    int legendHeight() const;
+    int legendRowsHeight = 24; // measured once per repaint, reused by every trace point
+    void resized() override { dismissLowCoh.setVisible(false); }
+    bool lowCohDismissed = false;
+    juce::TextButton dismissLowCoh {juce::String::fromUTF8("\xc3\x97")};
     struct Series { std::vector<double> f, v; juce::Colour c; const float* dash = nullptr; float width = foh::ui::dim::trace(); double maxF = 1e9; juce::String label; std::vector<uint8_t> gap; }; // gap[i]: blanked bin -> break the trace
     struct Annotation { double lo, hi; juce::String label; };
     std::vector<Annotation> annotations; bool showLegend = false; // legend row: series with a label, 13 px, gap 18, padding 4/14
@@ -119,7 +132,7 @@ public:
     void paint(juce::Graphics&) override;
     float xOf(double f) const; juce::Image hatchTile; juce::Colour hatchFor; // cached hatch pattern, rebuilt only on theme colour change
     float yOf(double v) const;
-    int plotX() const { return 46; } int plotY() const { return 8; } int plotW() const { return getWidth() - 46 - 14; } int plotH() const { return getHeight() - 8 - 24 - (showLegend ? 22 : 0); }
+    int plotX() const { return 46; } int plotY() const { return topLegend ? legendRowsHeight + 28 : 8; } int plotW() const { return getWidth() - 46 - 14; } int plotH() const { return getHeight() - plotY() - (topLegend && yLabel.isNotEmpty() ? 48 : 24) - (showLegend && !topLegend ? 22 : 0); }
 };
 
 // Simple impulse / delay view: delay-finder correlation (DelayResult::impulse, lag in samples) around the first

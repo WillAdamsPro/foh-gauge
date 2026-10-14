@@ -37,7 +37,7 @@ public:
         choice.setSelectedId(1, dontSendNotification);
         shown.setButtonText("Target"); band.setButtonText("Tolerance");
         band.setTooltip("Show the imported tolerance, or +/-3 dB when the file has none.");
-        offset.setRange(-100, 100, 0.5); offset.setTextValueSuffix(" dB offset");
+        offset.setRange(-100, 100, 0.5); offset.setTextValueSuffix(" dB");
         offset.setSliderStyle(Slider::IncDecButtons); offset.setTextBoxStyle(Slider::TextBoxLeft, false, 106, 24);
         offset.setValue(initialOffset, dontSendNotification);
         offset.setTooltip("Shift the relative target to the measured level; does not change measurement data.");
@@ -67,15 +67,32 @@ public:
                     safe->band.setToggleState(safe->target.useTolerance, dontSendNotification); safe->changed();
                 });
         };
-        for (auto* c : std::initializer_list<Component*>{&choice, &import, &shown, &band, &offset}) addAndMakeVisible(c);
+        for (auto* c : std::initializer_list<Component*>{&choice, &import, &shown, &band, &offset}) editor.addAndMakeVisible(c);
+        addChildComponent(editor); editor.setSize(320, 152);
+        addAndMakeVisible(disclosure);
+        disclosure.onClick = [this] {
+            struct Content : Component {
+                explicit Content(TargetControls& owner) : safe(&owner) {
+                    addAndMakeVisible(owner.editor); setSize(320, 152);
+                }
+                ~Content() override { if (safe) { safe->addChildComponent(safe->editor); safe->editor.setVisible(false); } }
+                void resized() override { if (safe) { safe->editor.setBounds(getLocalBounds()); safe->layoutEditor(); } }
+                Component::SafePointer<TargetControls> safe;
+            };
+            if (callout) { callout->dismiss(); return; }
+            callout = &CallOutBox::launchAsynchronously(std::make_unique<Content>(*this), disclosure.getScreenBounds(), nullptr);
+            callout->setLookAndFeel(&getLookAndFeel());
+        };
         selectBuiltin();
     }
+    ~TargetControls() override { if (callout) { callout->setLookAndFeel(nullptr); callout->dismiss(); } }
     std::function<void()> onChange;
-    void resized() override {
-        auto r = getLocalBounds();
-        choice.setBounds(r.removeFromLeft(jmin(150, getWidth() / 4))); r.removeFromLeft(4);
-        import.setBounds(r.removeFromLeft(66)); shown.setBounds(r.removeFromLeft(70));
-        band.setBounds(r.removeFromLeft(92)); offset.setBounds(r);
+    void resized() override { disclosure.setBounds(getLocalBounds().withWidth(jmin(88, getWidth()))); layoutEditor(); }
+    void layoutEditor() {
+        auto r = editor.getLocalBounds().reduced(12);
+        auto row = r.removeFromTop(28); choice.setBounds(row.removeFromLeft(132)); row.removeFromLeft(8); import.setBounds(row);
+        r.removeFromTop(8); row = r.removeFromTop(28); shown.setBounds(row.removeFromLeft(120)); row.removeFromLeft(8); band.setBounds(row);
+        r.removeFromTop(8); offset.setBounds(r.removeFromTop(28));
     }
     void appendTo(PlotComponent& plot) const {
         plot.toleranceBands.clear();
@@ -139,7 +156,9 @@ private:
         target = foh::parseTarget(std::string(data[i], (size_t) sizes[i]));
         band.setToggleState(target.useTolerance, dontSendNotification);
     }
-    ComboBox choice; TextButton import {"Import"}; ToggleButton shown, band; Slider offset;
+    Component::SafePointer<CallOutBox> callout;
+    Component editor; TextButton disclosure {u8("Target \xe2\x96\xbe")};
+    ComboBox choice; TextButton import {u8("Import target curve\xe2\x80\xa6")}; ToggleButton shown, band; Slider offset;
     foh::TargetTrace target; std::string source; std::unique_ptr<FileChooser> chooser;
 };
 
@@ -147,15 +166,23 @@ private:
 class TransferFunctionPanel : public Panel {
 public:
     explicit TransferFunctionPanel(AppModel& m) : Panel(m, "TransferFunction", "Transfer function") {
-        helpText = "Settled: less than 0.5 dB RMS change for 3 consecutive updates, with at least 25% coherent bins (100 Hz-10 kHz). After 10 s, capture proceeds with an unsettled warning.\n\nThis compares the console (reference) to the mic. Anything that isn't flat is what the speakers and room are doing to your mix.\n\nMagnitude: 0 dB = unchanged.\n\nDimmed regions: coherence below the Dim threshold. Don't EQ there; move the mic or treat the reflection.\n\nStored traces are dashed.\n\nMulti-mic: move to each of 2-3 positions, Reset averages and wait for a fresh trace. Enter the reference delay or press Lock delay, then Capture position. The aligned average uses coherence weights and can be compared with the target. Capture position again to replace a position; Clear starts a new set.";
-        plot.yLabel = "Magnitude (dB)"; plot.yMin = -12; plot.yMax = 12; plot.yStep = 6; plot.showLegend = true; plot.showLowCohCallout = true;
+        helpText = "This plot shows how the speakers and room change the reference signal at the mic. Magnitude: 0 dB = unchanged.\n\nHatched regions have coherence below the hiding threshold. Avoid EQ decisions there; check for noise or reflections. Stored traces are dashed.\n\nSettled means less than 0.5 dB RMS change for 3 consecutive updates, with at least 25% coherent bins (100 Hz-10 kHz). After 10 s, capture proceeds with an unsettled warning.\n\nMulti-mic: move to each of 2-3 positions, Reset averaging and wait for a fresh trace. Enter the reference delay or press Lock delay, then Capture position. The aligned average uses coherence weights. Capture position again to replace a position; Clear starts a new set.";
+        plot.yLabel = "Magnitude (dB)"; plot.yMin = -12; plot.yMax = 12; plot.yStep = 6; plot.showLegend = true; plot.topLegend = true; plot.showLowCohCallout = true;
         addAndMakeVisible(plot);
-        smooth.addItem("Smooth off", 1); smooth.addItem("Smooth 1/3", 4); smooth.addItem("Smooth 1/6", 7); smooth.addItem("Smooth 1/12", 13); smooth.addItem("Smooth 1/24", 25); smooth.addItem("Smooth 1/48", 49);
-        avg.addItem("Avg 4", 4); avg.addItem("Avg 8", 8); avg.addItem("Avg 16", 16); avg.addItem("Avg 32", 32); avg.addItem(u8("Avg \xe2\x88\x9e"), 1000);
-        for (int t : {40, 50, 60, 70, 80}) blank.addItem("Dim < " + String(t / 100.0, 2), t);
+        smooth.addItem("Smoothing off", 1); smooth.addItem("Smoothing 1/3", 4); smooth.addItem("Smoothing 1/6", 7); smooth.addItem("Smoothing 1/12", 13); smooth.addItem("Smoothing 1/24", 25); smooth.addItem("Smoothing 1/48", 49);
+        avg.addItem("Averaging 4", 4); avg.addItem("Averaging 8", 8); avg.addItem("Averaging 16", 16); avg.addItem("Averaging 32", 32); avg.addItem(u8("Averaging \xe2\x88\x9e"), 1000);
+        for (int t : {40, 50, 60, 70, 80}) blank.addItem("Hide below coh. " + String(t / 100.0, 2), t);
         smooth.onChange = [this] { model.setSmoothing(smooth.getSelectedId() - 1); };
         avg.onChange = [this] { int a = avg.getSelectedId(); model.setAverages(a == 1000 ? 0 : a); };
         blank.onChange = [this] { model.setBlankThreshold(blank.getSelectedId() / 100.0); };
+        smooth.setTooltip("Smoothing: choose the frequency resolution of the live trace.");
+        avg.setTooltip("Averaging: choose how many measurements contribute to the live trace.");
+        blank.setTooltip("Hide magnitude bins below this coherence threshold. Low coherence can indicate noise or reflections; avoid EQ decisions there.");
+        makePrimary(store);
+        overflow.setTooltip("More transfer function controls");
+        overflow.onClick = [this] { showOverflow(); };
+        multiDisclosure.onClick = [this] { multiExpanded = !multiExpanded; resized(); };
+        addAndMakeVisible(overflow); addAndMakeVisible(multiDisclosure);
         reset.onClick = [this] { model.send(foh::Command::resetAverages()); };
         store.onClick = [this] { model.storeTrace("Trace " + String(model.traces.count() + 1)); };
         for (auto* c : std::initializer_list<Component*>{&smooth, &avg, &blank, &reset, &store}) addAndMakeVisible(c);
@@ -171,30 +198,76 @@ public:
         useDelay.onClick = [this] { if (model.delayLocked()) positionDelay.setValue(model.delay.arrivals[0].delayMs); };
         capturePosition.onClick = [this] { model.send(foh::Command::micPosition(position.getSelectedId() - 1, positionDelay.getValue())); };
         clearPositions.onClick = [this] { model.send(foh::Command::clearMicPositions()); };
-        showPositions.setButtonText("Multi-mic"); showPositions.setToggleState(true, dontSendNotification); showPositions.onClick = [this] { modelChanged(AppModel::Snapshot); };
+        showPositions.setButtonText("Show positions"); showPositions.setToggleState(true, dontSendNotification); showPositions.onClick = [this] { modelChanged(AppModel::Snapshot); };
         capturePosition.setTooltip("Move the mic, Reset averages, wait for a fresh settled trace, then capture this position. Capture again to replace it.");
         for (auto* c : std::initializer_list<Component*>{&position, &positionDelay, &useDelay, &capturePosition, &clearPositions, &showPositions}) addAndMakeVisible(c);
         syncControls();
     }
     fohws::Size minSize() const override { return { WS::plotPanelMinWidth, WS::plotPanelMinHeight + 64 }; }
     int priority() const override { return 100; }
-    Json saveState() const override { Json j = Json::object(); j.set("yMin", plot.yMin); j.set("yMax", plot.yMax); target.save(j); return j; }
+    Json saveState() const override { Json j = Json::object(); j.set("yMin", plot.yMin); j.set("yMax", plot.yMax); target.save(j); j.set("multiMicExpanded", multiExpanded); return j; }
     // State loads while detached/hidden defer plot work. Refresh on reattachment
     // even when the measurement is paused and no new snapshots arrive.
     void visibilityChanged() override { modelChanged(AppModel::Overlay); }
     void parentHierarchyChanged() override { visibilityChanged(); }
-    void loadState(const Json& j) override { if (j.has("yMin")) { plot.yMin = j["yMin"].asNumber(-12); plot.yMax = j["yMax"].asNumber(12); plot.yStep = (plot.yMax - plot.yMin) / 4; } target.load(j); }
+    void loadState(const Json& j) override { if (j.has("yMin")) { plot.yMin = j["yMin"].asNumber(-12); plot.yMax = j["yMax"].asNumber(12); plot.yStep = (plot.yMax - plot.yMin) / 4; } target.load(j); multiExpanded = j["multiMicExpanded"].asBool(false); resized(); }
     void resized() override {
-        auto r = getLocalBounds().reduced(pad, 6); auto row = controlRow(r);
-        store.setBounds(row.removeFromRight(64)); row.removeFromRight(6); reset.setBounds(row.removeFromRight(84)); row.removeFromRight(6);
-        avg.setBounds(row.removeFromRight(92)); row.removeFromRight(6); smooth.setBounds(row.removeFromRight(118)); row.removeFromRight(6); blank.setBounds(row.removeFromRight(108));
-        auto multiRow = controlRow(r);
-        position.setBounds(multiRow.removeFromLeft(100)); positionDelay.setBounds(multiRow.removeFromLeft(140));
-        useDelay.setBounds(multiRow.removeFromLeft(86));
-        multiRow = controlRow(r);
-        capturePosition.setBounds(multiRow.removeFromLeft(68));
-        clearPositions.setBounds(multiRow.removeFromLeft(54)); showPositions.setBounds(multiRow);
-        target.setBounds(controlRow(r)); plot.setBounds(r);
+        auto r = getLocalBounds().reduced(12);
+        auto row = r.removeFromTop(28);
+        struct Control { Component* component; int width; };
+        const Control controls[] {{&smooth, 136}, {&avg, 112}, {&blank, 180}, {&reset, 136}};
+        int required = 112;
+        for (auto c : controls) required += c.width + 8;
+        const bool needsOverflow = row.getWidth() < required;
+        int remaining = row.getWidth() - 112 - (needsOverflow ? 36 : 0);
+        FlexBox flex; flex.alignItems = FlexBox::AlignItems::center;
+        for (auto c : controls) {
+            bool fits = remaining >= c.width + 8;
+            c.component->setVisible(fits);
+            if (fits) { flex.items.add(FlexItem(*c.component).withWidth((float)c.width).withHeight(24).withMargin({0, 8, 0, 0})); remaining -= c.width + 8; }
+            else c.component->setBounds({});
+        }
+        flex.items.add(FlexItem().withFlex(1));
+        overflow.setVisible(needsOverflow);
+        if (needsOverflow) flex.items.add(FlexItem(overflow).withWidth(28).withHeight(24).withMargin({0, 8, 0, 0}));
+        else overflow.setBounds({});
+        flex.items.add(FlexItem(store).withWidth(112).withHeight(24));
+        flex.performLayout(row);
+        r.removeFromTop(8); row = r.removeFromTop(28);
+        multiDisclosure.setButtonText(u8(multiExpanded ? "Multi-mic \xe2\x96\xbe" : "Multi-mic \xe2\x96\xb8"));
+        multiDisclosure.setBounds(row.removeFromLeft(120)); row.removeFromLeft(8); target.setBounds(row.removeFromLeft(88));
+        for (auto* c : std::initializer_list<Component*>{&position, &positionDelay, &useDelay, &capturePosition, &clearPositions, &showPositions}) {
+            c->setVisible(multiExpanded); c->setBounds({});
+        }
+        if (multiExpanded) {
+            // Wrap the advanced controls at the same minimum width as the plot.
+            int used = 0; row = r.removeFromTop(28);
+            for (auto c : std::initializer_list<Control>{{&position, 112}, {&positionDelay, 152}, {&useDelay, 104}, {&capturePosition, 144}, {&clearPositions, 64}, {&showPositions, 136}}) {
+                if (used + c.width > r.getWidth()) { r.removeFromTop(8); row = r.removeFromTop(28); used = 0; }
+                c.component->setBounds(row.getX() + used, row.getY() + 2, c.width, 24); used += c.width + 8;
+            }
+        }
+        r.removeFromTop(8); plot.setBounds(r);
+    }
+    void showOverflow() {
+        PopupMenu menu;
+        auto choices = [&](ComboBox& combo, const String& title, int base) {
+            if (combo.isVisible()) return;
+            PopupMenu sub;
+            for (int i = 0; i < combo.getNumItems(); ++i)
+                sub.addItem(base + combo.getItemId(i), combo.getItemText(i), true, combo.getSelectedId() == combo.getItemId(i));
+            menu.addSubMenu(title, sub);
+        };
+        choices(smooth, "Smoothing", 100); choices(avg, "Averaging", 2000); choices(blank, "Coherence", 4000);
+        if (!reset.isVisible()) menu.addItem(1, "Reset averaging");
+        Component::SafePointer<TransferFunctionPanel> safe(this);
+        menu.showMenuAsync(PopupMenu::Options().withTargetComponent(&overflow), [safe](int id) {
+            if (!safe || id == 0) return;
+            if (id == 1) safe->reset.onClick();
+            else if (id >= 4000) safe->blank.setSelectedId(id - 4000);
+            else if (id >= 2000) safe->avg.setSelectedId(id - 2000);
+            else safe->smooth.setSelectedId(id - 100);
+        });
     }
     void syncControls() { smooth.setSelectedId(model.smoothingFraction + 1, dontSendNotification); avg.setSelectedId(model.averages == 0 ? 1000 : model.averages, dontSendNotification);
                           blank.setSelectedId(roundToInt(model.blankThreshold * 100), dontSendNotification); }
@@ -216,9 +289,10 @@ public:
         for (int i = 1; i <= 3; ++i) position.changeItemText(i, "Position " + String(i) + ((model.positionMask & (1 << (i - 1))) ? " *" : ""));
         target.appendTo(plot);
         plot.lowCoh = blankedRegions(model.tf);
-        plot.note = "Averages " + String(model.tf.averages) + (model.calApplied ? u8(" \xc2\xb7 Mic calibration on") : "")
-                    + u8(" \xc2\xb7 ") + u8(fohui::settleStatusText(model.conv, model.capture.active, model.capture.unsettled))
-                    + " | Multi-mic: " + String(model.positionCount) + "/3 positions (2 required)";
+        plot.legendChips = {"Averages " + String(model.tf.averages)};
+        if (model.calApplied) plot.legendChips.add("Mic calibration on");
+        if (multiExpanded || model.positionCount > 0) plot.legendChips.add("Positions " + String(model.positionCount) + "/3");
+        plot.note = u8(fohui::settleStatusText(model.conv, model.capture.active, model.capture.unsettled));
         if (model.positionCount >= 2 && (model.multiPosition.H.empty()
             || std::none_of(model.multiPosition.coherence.begin(), model.multiPosition.coherence.end(),
                             [](double c) { return std::isfinite(c) && c > 0; })))
@@ -226,9 +300,10 @@ public:
         plot.repaint();
     }
 private:
+    bool multiExpanded = false; TextButton multiDisclosure, overflow {u8("\xe2\x8b\xaf")};
     ComboBox position; Slider positionDelay; std::array<double, 3> positionDelays {};
     TextButton useDelay {foh::str::lockDelay}, capturePosition {foh::str::capturePosition}, clearPositions {"Clear"}; ToggleButton showPositions;
-    TargetControls target; PlotComponent plot; ComboBox smooth, avg, blank; TextButton reset {"Reset averages"}, store {foh::str::storeTrace};
+    TargetControls target; PlotComponent plot; ComboBox smooth, avg, blank; TextButton reset {"Reset averaging"}, store {foh::str::storeTrace};
 };
 
 // ===================== Phase =====================
