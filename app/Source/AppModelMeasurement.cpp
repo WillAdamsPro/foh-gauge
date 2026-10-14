@@ -12,11 +12,13 @@ void AppModel::syncLoopback() {
 }
 void AppModel::finishLoopback(const foh::TFResult* raw) {
     if (!loopbackMeasuring) return;
-    if (measuringLoopbackKey == loopbackKey() && activeLoopbackEpoch == engine.captureEpoch.load())
+    const bool sameRouting = measuringLoopbackKey == loopbackKey()
+        && activeLoopbackEpoch == engine.captureEpoch.load() && !engine.deviceFailed.load();
+    if (sameRouting)
         analysis.send(foh::Command::referenceDelay(savedReferenceDelay), activeLoopbackEpoch);
-    loopbackMeasuring = false; engine.gen = savedGenerator; engine.genGainDb = savedGeneratorGain; setPaused(savedPaused);
+    loopbackMeasuring = false; engine.gen = sameRouting ? savedGenerator : AudioEngine::Off; engine.genGainDb = savedGeneratorGain; setPaused(savedPaused);
     auto c = raw ? foh::LoopbackCorrection::measure(*raw) : foh::LoopbackCorrection{};
-    if (c.valid() && measuringLoopbackKey == loopbackKey()) {
+    if (c.valid() && sameRouting) {
         loopbackCals[measuringLoopbackKey] = c;
         analysis.setLoopback(std::make_shared<foh::LoopbackCorrection>(c), engine.captureEpoch.load());
         auto j = foh::Json::object(); for (const auto& entry : loopbackCals) j.set(entry.first, entry.second.toJson());
