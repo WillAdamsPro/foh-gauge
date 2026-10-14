@@ -1,4 +1,7 @@
 #include "Widgets.h"
+#if JUCE_MAC
+#import <AppKit/AppKit.h>
+#endif
 #if __has_include("BinaryData.h")
  #include "BinaryData.h"
  #define FOH_HAS_FONTS 1
@@ -31,6 +34,19 @@ void FohLookAndFeel::applyTheme() {
     setColour(ComboBox::arrowColourId, C::textSecondary()); setColour(PopupMenu::textColourId, C::textPrimary()); setColour(PopupMenu::highlightedBackgroundColourId, C::accent()); setColour(PopupMenu::highlightedTextColourId, C::textOnAccent());
     setColour(TextEditor::backgroundColourId, C::pillBackground()); setColour(TextEditor::textColourId, C::textPrimary()); setColour(TextEditor::outlineColourId, C::pillBorder());
     setColour(ListBox::textColourId, C::textPrimary()); setColour(ToggleButton::textColourId, C::textPrimary()); setColour(ToggleButton::tickColourId, C::accent());
+}
+AlertWindow* FohLookAndFeel::createAlertWindow(const String& title, const String& message,
+    const String& button1, const String& button2, const String& button3,
+    MessageBoxIconType icon, int numButtons, juce::Component* associated) {
+    auto* alert = LookAndFeel_V4::createAlertWindow(title, message, button1, button2, button3,
+        icon, numButtons, associated);
+#if JUCE_MAC
+    // Scoped notices may be replaced or closed with their owner immediately.
+    // AppKit's automatic visibility animation must not outlive the JUCE peer.
+    if (auto* peer = alert->getPeer())
+        [(NSView*) peer->getNativeHandle() window].animationBehavior = NSWindowAnimationBehaviorNone;
+#endif
+    return alert;
 }
 Typeface::Ptr FohLookAndFeel::getTypefaceForFont(const Font& f) {
     // Embedded Inter only when a (deprecated) theme asks for it; Apple-pro themes use the system UI font (SF Pro / Segoe UI).
@@ -232,7 +248,7 @@ void SegmentedControl::paint(Graphics& g) {
         g.setColour(i == sel ? C::textPrimary() : disabled[i] ? C::textAxis() : C::textSecondary()); g.drawText(labels[i], seg, Justification::centred); }
 }
 Path NavButton::glyphPath(Glyph gl, Rectangle<float> b) { // 16 px line glyphs, drawn as stroked paths
-    Path p; float x = b.getX(), y = b.getY(), s = b.getWidth() / 16.0f; auto P = [&](float px, float py) { return Point<float>(x + px * s, y + py * s); };
+    Path p; float x = b.getX(), y = b.getY(), s = b.getWidth() / 16.0f; auto P = [&](float px, float py) { return juce::Point<float>(x + px * s, y + py * s); };
     switch (gl) {
         case Home: p.startNewSubPath(P(2, 8)); p.lineTo(P(8, 2.5f)); p.lineTo(P(14, 8)); p.startNewSubPath(P(4, 6.5f)); p.lineTo(P(4, 14)); p.lineTo(P(12, 14)); p.lineTo(P(12, 6.5f));
                    p.startNewSubPath(P(6.75f, 14)); p.lineTo(P(6.75f, 10)); p.lineTo(P(9.25f, 10)); p.lineTo(P(9.25f, 14)); break;

@@ -1,6 +1,9 @@
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/catch_approx.hpp>
 #include "Panels.h"
+#if JUCE_MAC
+#import <AppKit/AppKit.h>
+#endif
 
 namespace {
 foh::TFResult syntheticTrace() {
@@ -107,13 +110,32 @@ TEST_CASE("Trace manager controls edit traces and display a +6.02 dB self sum", 
 
 TEST_CASE("Damaged saved targets clear plot overlays and tolerance bands", "[app][files][target]") {
     juce::ScopedJuceInitialiser_GUI initialise;
-    // The test build permits modal loops. Dismiss the expected error notices
-    // automatically so a rejected file cannot leave this regression waiting.
+    // Standalone panels need the same alert factory as the main app shell.
+    struct AppLookAndFeel {
+        juce::LookAndFeel* previous = &juce::LookAndFeel::getDefaultLookAndFeel();
+        FohLookAndFeel theme;
+        AppLookAndFeel() { juce::LookAndFeel::setDefaultLookAndFeel(&theme); }
+        ~AppLookAndFeel() { juce::LookAndFeel::setDefaultLookAndFeel(previous); }
+    } lookAndFeel;
+    // Observe and dismiss each asynchronous error notice before panel teardown.
     struct DismissErrors : juce::Timer {
+        int notices = 0;
         DismissErrors() { startTimer(10); }
         void timerCallback() override {
             auto* modal = juce::ModalComponentManager::getInstance()->getModalComponent(0);
-            if (auto* alert = dynamic_cast<juce::AlertWindow*>(modal)) alert->exitModalState(0);
+            if (auto* alert = dynamic_cast<juce::AlertWindow*>(modal)) {
+                ++notices;
+#if JUCE_MAC
+                auto* peer = alert->getPeer();
+                CHECK(peer != nullptr);
+                if (peer) {
+                    NSWindow* native = [(NSView*) peer->getNativeHandle() window];
+                    CHECK(native != nil);
+                    CHECK(native.animationBehavior == NSWindowAnimationBehaviorNone);
+                }
+#endif
+                alert->exitModalState(0);
+            }
         }
     } dismissErrors;
     AppModel model;
@@ -128,6 +150,7 @@ TEST_CASE("Damaged saved targets clear plot overlays and tolerance bands", "[app
         REQUIRE_FALSE(plots[0]->toleranceBands.empty());
         for (const auto* bad : {"", "20 0\n1000 1\n2000 2e", "20 0\n1000 nan"}) {
             state.set("targetText", bad); panel->loadState(state);
+            juce::MessageManager::getInstance()->runDispatchLoopUntil(30);
             CHECK(plots[0]->toleranceBands.empty());
             CHECK_FALSE(panel->saveState()["targetShown"].asBool());
             CHECK(panel->saveState()["targetChoice"].asInt() == 1);
@@ -137,4 +160,7 @@ TEST_CASE("Damaged saved targets clear plot overlays and tolerance bands", "[app
             CHECK_FALSE(plots[0]->toleranceBands.empty());
         }
     }
+    juce::MessageManager::getInstance()->runDispatchLoopUntil(250);
+    CHECK(dismissErrors.notices == 6);
+    CHECK(juce::ModalComponentManager::getInstance()->getNumModalComponents() == 0);
 }
