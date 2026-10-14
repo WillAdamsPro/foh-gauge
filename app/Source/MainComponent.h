@@ -9,7 +9,8 @@
 
 class MainComponent : public juce::Component, public juce::MenuBarModel, private juce::Timer, private juce::ChangeListener, private AppModel::Listener {
 public:
-    MainComponent(); ~MainComponent() override;
+    explicit MainComponent(juce::File workspaceFolder = WorkspaceManager::defaultFolder());
+    ~MainComponent() override;
     juce::StringArray getMenuBarNames() override { return {"File"}; }
     juce::PopupMenu getMenuForIndex(int, const juce::String&) override;
     void menuItemSelected(int, int) override;
@@ -58,6 +59,7 @@ protected:
     juce::TextButton wsMenuBtn, showModeBtn;
     void openFloatingWindows(); void closeFloatingWindows();
     void showWorkspaceMenu(); void updateSwitcher(); void leaveWorkspace();
+    void saveWorkspaceAs(const juce::String& name);
     WorkspaceView view { model, PanelRegistry::standard() };
     juce::Label audioNotice;
     juce::Label toolbarTitle; SegmentedControl switcher {{"Setup", "Alignment", "Tuning", "RTA/Show"}};

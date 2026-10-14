@@ -9,7 +9,6 @@ namespace D = foh::ui::dim;
 namespace T = foh::theme::type;
 
 // ===================== Look and feel =====================
-Typeface::Ptr FohLookAndFeel::regular, FohLookAndFeel::semibold, FohLookAndFeel::bold;
 FohLookAndFeel::FohLookAndFeel() {
 #ifdef FOH_HAS_FONTS
     if (!regular) {
