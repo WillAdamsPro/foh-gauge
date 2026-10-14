@@ -1,5 +1,6 @@
 #include "Panels.h"
 #include "SetupPage.h"
+#include "SettleStatus.h"
 using namespace juce;
 namespace C = foh::ui::col;
 namespace D = foh::ui::dim;
@@ -62,7 +63,8 @@ public:
         else { addStoredTraces(model, plot, true);
                PlotComponent::Series s; s.c = C::traceLive(); s.label = "Live"; logDecimate(model.tf, model.tf.magDb, s.f, s.v, &s.gap); plot.series.push_back(s); }
         plot.lowCoh = blankedRegions(model.tf);
-        plot.note = "averages " + String(model.tf.averages) + (model.calApplied ? u8(" \xc2\xb7 cal applied") : "") + ((model.conv.unsettled || model.capture.unsettled) ? u8(" \xc2\xb7 \xe2\x96\xb2 unsettled") : model.conv.settled ? u8(" \xc2\xb7 settled") : u8(" \xc2\xb7 averaging"));
+        plot.note = "averages " + String(model.tf.averages) + (model.calApplied ? u8(" \xc2\xb7 cal applied") : "")
+                    + u8(" \xc2\xb7 ") + u8(fohui::settleStatusText(model.conv, model.capture.active, model.capture.unsettled));
         plot.repaint();
     }
 private:
