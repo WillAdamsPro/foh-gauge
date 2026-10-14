@@ -9,7 +9,13 @@
 class MainComponent : public juce::Component, private juce::Timer, private juce::ChangeListener, private AppModel::Listener {
 public:
     MainComponent(); ~MainComponent() override;
-    void paint(juce::Graphics&) override; void resized() override;
+    void resized() override;
+    int uiScalePercent() const { return uiScale; }
+    void setUiScale(int percent);
+    void stepUiScale(int direction);
+    void fitSavedScale();
+    bool isSunlightTheme() const { return foh::theme::ThemeManager::get().current().isLight; }
+    void setSunlightTheme(bool enabled);
     void selectWorkspace(int index);
     void selectWorkspace(const std::string& id);
     bool keyPressed(const juce::KeyPress&) override;
@@ -18,7 +24,16 @@ public:
 protected:
     void timerCallback() override; void changeListenerCallback(juce::ChangeBroadcaster*) override; void modelChanged(int what) override;
     virtual void workspaceSelected() {}
-    bool sidebarVisible() const { return !showMode && getWidth() >= 1280; } // spec §7: sidebar collapses under 1280 px
+    bool sidebarVisible() const { return !showMode && content.getWidth() >= 1280; } // spec §7: sidebar collapses under 1280 px
+    // Only this child is transformed; the native window stays in display coordinates.
+    struct Content : juce::Component {
+        explicit Content(MainComponent& ownerIn) : owner(ownerIn) {}
+        void paint(juce::Graphics& g) override { owner.paintContent(g); }
+        MainComponent& owner;
+    } content { *this };
+    void paintContent(juce::Graphics&);
+    void layoutContent();
+    int uiScale = 100;
     FohLookAndFeel lnf;
     AppModel model;
     WorkspaceManager mgr; int current = -1;
