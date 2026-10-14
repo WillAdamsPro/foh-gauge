@@ -1046,6 +1046,80 @@ TEST_CASE("Target overlays and stored trace edits stay on the reader while live 
     CHECK(producer.finiteOutput.load());
 }
 
+TEST_CASE("Invalid level input stays finite and cannot calibrate SPL", "[app][audio][splcal][edges]") {
+    AudioEngine engine; AnalysisEngine analysis(engine); analysis.start();
+    REQUIRE(analysis.send(foh::Command::resetAverages(1)));
+    REQUIRE(waitFor([&] { return analysis.latest().resetSeq == 1; }));
+    int revision = 0;
+    for (float value : {0.f, 0.25f, 1.f, -1.f, std::numeric_limits<float>::denorm_min(), NAN, INFINITY}) {
+        analysis.leqRevision = ++revision;
+        REQUIRE(waitFor([&] { return analysis.latest().leqRevision == uint64_t(revision); }));
+        std::vector<float> input(4800, value);
+        capture(engine, input.data(), input.data(), int(input.size()));
+        REQUIRE(waitFor([&] { return analysis.latest().leq.seconds >= 0.1; }));
+        const auto snapshot = analysis.latest();
+        CHECK_FALSE(snapshot.micLevelValid); CHECK_FALSE(snapshot.leq.valid);
+        CHECK(std::isfinite(snapshot.micLevelDbfs));
+        for (auto level : snapshot.leq.session) CHECK(std::isfinite(level));
+        if (value != 0.25f) for (auto coherence : snapshot.tf.coherence) CHECK(coherence == 0);
+        REQUIRE(analysis.send(foh::Command::micPosition(0, 0)));
+        auto reset = foh::Command::resetAverages(uint64_t(revision) + 1);
+        REQUIRE(analysis.send(reset));
+        REQUIRE(waitFor([&] { return analysis.latest().resetSeq == reset.id; }));
+        CHECK(analysis.latest().positionCount == 0);
+    }
+    analysis.stop();
+}
+
+TEST_CASE("Rate restart invalidates in-flight sweeps and multi-mic captures", "[app][audio][sweep][multipos][edges]") {
+    AudioEngine engine; SyntheticDevice device; engine.audioDeviceAboutToStart(&device);
+    AnalysisEngine analysis(engine); analysis.start();
+    REQUIRE(waitFor([&] { return engine.analysisEpoch.load() == engine.captureEpoch.load(); }));
+    std::vector<float> noise(32768); foh::PinkNoise generator; generator.process(noise.data(), int(noise.size()));
+    capture(engine, noise.data(), noise.data(), int(noise.size()));
+    REQUIRE(waitFor([&] { return analysis.latest().convergence.frames > 0; }));
+    foh::Command command; command.type = foh::CommandType::StoreMicPosition; command.i = 0;
+    REQUIRE(analysis.send(command));
+    REQUIRE(waitFor([&] { return analysis.latest().positionCount == 1; }));
+    command.type = foh::CommandType::MeasureSweep; REQUIRE(analysis.send(command));
+    REQUIRE(waitFor([&] { return analysis.latest().sweepCapturing; }));
+    engine.audioDeviceStopped(); device.rate = 96000; engine.audioDeviceAboutToStart(&device);
+    REQUIRE(waitFor([&] { return analysis.latest().tf.sampleRate == 96000; }));
+    const auto snapshot = analysis.latest();
+    CHECK_FALSE(snapshot.sweepCapturing); CHECK_FALSE(snapshot.sweep.response.ok());
+    CHECK_FALSE(snapshot.sweep.response.error.empty()); CHECK(snapshot.positionCount == 0);
+    CHECK(snapshot.multiPosition.H.empty()); CHECK_FALSE(snapshot.leq.valid);
+    analysis.stop();
+}
+
+TEST_CASE("Unusable live pairs clear coherent TF before multi-mic capture", "[app][audio][multipos][show][edges]") {
+    AudioEngine engine; AnalysisEngine analysis(engine); analysis.start();
+    REQUIRE(analysis.send(foh::Command::resetAverages(1)));
+    REQUIRE(waitFor([&] { return analysis.latest().resetSeq == 1; }));
+    std::vector<float> noise(32768); foh::PinkNoise generator; generator.process(noise.data(), int(noise.size()));
+    for (float value : {0.f, 1.f, NAN, INFINITY}) {
+        capture(engine, noise.data(), noise.data(), int(noise.size()));
+        REQUIRE(waitFor([&] { return foh::coherenceSummary(analysis.latest().tf).meanCoherence > 0.9; }));
+        std::vector<float> bad(32768, value);
+        // Missing/silent reference and damaged reference must invalidate live TF.
+        capture(engine, noise.data(), bad.data(), int(noise.size()));
+        REQUIRE(waitFor([&] {
+            const auto& tf = analysis.latest().tf;
+            return !tf.coherence.empty() && std::all_of(tf.coherence.begin(), tf.coherence.end(), [](double c) { return c == 0; });
+        }));
+        for (auto coherence : analysis.latest().tf.coherence) CHECK(coherence == 0);
+        foh::Command store; store.type = foh::CommandType::StoreMicPosition;
+        REQUIRE(analysis.send(store));
+        auto reset = foh::Command::resetAverages(analysis.latest().resetSeq + 1);
+        REQUIRE(analysis.send(reset));
+        REQUIRE(waitFor([&] { return analysis.latest().resetSeq == reset.id; }));
+        CHECK(analysis.latest().positionCount == 0);
+    }
+    capture(engine, noise.data(), noise.data(), int(noise.size()));
+    REQUIRE(waitFor([&] { return foh::coherenceSummary(analysis.latest().tf).meanCoherence > 0.9; }));
+    analysis.stop();
+}
+
 TEST_CASE("Analysis applies stored loopback only to its capture epoch", "[app][audio][loopback]") {
     AudioEngine engine; AnalysisEngine analysis(engine);
     engine.captureEpoch.store(1); analysis.start();
