@@ -3,6 +3,7 @@
 #include "BinaryData.h"
 #include "SetupPage.h"
 #include "SettleStatus.h"
+#include "ShowMonitoring.h"
 using namespace juce;
 namespace C = foh::ui::col;
 namespace D = foh::ui::dim;
@@ -129,7 +130,7 @@ private:
 class TransferFunctionPanel : public Panel {
 public:
     explicit TransferFunctionPanel(AppModel& m) : Panel(m, "TransferFunction", "Transfer Function") {
-        helpText = "Settled: less than 0.5 dB RMS change for 3 consecutive updates, with at least 25% coherent bins (100 Hz-10 kHz). After 10 s, capture proceeds with an unsettled warning.\n\nThis compares the console (reference) to the mic. Anything that isn't flat is what the speakers + room are doing to your mix.\n\nMagnitude: 0 dB = unchanged.\n\nDimmed regions: coherence below the Dim threshold. Don't EQ there; move the mic or treat the reflection.\n\nStored traces are dashed.";
+        helpText = "Settled: less than 0.5 dB RMS change for 3 consecutive updates, with at least 25% coherent bins (100 Hz-10 kHz). After 10 s, capture proceeds with an unsettled warning.\n\nThis compares the console (reference) to the mic. Anything that isn't flat is what the speakers + room are doing to your mix.\n\nMagnitude: 0 dB = unchanged.\n\nDimmed regions: coherence below the Dim threshold. Don't EQ there; move the mic or treat the reflection.\n\nStored traces are dashed.\n\nMulti-mic: move to each of 2-3 positions, Reset avg and wait for a fresh trace. Enter the total arrival delay (or Use found), then Capture. The aligned average uses coherence weights and can be compared with the target. Capture again to replace a position; Clear starts a new set.";
         plot.yLabel = "MAGNITUDE DB"; plot.yMin = -12; plot.yMax = 12; plot.yStep = 6; plot.showLegend = true; plot.showLowCohCallout = true;
         addAndMakeVisible(plot);
         smooth.addItem("Smooth off", 1); smooth.addItem("Smooth 1/3", 4); smooth.addItem("Smooth 1/6", 7); smooth.addItem("Smooth 1/12", 13); smooth.addItem("Smooth 1/24", 25); smooth.addItem("Smooth 1/48", 49);
@@ -142,9 +143,23 @@ public:
         store.onClick = [this] { model.storeTrace("Trace " + String(model.traces.count() + 1)); };
         for (auto* c : std::initializer_list<Component*>{&smooth, &avg, &blank, &reset, &store}) addAndMakeVisible(c);
         addAndMakeVisible(target); target.onChange = [this] { modelChanged(AppModel::Overlay); };
+        for (int i = 1; i <= 3; ++i) position.addItem("Position " + String(i), i);
+        position.setSelectedId(1, dontSendNotification);
+        positionDelay.setRange(-500, 3000, 0.001); positionDelay.setTextValueSuffix(" ms");
+        positionDelay.setSliderStyle(Slider::IncDecButtons);
+        positionDelay.setTextBoxStyle(Slider::TextBoxLeft, false, 94, 24);
+        positionDelay.setTooltip("Total arrival delay for this position. Enter it or use the delay finder result. Reference compensation is subtracted automatically.");
+        position.onChange = [this] { positionDelay.setValue(positionDelays[(size_t)(position.getSelectedId() - 1)], dontSendNotification); };
+        positionDelay.onValueChange = [this] { positionDelays[(size_t)(position.getSelectedId() - 1)] = positionDelay.getValue(); };
+        useDelay.onClick = [this] { if (model.delayLocked()) positionDelay.setValue(model.delay.arrivals[0].delayMs); };
+        capturePosition.onClick = [this] { model.send(foh::Command::micPosition(position.getSelectedId() - 1, positionDelay.getValue())); };
+        clearPositions.onClick = [this] { model.send(foh::Command::clearMicPositions()); };
+        showPositions.setButtonText("Multi-mic"); showPositions.setToggleState(true, dontSendNotification); showPositions.onClick = [this] { modelChanged(AppModel::Snapshot); };
+        capturePosition.setTooltip("Move the mic, Reset avg, wait for a fresh settled trace, then capture this position. Capture again to replace it.");
+        for (auto* c : std::initializer_list<Component*>{&position, &positionDelay, &useDelay, &capturePosition, &clearPositions, &showPositions}) addAndMakeVisible(c);
         syncControls();
     }
-    fohws::Size minSize() const override { return { WS::plotPanelMinWidth, WS::plotPanelMinHeight }; }
+    fohws::Size minSize() const override { return { WS::plotPanelMinWidth, WS::plotPanelMinHeight + 64 }; }
     int priority() const override { return 100; }
     Json saveState() const override { Json j = Json::object(); j.set("yMin", plot.yMin); j.set("yMax", plot.yMax); target.save(j); return j; }
     void loadState(const Json& j) override { if (j.has("yMin")) { plot.yMin = j["yMin"].asNumber(-12); plot.yMax = j["yMax"].asNumber(12); plot.yStep = (plot.yMax - plot.yMin) / 4; } target.load(j); }
@@ -152,6 +167,12 @@ public:
         auto r = getLocalBounds().reduced(pad, 6); auto row = controlRow(r);
         store.setBounds(row.removeFromRight(64)); row.removeFromRight(6); reset.setBounds(row.removeFromRight(84)); row.removeFromRight(6);
         avg.setBounds(row.removeFromRight(92)); row.removeFromRight(6); smooth.setBounds(row.removeFromRight(118)); row.removeFromRight(6); blank.setBounds(row.removeFromRight(108));
+        auto multiRow = controlRow(r);
+        position.setBounds(multiRow.removeFromLeft(100)); positionDelay.setBounds(multiRow.removeFromLeft(140));
+        useDelay.setBounds(multiRow.removeFromLeft(86));
+        multiRow = controlRow(r);
+        capturePosition.setBounds(multiRow.removeFromLeft(68));
+        clearPositions.setBounds(multiRow.removeFromLeft(54)); showPositions.setBounds(multiRow);
         target.setBounds(controlRow(r)); plot.setBounds(r);
     }
     void syncControls() { smooth.setSelectedId(model.smoothingFraction + 1, dontSendNotification); avg.setSelectedId(model.averages == 0 ? 1000 : model.averages, dontSendNotification);
@@ -164,13 +185,24 @@ public:
         if (ov.active && !ov.mag.empty()) { plot.series = ov.mag; plot.shade = ov.shade; plot.shadeLabel = ov.shadeLabel; }
         else { addStoredTraces(model, plot, true);
                PlotComponent::Series s; s.c = C::traceLive(); s.label = "Live"; logDecimate(model.tf, model.tf.magDb, s.f, s.v, &s.gap); plot.series.push_back(s); }
+        if (showPositions.getToggleState() && model.positionCount >= 2) {
+            PlotComponent::Series s; s.c = C::storedTrace(3); s.label = "Multi-mic average";
+            logDecimate(model.multiPosition, model.multiPosition.magDb, s.f, s.v, &s.gap);
+            plot.series.push_back(std::move(s));
+        }
+        capturePosition.setEnabled(model.tf.averages > 0 && !model.paused);
+        useDelay.setEnabled(model.delayLocked());
+        for (int i = 1; i <= 3; ++i) position.changeItemText(i, "Position " + String(i) + ((model.positionMask & (1 << (i - 1))) ? " *" : ""));
         target.appendTo(plot);
         plot.lowCoh = blankedRegions(model.tf);
         plot.note = "averages " + String(model.tf.averages) + (model.calApplied ? u8(" \xc2\xb7 cal applied") : "")
-                    + u8(" \xc2\xb7 ") + u8(fohui::settleStatusText(model.conv, model.capture.active, model.capture.unsettled));
+                    + u8(" \xc2\xb7 ") + u8(fohui::settleStatusText(model.conv, model.capture.active, model.capture.unsettled))
+                    + " | Multi-mic: " + String(model.positionCount) + "/3 positions (2 required)";
         plot.repaint();
     }
 private:
+    ComboBox position; Slider positionDelay; std::array<double, 3> positionDelays {};
+    TextButton useDelay {"Use found"}, capturePosition {"Capture"}, clearPositions {"Clear"}; ToggleButton showPositions;
     TargetControls target; PlotComponent plot; ComboBox smooth, avg, blank; TextButton reset {"Reset avg"}, store {"Store"};
 };
 
@@ -253,6 +285,79 @@ public:
     }
 private:
     TargetControls target {-40}; PlotComponent plot; ComboBox frac;
+};
+
+// ===================== W7 show-time monitoring =====================
+class ShowMonitoringPanel : public Panel, private Timer {
+public:
+    explicit ShowMonitoringPanel(AppModel& m) : Panel(m, "ShowMonitoring", "W7 Show Monitoring") {
+        helpText = "Feed the console programme into the reference input and leave the mic in its reference position. Select a stored TF, then Monitor. No generated output is allowed while monitoring. TF drift is RMS over 100 Hz-10 kHz, using coherence >=0.6 and at least 25% coverage. A 3 dB change for three one-second updates raises an alert. RTA shows live programme level; programme changes are not system drift.";
+        reference.setTextWhenNothingSelected("Select stored reference");
+        monitor.setTooltip(helpText);
+        reference.onChange = [this] { stopMonitoring(); };
+        monitor.onClick = [this] {
+            if (active) { stopMonitoring(); return; }
+            int index = reference.getSelectedId() - 1;
+            if (index < 0 || index >= model.traces.count()) return;
+            baseline = model.traces.at(index); // stable even if the trace store changes
+            active = true; alert = {}; model.engine.gen = AudioEngine::Off;
+            model.engine.monitoringSilent = true; model.engine.cancelConnectionTest();
+            model.notify(AppModel::Settings); monitor.setButtonText("Stop monitoring");
+            reference.setEnabled(false); status.setText("Monitoring: waiting for coherent programme", dontSendNotification);
+            startTimerHz(1);
+        };
+        for (auto* c : std::initializer_list<Component*>{&reference, &monitor, &status, &tfPlot, &rtaPlot}) addAndMakeVisible(c);
+        tfPlot.yLabel = "TF DB"; tfPlot.yMin = -18; tfPlot.yMax = 18; tfPlot.yStep = 6; tfPlot.showLegend = true;
+        rtaPlot.yLabel = "RTA dBFS"; rtaPlot.yMin = -100; rtaPlot.yMax = 0; rtaPlot.yStep = 20; rtaPlot.showLegend = true;
+        styleLabel(status, T::small, C::textPrimary()); refreshReferences(); stopMonitoring();
+    }
+    ~ShowMonitoringPanel() override { stopTimer(); if (active) { model.engine.gen = AudioEngine::Off; model.engine.monitoringSilent = false; } }
+    int priority() const override { return 100; }
+    void resized() override {
+        auto r = getLocalBounds().reduced(pad, 6); auto row = controlRow(r);
+        monitor.setBounds(row.removeFromRight(140)); row.removeFromRight(6); reference.setBounds(row);
+        status.setBounds(controlRow(r, 44)); tfPlot.setBounds(r.removeFromTop(r.getHeight() / 2)); rtaPlot.setBounds(r);
+    }
+    void modelChanged(int w) override {
+        if ((w & AppModel::Traces) && !active) refreshReferences();
+    }
+private:
+    void refreshReferences() {
+        auto id = reference.getSelectedId(); reference.clear(dontSendNotification);
+        for (int i = 0; i < model.traces.count(); ++i) reference.addItem(String(model.traces.at(i).name), i + 1);
+        if (id <= model.traces.count()) reference.setSelectedId(id, dontSendNotification);
+        monitor.setEnabled(active || reference.getSelectedId() > 0);
+    }
+    void stopMonitoring() {
+        stopTimer(); if (active) { model.engine.gen = AudioEngine::Off; model.engine.monitoringSilent = false; }
+        active = false; alert = {}; monitor.setButtonText("Monitor"); reference.setEnabled(true); refreshReferences();
+        status.setColour(Label::textColourId, C::textPrimary());
+        status.setText("W7: select a stored TF and Monitor. Use console programme as reference.", dontSendNotification);
+    }
+    void timerCallback() override {
+        const bool signal = !model.paused && model.micLevelValid && model.refPeak > 0.00001f
+            && !model.engine.deviceFailed.load() && model.engine.state.load() == AudioEngine::Ready;
+        const auto drift = signal ? fohui::showDrift(model.tf, baseline.tf) : fohui::ShowDrift{};
+        const bool warning = alert.update(drift);
+        status.setText(!drift.valid ? "Waiting: insufficient coherent programme, paused, or input changed"
+            : (warning ? "DRIFT ALERT: " : alert.consecutive > 0 ? "Checking drift: " : "Monitoring: ")
+              + String(drift.rmsDb, 1) + " dB RMS vs " + String(baseline.name), dontSendNotification);
+        status.setColour(Label::textColourId, warning ? Colours::orange : C::textPrimary());
+        if (!isShowing()) return; // keep alert state, avoid hidden rendering
+        tfPlot.series.clear();
+        PlotComponent::Series stored; stored.c = C::storedTrace(0); stored.label = String(baseline.name); stored.dash = foh::theme::stroke::dashStored;
+        logDecimate(baseline.tf, baseline.tf.magDb, stored.f, stored.v, &stored.gap); tfPlot.series.push_back(std::move(stored));
+        if (signal) { PlotComponent::Series live; live.c = C::traceLive(); live.label = "Live TF";
+            logDecimate(model.tf, model.tf.magDb, live.f, live.v, &live.gap); tfPlot.series.push_back(std::move(live)); }
+        tfPlot.repaint(); rtaPlot.series.clear();
+        PlotComponent::Series rta; rta.c = C::accent(); rta.label = "Live programme";
+        if (signal) for (size_t i = 0; i < model.rtaDb.size() && i < model.rtaBands.size(); ++i) {
+            rta.f.push_back(model.rtaBands[i].fCenter); rta.v.push_back(model.rtaDb[i]);
+        }
+        rtaPlot.series.push_back(std::move(rta)); rtaPlot.repaint();
+    }
+    ComboBox reference; TextButton monitor {"Monitor"}; Label status;
+    PlotComponent tfPlot, rtaPlot; foh::Trace baseline; fohui::ShowDriftAlert alert; bool active = false;
 };
 
 // ===================== Delay finder =====================
@@ -584,6 +689,7 @@ PanelRegistry& PanelRegistry::standard() {
         add("TransferFunction", "Transfer Function", [](AppModel& m) { return std::make_unique<TransferFunctionPanel>(m); });
         add("Phase", "Phase", [](AppModel& m) { return std::make_unique<PhasePanel>(m); });
         add("Coherence", "Coherence", [](AppModel& m) { return std::make_unique<CoherencePanel>(m); });
+        add("ShowMonitoring", "W7 Show Monitoring", [](AppModel& m) { return std::make_unique<ShowMonitoringPanel>(m); });
         add("RTA", "RTA", [](AppModel& m) { return std::make_unique<RtaPanel>(m); });
         add("DelayFinder", "Delay Finder", [](AppModel& m) { return std::make_unique<DelayFinderPanel>(m); });
         add("Impulse", "Impulse", [](AppModel& m) { return std::make_unique<ImpulsePanel>(m); });

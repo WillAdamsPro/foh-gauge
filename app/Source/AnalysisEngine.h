@@ -5,6 +5,7 @@
 #include <juce_core/juce_core.h>
 #include <mutex>
 #include <memory>
+#include <array>
 #include "fohcore/fohcore.h"
 
 class AudioEngine;
@@ -44,6 +45,9 @@ private:
     bool loopbackDirty = false;
     // analysis-thread state
     std::unique_ptr<foh::LeqMeter> leq;
+    std::array<foh::MicPosition, 3> positions;
+    uint8_t positionMask = 0;
+    foh::TFResult positionAverage; int positionCount = 0;
     double levelEnergy = 0; int levelSamples = 0;
     uint64_t meterRevision = 0;
     uint64_t inputEpoch = 0; int micChannel = -1;

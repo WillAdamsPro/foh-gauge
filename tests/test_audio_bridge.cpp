@@ -619,8 +619,14 @@ private:
                 engine.audioDeviceAboutToStart(&device);
                 runningRate.store(rate);
             }
-            capture(engine, signal, signal, 1024);
-            blocks.fetch_add(1);
+            // Exercise handoffs, not worker throughput: an instrumented Debug
+            // FFT can be slower than this synthetic producer. Bound the backlog
+            // so repeated overflow resets cannot starve snapshot publication.
+            // This pacing belongs only to the test producer, never the callback.
+            if (engine.micRing.available() < 4096 && engine.refRing.available() < 4096) {
+                capture(engine, signal, signal, 1024);
+                blocks.fetch_add(1);
+            }
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
         }
         engine.audioDeviceStopped();
@@ -703,6 +709,112 @@ TEST_CASE("Settings and calibration changes overlap a synthetic measurement", "[
         REQUIRE(snapshot.rtaDb.size() == snapshot.rtaBands.size());
         REQUIRE(snapshot.inputEpoch == engine.captureEpoch.load());
     }
+}
+
+TEST_CASE("Multi-mic worker captures replaces clears and compensates reference delay", "[app][audio][multipos]") {
+    AudioEngine engine; AnalysisEngine analysis(engine); analysis.start();
+    REQUIRE(waitFor([&] { return engine.analysisEpoch.load() == engine.captureEpoch.load(); }));
+    REQUIRE(analysis.send(foh::Command::micPosition(0, 0)));
+    // No averaged audio yet: a capture must not create a position.
+    REQUIRE(analysis.send(foh::Command::resetAverages(100)));
+    REQUIRE(waitFor([&] { return analysis.latest().resetSeq == 100; }));
+    REQUIRE(analysis.latest().positionCount == 0);
+    foh::PinkNoise noise(123);
+    std::vector<float> signal(8192);
+    auto feed = [&] {
+        for (int i = 0; i < 8; ++i) {
+            noise.process(signal.data(), (int)signal.size());
+            capture(engine, signal.data(), signal.data(), (int)signal.size());
+            REQUIRE(waitFor([&] { return engine.micRing.available() == 0 && engine.refRing.available() == 0; }));
+        }
+        REQUIRE(waitFor([&] { return analysis.latest().tf.averages > 0; }));
+    };
+    feed();
+    REQUIRE(analysis.send(foh::Command::micPosition(0, 0)));
+    REQUIRE(waitFor([&] { return analysis.latest().positionCount == 1; }));
+    REQUIRE(analysis.latest().multiPosition.H.empty());
+    // The raw channels still match. Reference compensation creates +phase, which
+    // must be undone by the residual position delay (total 0 ms minus ref 1 ms).
+    REQUIRE(analysis.send(foh::Command::referenceDelay(48)));
+    REQUIRE(analysis.send(foh::Command::resetAverages(101)));
+    REQUIRE(waitFor([&] { return analysis.latest().resetSeq == 101; }));
+    feed();
+    REQUIRE(analysis.send(foh::Command::micPosition(1, 0)));
+    REQUIRE(waitFor([&] { return analysis.latest().positionCount == 2; }));
+    auto avg = analysis.latest().multiPosition;
+    REQUIRE(avg.H.size() == 8193);
+    // 999 Hz bin: without removing the applied reference delay, the two
+    // positions would cancel almost completely instead of remaining at 0 dB.
+    const size_t bin = 341;
+    REQUIRE(avg.magDb[bin] == Catch::Approx(0).margin(0.1));
+    REQUIRE(avg.phaseDeg[bin] == Catch::Approx(0).margin(1));
+    REQUIRE(analysis.send(foh::Command::micPosition(2, 0)));
+    REQUIRE(waitFor([&] { return analysis.latest().positionMask == 7; }));
+    REQUIRE(analysis.latest().positionCount == 3);
+    // Replacement and invalid slots cannot grow past three positions.
+    REQUIRE(analysis.send(foh::Command::micPosition(1, 0)));
+    REQUIRE(analysis.send(foh::Command::micPosition(3, 0)));
+    REQUIRE(analysis.send(foh::Command::resetAverages(102)));
+    REQUIRE(waitFor([&] { return analysis.latest().resetSeq == 102; }));
+    REQUIRE(analysis.latest().positionCount == 3);
+    REQUIRE(analysis.send(foh::Command::clearMicPositions()));
+    REQUIRE(waitFor([&] { return analysis.latest().positionCount == 0; }));
+    REQUIRE(analysis.latest().multiPosition.H.empty());
+    feed();
+    REQUIRE(analysis.send(foh::Command::micPosition(0, 0)));
+    REQUIRE(waitFor([&] { return analysis.latest().positionCount == 1; }));
+    engine.captureEpoch.fetch_add(1);
+    REQUIRE(waitFor([&] { return analysis.latest().positionCount == 0; }));
+    REQUIRE(analysis.latest().positionMask == 0);
+    analysis.stop();
+}
+
+TEST_CASE("Multi-mic TF average overlays the target with controls reachable", "[app][multipos][ui]") {
+    juce::ScopedJuceInitialiser_GUI initialise;
+    AppModel model;
+    auto panel = PanelRegistry::standard().create("TransferFunction", model);
+    REQUIRE(panel);
+    const auto minimum = panel->minSize();
+    panel->setBounds(0, 0, minimum.w, minimum.h);
+    panel->addToDesktop(0);
+    panel->setVisible(true);
+    auto state = fohws::Json::object(); state.set("targetShown", true);
+    panel->loadState(state);
+    PlotComponent* plot = nullptr;
+    juce::ToggleButton* show = nullptr;
+    for (auto* child : panel->getChildren()) {
+        if (auto* p = dynamic_cast<PlotComponent*>(child)) plot = p;
+        if (auto* b = dynamic_cast<juce::ToggleButton*>(child); b && b->getButtonText() == "Multi-mic") show = b;
+        if (auto* b = dynamic_cast<juce::TextButton*>(child)) {
+            if (b->getButtonText() == "Use found" || b->getButtonText() == "Capture" || b->getButtonText() == "Clear") {
+                REQUIRE(panel->getLocalBounds().contains(b->getBounds()));
+                REQUIRE(b->getWidth() > 40);
+            }
+        }
+    }
+    REQUIRE(plot); REQUIRE(show);
+    REQUIRE(panel->getLocalBounds().contains(show->getBounds()));
+    REQUIRE(show->getWidth() > 80);
+    model.multiPosition.fftSize = 1024;
+    model.multiPosition.magDb.assign(513, 2);
+    model.multiPosition.coherence.assign(513, 1);
+    model.positionCount = 2;
+    panel->modelChanged(AppModel::Snapshot);
+    auto hasSeries = [&](const juce::String& name) {
+        return std::any_of(plot->series.begin(), plot->series.end(), [&](const auto& s) { return s.label == name; });
+    };
+    REQUIRE(hasSeries("Multi-mic average"));
+    for (const auto& series : plot->series) if (series.label == "Multi-mic average") {
+        REQUIRE_FALSE(series.v.empty());
+        for (double value : series.v) REQUIRE(value == 2);
+    }
+    REQUIRE(hasSeries("Target +6"));
+    show->setToggleState(false, juce::dontSendNotification); show->onClick();
+    REQUIRE_FALSE(hasSeries("Multi-mic average"));
+    REQUIRE(hasSeries("Target +6"));
+    show->setToggleState(true, juce::dontSendNotification);
+    model.positionCount = 1; panel->modelChanged(AppModel::Snapshot);
+    REQUIRE_FALSE(hasSeries("Multi-mic average"));
 }
 
 TEST_CASE("Sweep measurement captures loopback and publishes impulse and ETC", "[app][audio][sweep]") {

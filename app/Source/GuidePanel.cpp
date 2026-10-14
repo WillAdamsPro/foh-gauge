@@ -2,6 +2,7 @@
 // Function and Phase panels (AppModel::overlay), so the guide works inside any workspace layout.
 #include "Panels.h"
 #include "Diagrams.h"
+#include "ScrollableForm.h"
 using namespace juce;
 namespace C = foh::ui::col;
 namespace D = foh::ui::dim;
@@ -41,14 +42,16 @@ static const char* kGuideNames[] = {"Setup + reference delay", "Align sub to mai
 class GuidePanel : public Panel {
 public:
     explicit GuidePanel(AppModel& m) : Panel(m, "GuideInspector", "Guide") {
+        addAndMakeVisible(form);
+        form.canvas.onPaint = [this](Graphics& g) { paintContent(g); };
         helpText = "Step-by-step guides. The charts for each step appear in the Transfer Function and Phase panels.";
         updateGuides();
         guideBox.setSelectedId(guide + 1, dontSendNotification);
-        guideBox.onChange = [this] { guide = guideBox.getSelectedId() - 1; step = 0; resetVerification(); result.setText({}, dontSendNotification); refresh(); };
-        for (auto* c : std::initializer_list<Component*>{&guideBox, &stepLabel, &titleLabel, &body, &result, &readout, &polarity, &prev, &act, &note, &pass, &fail, &micDiagram}) addChildComponent(c);
+        guideBox.onChange = [this] { const bool interrupted = frameCapturePending; guide = guideBox.getSelectedId() - 1; step = 0; resetVerification(); say(interrupted ? "Guide measurement interrupted by navigation. Repeat the measurement; no verdict recorded." : String()); refresh(); };
+        for (auto* c : std::initializer_list<Component*>{&guideBox, &stepLabel, &titleLabel, &body, &result, &readout, &polarity, &prev, &act, &note, &pass, &fail, &micDiagram}) form.canvas.addChildComponent(c);
         for (size_t i = 0; i < delayChoices.size(); ++i) {
             auto& row = delayChoices[i];
-            addChildComponent(row);
+            form.canvas.addChildComponent(row);
             row.setRadioGroupId(27);
             row.setClickingTogglesState(true);
             if (i == 3) row.setTooltip("Flip sub polarity and use the displayed delay. Verify the phase slopes across the crossover band.");
@@ -72,11 +75,13 @@ public:
     int priority() const override { return 60; }
     fohws::Json saveState() const override { auto j = fohws::Json::object(); j.set("guide", guide); j.set("step", step); j.set("verificationNote", verificationRecord.toStdString()); return j; }
     void loadState(const fohws::Json& j) override {
-        if (!j.isObject()) return; resetVerification();
+        if (!j.isObject()) return;
+        const bool interrupted = frameCapturePending; resetVerification();
         setGuide(j["guide"].asInt(guide), j["step"].asInt(0));
         if (step >= (int) kGuides[(size_t) guide].size() - 2) step = std::max(0, (int) kGuides[(size_t) guide].size() - 3);
         verificationRecord = String(j["verificationNote"].asString());
-        say(verificationRecord.isEmpty() ? String() : "Previous verification: " + verificationRecord);
+        say(interrupted ? "Guide measurement interrupted by workspace navigation. Repeat the measurement; no verdict recorded."
+            : verificationRecord.isEmpty() ? "Store a new before trace before Apply and Verify." : "Previous verification: " + verificationRecord);
         refresh(); }
     void setGuide(int g, int s) {
         int requested = jlimit(0, 4, g);
@@ -97,11 +102,27 @@ public:
     void modelChanged(int w) override {
         if (w & AppModel::Rig) { updateGuides(); refresh(); }
         if (w & AppModel::Theme) { restyle(); repaint(); }
-        if (w & AppModel::Capture) refresh();
+        if (w & (AppModel::Capture | AppModel::Settings | AppModel::Traces | AppModel::Levels)) {
+            if (frameCapturePending) checkOperationContext();
+            if (baselineValid && !frameCapturePending && (!model.findTrace("Guide before") || contextChanged())) {
+                baselineValid = verified = false; verificationRecord.clear();
+                step = (int) kGuides[(size_t) guide].size() - 3;
+                say("Stored reference missing, or reference delay, device, sample rate or routing changed. Store a new before trace.");
+            }
+            refresh();
+        }
     }
-    void visibilityChanged() override { buildOverlay(); model.notify(AppModel::Overlay); }
+    void visibilityChanged() override {
+        if (!isShowing() && frameCapturePending) {
+            ++frameGeneration; frameCapturePending = false; verified = false;
+            say("Guide measurement interrupted while hidden. Repeat the measurement; no verdict recorded.");
+            refresh();
+        }
+        buildOverlay(); model.notify(AppModel::Overlay);
+    }
+    void parentHierarchyChanged() override { visibilityChanged(); }
 
-    void paint(Graphics& g) override {
+    void paintContent(Graphics& g) {
         auto& steps = kGuides[(size_t) guide];
         for (size_t i = 0; i < steps.size() && i < rows.size(); ++i) { auto r = rows[i].toFloat(); bool done = (int) i < step, cur = (int) i == step;
             auto d = r.removeFromLeft(r.getHeight()).reduced(3);
@@ -121,6 +142,14 @@ public:
     void resized() override { refresh(); }
 
 private:
+    bool checkOperationContext() {
+        if (!model.engine.deviceFailed.load() && model.engine.state.load() == AudioEngine::Ready
+            && model.engine.captureEpoch.load() == operationEpoch && model.engine.sampleRate.load() == operationRate && !model.paused) return true;
+        ++frameGeneration; frameCapturePending = false; baselineValid = verified = false; verificationRecord.clear();
+        if (step >= (int) kGuides[(size_t) guide].size() - 3) step = (int) kGuides[(size_t) guide].size() - 3;
+        say("Input device, routing or sample rate interrupted the guide measurement. Check Setup and repeat; no verdict recorded.");
+        return false;
+    }
     int availableGuide(int requested) const {
         if (requested >= 3 && requested <= 4) return requested; // W4 tuning and W5 pre-doors apply to every rig
         for (auto id : foh::rigSteps(model.rigProfile))
@@ -135,19 +164,45 @@ private:
         }
         for (int i = 3; i < 5; ++i) guideBox.addItem(String("W") + String(i + 1) + ": " + kGuideNames[i], i + 1);
         int selected = availableGuide(guide);
-        if (selected != guide) { guide = selected; step = 0; result.setText({}, dontSendNotification); }
+        if (selected != guide) { resetVerification(); guide = selected; step = 0; result.setText({}, dontSendNotification); }
         guideBox.setSelectedId(guide + 1, dontSendNotification);
     }
     void refresh() {
         auto& steps = kGuides[(size_t) guide]; step = jlimit(0, (int) steps.size() - 1, step); auto& st = steps[(size_t) step];
-        auto c = getLocalBounds().reduced(pad, 8);
+        form.setBounds(getLocalBounds());
+        const int width = form.layoutWidth(260);
+        const bool verifying = st.act == 22;
+        const String bodyText = u8(st.body) + (verifying && guide == 1 ? "\nThe sum should rise in the crossover band rather than dip. Walk a few seats and listen." : String())
+            + (verifying && guide == 2 ? "\nCheck phase overlap through the seam and listen from mains-only to fill-only positions." : String())
+            + (st.act == 21 && suggestedChange.isNotEmpty() ? "\n" + suggestedChange : String());
+        auto textHeight = [width](const Label& label, const String& text) {
+            GlyphArrangement layout;
+            layout.addJustifiedText(label.getFont(), text, 0, label.getFont().getAscent(),
+                (float) (width - 2 * pad - 10), Justification::left);
+            return (int) std::ceil(layout.getBoundingBox(0, -1, true).getBottom()) + 8;
+        };
+        using Placement = MicPlacementDiagram::Placement;
+        const auto placement = st.chart == 3 ? Placement::None : guide == 0 && step > 0 ? Placement::OnAxis
+            : guide == 1 ? Placement::SubMainCrossover
+            : guide == 2 ? Placement::Seam : Placement::None;
+        if (st.chart == 3) say(updateSubChoices());
+        const int readoutH = jmax(24, textHeight(readout, readout.getText()));
+        const int polarityH = jmax(76, textHeight(polarity, polarity.getText()));
+        const int bodyH = textHeight(body, bodyText);
+        const int titleH = jmax(26, textHeight(titleLabel, u8(st.title)));
+        const int resultH = jmax(80, textHeight(result, result.getText()));
+        // Reserve the full wrapped text and every optional control before laying out.
+        const int height = 16 + 36 + (int) steps.size() * 22 + 10 + 16 + titleH + 6
+            + 44 + (verifying ? 100 : 0) + (placement != Placement::None ? 110 : 0) + bodyH + 6
+            + (st.chart == 3 ? readoutH + 112 + polarityH + 4 : 0) + 30 + resultH;
+        form.sizeCanvas(width, jmax(780, height));
+        auto c = form.canvas.getLocalBounds().reduced(pad, 8);
         guideBox.setBounds(c.removeFromTop(26)); c.removeFromTop(10);
         rows.clear(); for (size_t i = 0; i < steps.size(); ++i) rows.push_back(c.removeFromTop(22)); c.removeFromTop(10);
         stepLabel.setVisible(true); stepLabel.setText(("STEP " + String(step + 1) + " OF " + String((int) steps.size())), dontSendNotification); stepLabel.setBounds(c.removeFromTop(16));
-        titleLabel.setVisible(true); titleLabel.setText(u8(st.title), dontSendNotification); titleLabel.setBounds(c.removeFromTop(26)); c.removeFromTop(6);
+        titleLabel.setVisible(true); titleLabel.setText(u8(st.title), dontSendNotification); titleLabel.setBounds(c.removeFromTop(titleH)); c.removeFromTop(6);
         auto buttons = c.removeFromBottom(36); c.removeFromBottom(8);
         for (auto& row : delayChoices) row.setVisible(st.chart == 3);
-        const bool verifying = st.act == 22;
         note.setVisible(verifying); pass.setVisible(verifying); fail.setVisible(verifying);
         if (verifying) {
             auto verdict = c.removeFromBottom(28); c.removeFromBottom(6);
@@ -157,29 +212,17 @@ private:
         updateVerdictButtons();
         // W4/W5 currently contain only the shared frame and prescribe no mic move.
         // Retain the W1-W3 placement through Store / Apply / Verify.
-        using Placement = MicPlacementDiagram::Placement;
-        const auto placement = st.chart == 3 ? Placement::None : guide == 0 && step > 0 ? Placement::OnAxis
-            : guide == 1 ? Placement::SubMainCrossover
-            : guide == 2 ? Placement::Seam : Placement::None;
         micDiagram.setPlacement(placement);
         if (placement != Placement::None) {
             micDiagram.setBounds(c.removeFromTop(104)); c.removeFromTop(6);
         }
-        body.setVisible(true); body.setText(u8(st.body) + (verifying && guide == 1 ? "\nThe sum should rise in the crossover band rather than dip. Walk a few seats and listen." : String())
-            + (verifying && guide == 2 ? "\nCheck phase overlap through the seam and listen from mains-only to fill-only positions." : String()) + (st.act == 21 && suggestedChange.isNotEmpty() ? "\n" + suggestedChange : String()), dontSendNotification);
-        // Measure wrapped lines, including the explicit W5 symptom list line breaks.
-        GlyphArrangement bodyLayout;
-        bodyLayout.addJustifiedText(body.getFont(), body.getText(), 0, body.getFont().getAscent(),
-            (float) jmax(1, c.getWidth() - 10), Justification::left);
-        int bodyH = jmin(jmax(0, c.getHeight() - 80), (int) std::ceil(bodyLayout.getBoundingBox(0, -1, true).getBottom()) + 4);
-        if (st.chart == 3) bodyH = jmin(bodyH, 96);
+        body.setVisible(true); body.setText(bodyText, dontSendNotification);
         body.setBounds(c.removeFromTop(bodyH)); c.removeFromTop(6);
         bool ro = st.chart == 3; readout.setVisible(ro); polarity.setVisible(ro);
         if (ro) {
-            say(updateSubChoices());
-            readout.setBounds(c.removeFromTop(24));
+            readout.setBounds(c.removeFromTop(readoutH));
             for (auto& row : delayChoices) row.setBounds(c.removeFromTop(28));
-            polarity.setBounds(c.removeFromTop(76)); c.removeFromTop(4);
+            polarity.setBounds(c.removeFromTop(polarityH)); c.removeFromTop(4);
         }
         progress = c.removeFromBottom(26); c.removeFromBottom(4);
         result.setVisible(true); result.setBounds(c);
@@ -187,7 +230,7 @@ private:
         if (step > 0) { prev.setBounds(buttons.removeFromLeft(72)); buttons.removeFromLeft(8); }
         act.setBounds(buttons);
         act.setEnabled(!frameCapturePending && (!(st.act == 20 || st.act == 22) || !model.capture.active) && ((st.act != 21 && st.act != 22) || baselineValid));
-        buildOverlay(); model.notify(AppModel::Overlay); repaint();
+        buildOverlay(); model.notify(AppModel::Overlay); form.canvas.repaint();
     }
 
     void buildOverlay() {
@@ -261,14 +304,39 @@ private:
         return out;
     }
 
+    // Navigation retires all asynchronous guide work, including the earlier delay steps.
+    void guidedDelay(bool sub, std::function<void()> then) {
+        const int generation = ++frameGeneration;
+        operationEpoch = model.engine.captureEpoch.load(); operationRate = model.engine.sampleRate.load();
+        frameCapturePending = true; refresh();
+        SafePointer<GuidePanel> safe(this);
+        model.requestDelay(sub, [safe, generation, then = std::move(then)] {
+            if (!safe || safe->frameGeneration != generation) return;
+            if (!safe->checkOperationContext()) { safe->refresh(); return; }
+            safe->frameCapturePending = false; then(); safe->refresh();
+        });
+    }
+    void guidedCapture(const String& name, std::function<void(bool)> then) {
+        const int generation = ++frameGeneration;
+        operationEpoch = model.engine.captureEpoch.load(); operationRate = model.engine.sampleRate.load();
+        frameCapturePending = true; refresh();
+        SafePointer<GuidePanel> safe(this);
+        model.beginCapture(name, [safe, generation, then = std::move(then)](bool settled) {
+            if (!safe || safe->frameGeneration != generation) return;
+            if (!safe->checkOperationContext()) { safe->refresh(); return; }
+            safe->frameCapturePending = false; then(settled); safe->refresh();
+        });
+    }
+
     void action(int a) {
+        if (frameCapturePending) return;
         String out; SafePointer<GuidePanel> safe(this);
         switch (a) {
             case 1: if (model.requestWorkspace) model.requestWorkspace("setup"); return;
             case 2: model.engine.gen = AudioEngine::Pink; model.notify(AppModel::Settings);
                     out = "Pink noise on at " + String(model.engine.genGainDb.load(), 1) + " dBFS. Watch the signal meters."; next(); break;
             case 3: say("Finding the delay...");
-                    model.requestDelay(false, [safe] { if (!safe) return; auto& p = *safe; String o;
+                    guidedDelay(false, [safe] { if (!safe) return; auto& p = *safe; String o;
                         if (p.model.delayLocked()) { p.model.lockDelayFromLast(); o = "Locked reference delay " + String(consoleMs(p.model.lockedDelayMs), 2) + " ms. " + p.delayText(); p.next(); }
                         else o = "No lock. Is pink noise playing and are both inputs showing level?";
                         p.say(o); p.refresh(); });
@@ -276,15 +344,15 @@ private:
             case 4: next(); refresh(); if (model.requestWorkspace) model.requestWorkspace("alignment"); return;
 
             case 12: say("Finding the sub/mains delay (LF-weighted, 3 s window)...");
-                     model.requestDelay(true, [safe] { if (!safe) return; auto& p = *safe;
+                     guidedDelay(true, [safe] { if (!safe) return; auto& p = *safe;
                          if (!p.model.delayLocked()) { p.say("No valid delay result. Is pink noise playing, and only the mains on?"); return; }
                          p.model.lockDelayFromLast();
                          p.say("Locked delay " + String(consoleMs(p.model.lockedDelayMs), 2) + " ms. Averaging until the trace settles...");
-                         p.model.beginCapture("Main", [safe](bool settled) { if (!safe) return; auto& q = *safe;
+                         p.guidedCapture("Main", [safe](bool settled) { if (!safe) return; auto& q = *safe;
                              q.say("Stored 'Main' (ref delay " + String(consoleMs(q.model.lockedDelayMs), 2) + " ms)." + String(settled ? "" : u8(" \xe2\x96\xb2 Unsettled: the average did not settle within 10 s."))); q.next(); q.refresh(); }); });
                      return;
             case 7: say("Averaging the sub until the trace settles...");
-                    model.beginCapture("Sub", [safe](bool settled) { if (!safe) return; auto& q = *safe;
+                    guidedCapture("Sub", [safe](bool settled) { if (!safe) return; auto& q = *safe;
                         q.say("Stored 'Sub' (same locked delay " + String(consoleMs(q.model.lockedDelayMs), 2) + " ms)." + String(settled ? "" : u8(" \xe2\x96\xb2 Unsettled: the average did not settle within 10 s.")));
                         auto* m = q.model.findTrace("Main"); auto* s = q.model.findTrace("Sub"); if (m && s) q.xover = foh::acousticCrossover(m->tf, s->tf, 10.0);
                         q.selectedDelay = 0; q.delayChoices[0].setToggleState(true, dontSendNotification);
@@ -301,7 +369,7 @@ private:
                 next(); break;
             }
             case 10: say("Finding the fill arrival...");
-                model.requestDelay(false, [safe] { if (!safe) return; auto& p = *safe;
+                guidedDelay(false, [safe] { if (!safe) return; auto& p = *safe;
                     if (!p.model.delayLocked()) { p.say("No valid delay result. Is only the fill on?"); return; }
                     // findDelay works on the raw (uncompensated) reference, so arrivals are absolute
                     double fillMs = p.model.delay.arrivals[0].delayMs, diff = p.model.lockedDelayMs - fillMs; String o;
@@ -320,21 +388,51 @@ private:
     }
 
     // All capture completion and comparison work runs on the message thread.
+    bool contextChanged() const {
+        return model.engine.deviceFailed.load() || model.engine.state.load() != AudioEngine::Ready || model.paused
+            || model.engine.captureEpoch.load() != baselineEpoch || model.engine.sampleRate.load() != baselineRate
+            || model.refDelayMs != baselineDelayMs;
+    }
+    static bool validTrace(const foh::TFResult& t) {
+        const auto n = t.freq.size();
+        if (!n || t.magDb.size() != n || t.coherence.size() != n
+            || !std::isfinite(t.sampleRate) || t.sampleRate <= 0 || t.fftSize < 0
+            || (!t.phaseDeg.empty() && t.phaseDeg.size() != n) || (!t.H.empty() && t.H.size() != n)) return false;
+        for (double phase : t.phaseDeg) if (!std::isfinite(phase)) return false;
+        for (auto h : t.H) if (!std::isfinite(h.real()) || !std::isfinite(h.imag())) return false;
+        for (size_t i = 0; i < n; ++i)
+            if (!std::isfinite(t.freq[i]) || t.freq[i] < 0 || (i && t.freq[i] <= t.freq[i - 1])
+                || !std::isfinite(t.magDb[i]) || !std::isfinite(t.coherence[i])
+                || t.coherence[i] < 0 || t.coherence[i] > 1) return false;
+        return true;
+    }
     void resetVerification() {
-        ++frameGeneration; frameCapturePending = false; baselineValid = verified = false;
-        baseline = {}; after = {}; suggestedChange.clear(); verificationRecord.clear(); note.clear();
+        ++frameGeneration; frameCapturePending = false; baselineValid = verified = false; verificationRecord.clear();
+        baseline = {}; after = {}; suggestedChange.clear(); note.clear();
     }
     void updateVerdictButtons() {
-        const bool ready = verified && !frameCapturePending && note.getText().trim().isNotEmpty();
+        const bool ready = verified && baselineValid && !contextChanged() && model.findTrace("Guide before") && !frameCapturePending && note.getText().trim().isNotEmpty();
         pass.setEnabled(ready); fail.setEnabled(ready);
     }
     void recordVerdict(const String& verdict) {
-        if (!verified || frameCapturePending || note.getText().trim().isEmpty()) return;
+        if (!verified || !baselineValid || contextChanged() || !model.findTrace("Guide before") || frameCapturePending || note.getText().trim().isEmpty()) return;
         verificationRecord = verdict + ": " + note.getText().trim();
         say(verificationRecord);
     }
     void captureFrame(bool verify) {
-        if (model.capture.active || frameCapturePending || (verify && !baselineValid)) return;
+        if (model.capture.active || frameCapturePending) return;
+        if (verify && (!baselineValid || !model.findTrace("Guide before") || contextChanged())) {
+            baselineValid = verified = false; verificationRecord.clear(); step = (int) kGuides[(size_t) guide].size() - 3;
+            say("Stored reference missing, or reference delay, device, sample rate or routing changed. Store a new before trace."); refresh(); return;
+        }
+        if (model.paused || model.engine.deviceFailed.load() || model.engine.state.load() != AudioEngine::Ready) {
+            verified = false; say("Input device unavailable or measurement paused. Check Setup and repeat; no verdict recorded."); refresh(); return;
+        }
+        if (!verify) baselineValid = false;
+        const auto epoch = model.engine.captureEpoch.load();
+        const auto rate = model.engine.sampleRate.load();
+        const auto faults = model.engine.signalFaults.load();
+        operationEpoch = epoch; operationRate = rate;
         verified = false; verificationRecord.clear(); frameCapturePending = true;
         const int generation = ++frameGeneration;
         const int captureGuide = guide, captureStep = step;
@@ -345,13 +443,23 @@ private:
         model.notify(AppModel::Traces);
         say("Re-measuring until settled..."); refresh();
         SafePointer<GuidePanel> safe(this);
-        model.beginCapture(name, [safe, generation, captureGuide, captureStep, name, verify](bool settled) {
+        model.beginCapture(name, [safe, generation, captureGuide, captureStep, name, verify, epoch, rate, faults](bool settled) {
             if (!safe || safe->frameGeneration != generation) return;
             auto& p = *safe; p.frameCapturePending = false;
             if (p.guide != captureGuide || p.step != captureStep) { p.refresh(); return; }
+            if (p.model.engine.deviceFailed.load() || p.model.engine.state.load() != AudioEngine::Ready
+                || epoch != p.model.engine.captureEpoch.load() || rate != p.model.engine.sampleRate.load()
+                || p.model.paused || (verify && (p.contextChanged() || !p.model.findTrace("Guide before")))) {
+                p.baselineValid = p.verified = false; p.verificationRecord.clear(); p.step = (int) kGuides[(size_t) p.guide].size() - 3;
+                p.say("Reference delay or routing changed, or input device/sample rate interrupted. Store a new before trace and repeat Apply and Verify."); p.refresh(); return;
+            }
+            if (faults != p.model.engine.signalFaults.load()) {
+                p.say("Silence, clipping or invalid input during measurement. Check both inputs and repeat; no verdict recorded."); p.refresh(); return;
+            }
             auto* trace = p.model.findTrace(name.toRawUTF8());
             if (!settled || !trace || trace->tf.freq.empty()) { p.say("No settled measurement. Check signal and coherence, then repeat. No verdict recorded."); p.refresh(); return; }
-            if (!verify) { p.baseline = trace->tf; p.baselineDelayMs = trace->refDelayMs; p.baselineEpoch = p.model.engine.captureEpoch.load(); p.baselineValid = true; p.next(); p.say(p.guide == 4 ? "Before trace stored. Correct the DSP yourself if needed, or confirm it is unchanged." : "Before trace stored. Enter the change yourself in your DSP."); }
+            if (!verify && !validTrace(trace->tf)) { p.say("Invalid before trace. Check input and repeat; no verdict recorded."); p.refresh(); return; }
+            if (!verify) { p.baseline = trace->tf; p.baselineDelayMs = trace->refDelayMs; p.baselineEpoch = epoch; p.baselineRate = rate; p.baselineValid = true; p.next(); p.say(p.guide == 4 ? "Before trace stored. Correct the DSP yourself if needed, or confirm it is unchanged." : "Before trace stored. Enter the change yourself in your DSP."); }
             else {
                 if (trace->refDelayMs != p.baselineDelayMs || p.model.engine.captureEpoch.load() != p.baselineEpoch) {
                     p.baselineValid = false;
@@ -359,12 +467,18 @@ private:
                     p.say("Reference delay or routing changed. Store a new before trace and repeat Apply and Verify."); p.refresh(); return;
                 }
                 p.after = trace->tf;
+                if (p.baseline.freq != p.after.freq || p.baseline.fftSize != p.after.fftSize || p.baseline.sampleRate != p.after.sampleRate
+                    || !validTrace(p.baseline) || !validTrace(p.after)) {
+                    p.say("Frequency resolution mismatch or invalid trace. Store a new before trace and repeat; no verdict recorded.");
+                    p.baselineValid = false; p.step = (int) kGuides[(size_t) p.guide].size() - 3; p.refresh(); return;
+                }
                 double delta = 0; int bins = 0;
                 const auto& a = p.baseline; const auto& b = p.after;
                 const size_t n = std::min({a.freq.size(), b.freq.size(), a.magDb.size(), b.magDb.size(), a.coherence.size(), b.coherence.size()});
                 for (size_t i = 0; i < n; ++i)
                     if (a.freq[i] > 0 && a.freq[i] == b.freq[i] && a.coherence[i] >= 0.6 && a.coherence[i] <= 1 && b.coherence[i] >= 0.6 && b.coherence[i] <= 1
                         && std::isfinite(a.magDb[i]) && std::isfinite(b.magDb[i])) { delta += b.magDb[i] - a.magDb[i]; ++bins; }
+                if (!std::isfinite(delta)) bins = 0;
                 p.verified = bins > 0;
                 p.say(bins ? "Mean change: " + String(delta / bins, 2) + " dB across " + String(bins)
                     + " coherent bins. Compare overlays and listen; add a note, then Pass/Fail."
@@ -374,10 +488,13 @@ private:
         });
     }
 
+    ScrollableForm form;
     MicPlacementDiagram micDiagram;
     ComboBox guideBox; Label stepLabel, titleLabel, body, result, readout, polarity; TextButton prev {"Back"}, act {"Do it"};
     TextEditor note; TextButton pass {"Pass"}, fail {"Fail"};
     foh::TFResult baseline, after; String suggestedChange, verificationRecord;
+    double baselineRate = 48000;
+    double operationRate = 48000; uint64_t operationEpoch = 0;
     double baselineDelayMs = 0; uint64_t baselineEpoch = 0;
     bool baselineValid = false, verified = false, frameCapturePending = false;
     int frameGeneration = 0;

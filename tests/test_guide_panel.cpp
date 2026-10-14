@@ -1,7 +1,10 @@
 #include <catch2/catch_test_macros.hpp>
 #include "Panels.h"
 #include "Diagrams.h"
+#include "FloatingPanels.h"
+#include "WorkspaceView.h"
 #include <stdexcept>
+#include "ui_form_helpers.h"
 
 std::unique_ptr<Panel> makeGuidePanel(AppModel&);
 
@@ -29,7 +32,8 @@ void AppModel::clearLoopback() { throw std::logic_error("Unexpected interface ca
 void AppModel::clearSpl() { throw std::logic_error("Unexpected SPL calibration"); }
 foh::Json AppModel::splCalJson() const { return foh::Json::object(); }
 void AppModel::loadSplCalJson(const foh::Json&) {}
-void AppModel::requestDelay(bool, std::function<void()>) { throw std::logic_error("Unexpected delay request"); }
+static std::function<void()> guideDelay;
+void AppModel::requestDelay(bool, std::function<void()> then) { guideDelay = std::move(then); }
 void AppModel::lockDelayFromLast() { throw std::logic_error("Unexpected delay lock"); }
 static std::function<void(AppModel&, const juce::String&, std::function<void(bool)>)> guideCapture;
 void AppModel::beginCapture(const juce::String& name, std::function<void(bool)> then) {
@@ -49,13 +53,13 @@ fohws::Json findDelayStep() {
 }
 std::vector<juce::ToggleButton*> choices(Panel& panel) {
     std::vector<juce::ToggleButton*> rows;
-    for (int i = 0; i < panel.getNumChildComponents(); ++i)
-        if (auto* row = dynamic_cast<juce::ToggleButton*>(panel.getChildComponent(i))) rows.push_back(row);
+    for (int i = 0; i < formCanvas(panel).getNumChildComponents(); ++i)
+        if (auto* row = dynamic_cast<juce::ToggleButton*>(formCanvas(panel).getChildComponent(i))) rows.push_back(row);
     return rows;
 }
 bool labelContains(Panel& panel, const juce::String& text) {
-    for (int i = 0; i < panel.getNumChildComponents(); ++i)
-        if (auto* label = dynamic_cast<juce::Label*>(panel.getChildComponent(i)))
+    for (int i = 0; i < formCanvas(panel).getNumChildComponents(); ++i)
+        if (auto* label = dynamic_cast<juce::Label*>(formCanvas(panel).getChildComponent(i)))
             if (label->isVisible() && label->getText().contains(text)) return true;
     return false;
 }
@@ -98,13 +102,13 @@ TEST_CASE("W2 presents selectable 12.5 ms primary and 2.5/22.5 ms alternatives a
         for (size_t i = 0; i < rows.size(); ++i) {
             CHECK(rows[i]->isVisible()); CHECK(rows[i]->isEnabled());
             CHECK(rows[i]->getToggleState() == (i == selected));
-            CHECK(panel->getLocalBounds().contains(rows[i]->getBounds()));
+            CHECK(formCanvas(*panel).getLocalBounds().contains(rows[i]->getBounds()));
         }
         // Resizing must preserve the selected option.
         panel->setSize(260, 661 + (int) selected);
         juce::TextButton* use = nullptr;
-        for (int i = 0; i < panel->getNumChildComponents(); ++i)
-            if (auto* button = dynamic_cast<juce::TextButton*>(panel->getChildComponent(i)))
+        for (int i = 0; i < formCanvas(*panel).getNumChildComponents(); ++i)
+            if (auto* button = dynamic_cast<juce::TextButton*>(formCanvas(*panel).getChildComponent(i)))
                 if (button->getButtonText() == "Use this delay") use = button;
         REQUIRE(use != nullptr);
         use->onClick();
@@ -128,14 +132,14 @@ TEST_CASE("W2 disables delay choices without captured traces", "[app][guide]") {
 
 namespace {
 juce::TextButton& button(Panel& panel, const char* text) {
-    for (int i = 0; i < panel.getNumChildComponents(); ++i)
-        if (auto* b = dynamic_cast<juce::TextButton*>(panel.getChildComponent(i)))
+    for (int i = 0; i < formCanvas(panel).getNumChildComponents(); ++i)
+        if (auto* b = dynamic_cast<juce::TextButton*>(formCanvas(panel).getChildComponent(i)))
             if (b->getButtonText() == text) return *b;
     throw std::logic_error("Missing guide button");
 }
 juce::TextEditor& noteEditor(Panel& panel) {
-    for (int i = 0; i < panel.getNumChildComponents(); ++i)
-        if (auto* e = dynamic_cast<juce::TextEditor*>(panel.getChildComponent(i))) return *e;
+    for (int i = 0; i < formCanvas(panel).getNumChildComponents(); ++i)
+        if (auto* e = dynamic_cast<juce::TextEditor*>(formCanvas(panel).getChildComponent(i))) return *e;
     throw std::logic_error("Missing verification note");
 }
 struct CaptureStub {
@@ -218,6 +222,33 @@ TEST_CASE("Verify rejects reference-delay changes and stale completion after gui
     CHECK(panel->saveState()["step"].asInt() == 0);
 }
 
+TEST_CASE("Pending Store and Verify completions expire when a guide is destroyed", "[app][guide][lifetime]") {
+    juce::ScopedJuceInitialiser_GUI gui;
+    for (int guide = 0; guide < 5; ++guide) {
+        for (bool verify : {false, true}) {
+            AppModel model; CaptureStub capture;
+            auto panel = makeGuidePanel(model); panel->setSize(260, 780);
+            auto state = fohws::Json::object(); state.set("guide", guide); state.set("step", 100);
+            panel->loadState(state);
+            button(*panel, "Measure before change").onClick();
+            if (verify) {
+                capture.finish(model);
+                button(*panel, guide == 4 ? "DSP state confirmed" : "I entered the change").onClick();
+                button(*panel, "Re-measure to verify").onClick();
+            }
+            REQUIRE(capture.pending);
+            panel.reset();
+            CHECK_FALSE(model.overlayBuilder);
+            // A replacement guide must remain untouched by its predecessor's callback.
+            auto replacement = makeGuidePanel(model);
+            const auto replacementState = replacement->saveState().dump();
+            capture.finish(model);
+            CHECK(replacement->saveState().dump() == replacementState);
+            CHECK(model.engine.gen.load() == AudioEngine::Off);
+        }
+    }
+}
+
 TEST_CASE("Guide requires a settled baseline and rejects captures with no comparable coherent bins", "[app][guide]") {
     juce::ScopedJuceInitialiser_GUI gui;
     AppModel model; CaptureStub capture;
@@ -240,9 +271,9 @@ TEST_CASE("Guide requires a settled baseline and rejects captures with no compar
     noteEditor(*panel).setText("Cannot judge", false); noteEditor(*panel).onTextChange();
     CHECK_FALSE(button(*panel, "Pass").isEnabled());
     CHECK_FALSE(button(*panel, "Fail").isEnabled());
-    for (int i = 0; i < panel->getNumChildComponents(); ++i) {
-        auto* child = panel->getChildComponent(i);
-        if (child->isVisible()) CHECK(panel->getLocalBounds().contains(child->getBounds()));
+    for (int i = 0; i < formCanvas(*panel).getNumChildComponents(); ++i) {
+        auto* child = formCanvas(*panel).getChildComponent(i);
+        if (child->isVisible()) CHECK(formCanvas(*panel).getLocalBounds().contains(child->getBounds()));
     }
 }
 
@@ -266,9 +297,9 @@ TEST_CASE("W4 and W5 checklists advance manually without changing audio settings
         for (int step = 0; step < 3; ++step) {
             CAPTURE(step);
             CHECK(labelContains(*panel, instructions[guide - 3][step]));
-            for (int i = 0; i < panel->getNumChildComponents(); ++i) {
-                auto* child = panel->getChildComponent(i);
-                if (child->isVisible()) CHECK(panel->getLocalBounds().contains(child->getBounds()));
+            for (int i = 0; i < formCanvas(*panel).getNumChildComponents(); ++i) {
+                auto* child = formCanvas(*panel).getChildComponent(i);
+                if (child->isVisible()) CHECK(formCanvas(*panel).getLocalBounds().contains(child->getBounds()));
                 if (auto* label = dynamic_cast<juce::Label*>(child)) {
                     if (label->isVisible() && label->getText().length() > 150) {
                         juce::GlyphArrangement layout;
@@ -295,8 +326,8 @@ TEST_CASE("W4 and W5 checklists advance manually without changing audio settings
 
 namespace {
 MicPlacementDiagram& diagram(Panel& panel) {
-    for (int i = 0; i < panel.getNumChildComponents(); ++i)
-        if (auto* d = dynamic_cast<MicPlacementDiagram*>(panel.getChildComponent(i))) return *d;
+    for (int i = 0; i < formCanvas(panel).getNumChildComponents(); ++i)
+        if (auto* d = dynamic_cast<MicPlacementDiagram*>(formCanvas(panel).getChildComponent(i))) return *d;
     throw std::logic_error("Missing mic placement diagram");
 }
 }
@@ -318,7 +349,7 @@ TEST_CASE("Mic moves in W1-W3 show the appropriate vector diagram", "[app][guide
         for (int width : {260, 400}) {
             panel->setSize(width, panel->minSize().h);
             if (d.isVisible()) {
-                CHECK(panel->getLocalBounds().contains(d.getBounds()));
+                CHECK(formCanvas(*panel).getLocalBounds().contains(d.getBounds()));
                 CHECK(d.getWidth() > 0);
                 CHECK(d.getHeight() == 104);
                 CHECK(d.getDescription().contains("Mic"));
@@ -326,9 +357,9 @@ TEST_CASE("Mic moves in W1-W3 show the appropriate vector diagram", "[app][guide
                 auto image = d.createComponentSnapshot(d.getLocalBounds());
                 CHECK(image.isValid());
             }
-            for (int i = 0; i < panel->getNumChildComponents(); ++i) {
-                auto* child = panel->getChildComponent(i);
-                if (child->isVisible()) CHECK(panel->getLocalBounds().contains(child->getBounds()));
+            for (int i = 0; i < formCanvas(*panel).getNumChildComponents(); ++i) {
+                auto* child = formCanvas(*panel).getChildComponent(i);
+                if (child->isVisible()) CHECK(formCanvas(*panel).getLocalBounds().contains(child->getBounds()));
             }
         }
     }
@@ -351,9 +382,9 @@ TEST_CASE("Placement stays fixed through Store Apply and Verify", "[app][guide][
         auto checkDiagram = [&] {
             auto& d = diagram(*panel);
             CHECK(d.isVisible()); CHECK(d.getPlacement() == expected[guide]);
-            CHECK(panel->getLocalBounds().contains(d.getBounds()));
-            for (int i = 0; i < panel->getNumChildComponents(); ++i) {
-                auto* child = panel->getChildComponent(i);
+            CHECK(formCanvas(*panel).getLocalBounds().contains(d.getBounds()));
+            for (int i = 0; i < formCanvas(*panel).getNumChildComponents(); ++i) {
+                auto* child = formCanvas(*panel).getChildComponent(i);
                 if (child->isVisible() && child != &d) CHECK_FALSE(d.getBounds().intersects(child->getBounds()));
             }
         };
@@ -361,5 +392,344 @@ TEST_CASE("Placement stays fixed through Store Apply and Verify", "[app][guide][
         button(*panel, "Measure before change").onClick(); capture.finish(model); checkDiagram();
         button(*panel, "I entered the change").onClick(); checkDiagram();
         button(*panel, "Re-measure to verify").onClick(); capture.finish(model); checkDiagram();
+    }
+}
+
+TEST_CASE("All guide steps retain readable content under window and scale stress", "[app][guide][stress]") {
+    juce::ScopedJuceInitialiser_GUI gui;
+    AppModel model;
+    storeSyntheticPair(model);
+    auto panel = makeGuidePanel(model);
+    for (float scale : {1.f, 1.25f, 1.5f, 1.75f, 2.f}) {
+        panel->setTransform(juce::AffineTransform::scale(scale));
+        for (auto size : {juce::Point<int>(0, 0), {1, 1}, {120, 90}, {260, 660}, {4000, 3000}}) {
+            panel->setSize((int) (size.x / scale), (int) (size.y / scale));
+            for (int guide = 0; guide < 5; ++guide) {
+                auto state = fohws::Json::object(); state.set("guide", guide);
+                for (int step = 0; step < (guide == 0 ? 7 : 6); ++step) {
+                    CAPTURE(scale, size.x, size.y, guide, step);
+                    state.set("step", step); panel->loadState(state);
+                    auto& canvas = formCanvas(*panel);
+                    for (auto* child : canvas.getChildren()) {
+                        if (!child->isVisible()) continue;
+                        CHECK(child->getWidth() > 0); CHECK(child->getHeight() > 0);
+                        CHECK(canvas.getLocalBounds().contains(child->getBounds()));
+                        if (auto* label = dynamic_cast<juce::Label*>(child)) {
+                            juce::GlyphArrangement text;
+                            text.addJustifiedText(label->getFont(), label->getText(), 0, label->getFont().getAscent(),
+                                (float) juce::jmax(1, label->getWidth() - 10), juce::Justification::left);
+                            CHECK(text.getBoundingBox(0, -1, true).getHeight() <= label->getHeight());
+                        }
+                    }
+                    // Painting the canvas exercises guide chrome even when the host is empty.
+                    if (scale == 2.f && size.x == 120) CHECK(canvas.createComponentSnapshot(canvas.getLocalBounds()).isValid());
+                }
+            }
+        }
+    }
+}
+
+TEST_CASE("Guide destruction expires captures and queued actions on repeated reopen", "[app][guide][lifetime][stress]") {
+    juce::ScopedJuceInitialiser_GUI gui;
+    AppModel model; CaptureStub capture;
+    for (int i = 0; i < 30; ++i) {
+        auto panel = makeGuidePanel(model);
+        auto state = fohws::Json::object(); state.set("guide", i % 5); state.set("step", 100);
+        panel->loadState(state);
+        button(*panel, "Measure before change").onClick();
+        button(*panel, "Back").triggerClick();
+        panel.reset();
+        CHECK_FALSE(model.overlayBuilder);
+        REQUIRE(capture.pending);
+        capture.finish(model);
+        model.notify(AppModel::Capture | AppModel::Rig | AppModel::Theme);
+        juce::Timer::callPendingTimersSynchronously();
+        juce::MessageManager::getInstance()->runDispatchLoopUntil(5);
+    }
+    CHECK(capture.calls == 30);
+}
+
+TEST_CASE("Diagram painting handles zero tiny and very large bounds", "[app][diagrams][stress]") {
+    juce::ScopedJuceInitialiser_GUI gui;
+    MicPlacementDiagram diagram;
+    juce::Image image(juce::Image::ARGB, 512, 512, true);
+    for (auto placement : {MicPlacementDiagram::Placement::None, MicPlacementDiagram::Placement::OnAxis,
+                           MicPlacementDiagram::Placement::Seam, MicPlacementDiagram::Placement::SubMainCrossover}) {
+        diagram.setPlacement(placement);
+        for (auto size : {juce::Point<int>(0, 0), {0, 104}, {232, 0}, {1, 1}, {1, 3000}, {4000, 1}, {4000, 3000}}) {
+            diagram.setSize(size.x, size.y);
+            juce::Graphics graphics(image);
+            diagram.paint(graphics);
+        }
+    }
+    CHECK(image.isValid());
+}
+
+TEST_CASE("Floating guide recovers a removed display and releases its peer on repeated close", "[app][guide][workspace][stress]") {
+    juce::ScopedJuceInitialiser_GUI gui;
+    AppModel model;
+    const std::vector<fohws::DisplayInfo> connected {
+        {"main", {0, 25, 1024, 700}, true}, {"removed", {1024, 0, 2560, 1440}, false}
+    };
+    const int peers = juce::Desktop::getInstance().getNumComponents();
+    for (int i = 0; i < 20; ++i) {
+        auto panel = makeGuidePanel(model);
+        fohws::FloatingPanel state {"GuideInspector", {1200, 40, 1200, 1000}, "removed"};
+        CHECK(fohws::clampToDisplays(state, connected) == fohws::Rect{1200, 40, 1200, 1000});
+        CHECK(fohws::clampToDisplays(state, {connected.front()}) == fohws::Rect{0, 25, 1024, 700});
+        {
+            FloatingPanelWindow window(*panel, state);
+            window.setBounds(40, 40, 280, 240);
+            window.parentSizeChanged();
+            CHECK(window.getContentComponent() == panel.get());
+            auto& canvas = formCanvas(*panel);
+            CHECK(canvas.getHeight() >= 780);
+            for (auto* child : canvas.getChildren())
+                if (child->isVisible()) CHECK(canvas.getLocalBounds().contains(child->getBounds()));
+        }
+        CHECK(panel->getParentComponent() == nullptr);
+        panel.reset();
+        juce::MessageManager::getInstance()->runDispatchLoopUntil(5);
+        CHECK(juce::Desktop::getInstance().getNumComponents() == peers);
+    }
+}
+
+TEST_CASE("Verify controls stay reachable in small scaled guide windows", "[app][guide][stress]") {
+    juce::ScopedJuceInitialiser_GUI gui;
+    for (int guide = 0; guide < 5; ++guide) {
+        AppModel model; CaptureStub capture;
+        auto panel = makeGuidePanel(model);
+        auto state = fohws::Json::object(); state.set("guide", guide); state.set("step", 100);
+        panel->loadState(state);
+        button(*panel, "Measure before change").onClick(); capture.finish(model);
+        button(*panel, guide == 4 ? "DSP state confirmed" : "I entered the change").onClick();
+        for (float scale : {1.f, 1.5f, 2.f}) {
+            panel->setTransform(juce::AffineTransform::scale(scale));
+            for (auto size : {juce::Point<int>(1, 1), {120, 90}, {4000, 3000}}) {
+                panel->setSize((int) (size.x / scale), (int) (size.y / scale));
+                auto& canvas = formCanvas(*panel);
+                for (auto* child : canvas.getChildren()) {
+                    if (!child->isVisible()) continue;
+                    CHECK(child->getWidth() > 0); CHECK(child->getHeight() > 0);
+                    CHECK(canvas.getLocalBounds().contains(child->getBounds()));
+                }
+                CHECK(noteEditor(*panel).isVisible());
+                CHECK(button(*panel, "Pass").isVisible()); CHECK(button(*panel, "Fail").isVisible());
+                auto* viewport = dynamic_cast<juce::Viewport*>(canvas.getParentComponent()->getParentComponent());
+                REQUIRE(viewport != nullptr);
+                viewport->setViewPosition(4000, 4000);
+                if (viewport->getMaximumVisibleWidth() >= 40 && viewport->getMaximumVisibleHeight() >= 40)
+                    CHECK(viewport->getViewArea().intersects(button(*panel, "Re-measure to verify").getBounds()));
+            }
+        }
+    }
+}
+
+namespace {
+void prepareVerify(Panel& panel, AppModel& model, CaptureStub& capture) {
+    auto state = fohws::Json::object(); state.set("guide", 3); state.set("step", 100);
+    panel.loadState(state);
+    button(panel, "Measure before change").onClick(); capture.finish(model);
+    button(panel, "I entered the change").onClick();
+}
+void cannotPass(Panel& panel) {
+    noteEditor(panel).setText("Synthetic edge case", false); noteEditor(panel).onTextChange();
+    CHECK_FALSE(button(panel, "Pass").isEnabled());
+    button(panel, "Pass").onClick();
+    CHECK_FALSE(labelContains(panel, "PASS:"));
+}
+}
+
+TEST_CASE("Verify needs a stored reference even after deletion during capture", "[app][guide][edges]") {
+    juce::ScopedJuceInitialiser_GUI gui;
+    AppModel model; CaptureStub capture;
+    auto panel = makeGuidePanel(model); panel->setSize(260, 780);
+    SECTION("Restored Verify has no baseline") {
+        auto state = fohws::Json::object(); state.set("guide", 3); state.set("step", 100);
+        panel->loadState(state);
+        CHECK(labelContains(*panel, "Store a new before trace"));
+        CHECK(capture.calls == 0);
+        cannotPass(*panel);
+    }
+    SECTION("Before trace removed before Verify") {
+        prepareVerify(*panel, model, capture);
+        model.removeTrace(0);
+        CHECK(labelContains(*panel, "Stored reference missing"));
+        CHECK(labelContains(*panel, "Store a new before trace"));
+        cannotPass(*panel);
+    }
+    SECTION("Before trace removed while Verify is pending") {
+        prepareVerify(*panel, model, capture);
+        button(*panel, "Re-measure to verify").onClick();
+        model.removeTrace(0); capture.finish(model);
+        CHECK(labelContains(*panel, "Store a new before trace"));
+        cannotPass(*panel);
+    }
+    SECTION("Invalid Store result cannot enable Apply") {
+        auto state = fohws::Json::object(); state.set("guide", 3); state.set("step", 100); panel->loadState(state);
+        button(*panel, "Measure before change").onClick();
+        foh::TFResult malformed; malformed.freq = {100, 1000}; malformed.magDb = {0}; malformed.coherence = {1, 1};
+        REQUIRE(model.traces.store(capture.name.toStdString(), malformed, 0));
+        auto then = std::move(capture.pending); then(true);
+        CHECK(button(*panel, "Measure before change").isVisible());
+        CHECK(labelContains(*panel, "Invalid before trace"));
+        cannotPass(*panel);
+    }
+}
+
+TEST_CASE("Guide rejects input lifecycle changes before and during capture", "[app][guide][edges]") {
+    juce::ScopedJuceInitialiser_GUI gui;
+    for (int change = 0; change < 4; ++change) {
+        for (bool during : {false, true}) {
+            CAPTURE(change, during);
+            AppModel model; CaptureStub capture;
+            auto panel = makeGuidePanel(model); panel->setSize(260, 780);
+            prepareVerify(*panel, model, capture);
+            if (during) button(*panel, "Re-measure to verify").onClick();
+            if (change == 0) model.engine.audioDeviceStopped();
+            if (change == 1) model.engine.audioDeviceError("synthetic disconnect");
+            if (change == 2) model.engine.captureEpoch.fetch_add(1); // device/channel restart
+            if (change == 3) model.engine.sampleRate.store(96000); // even without an epoch update
+            if (during) capture.finish(model);
+            else button(*panel, "Re-measure to verify").onClick();
+            CHECK(labelContains(*panel, "Store a new before trace"));
+            CHECK(capture.calls == (during ? 2 : 1));
+            cannotPass(*panel);
+        }
+    }
+    SECTION("Device change during Store cannot become the baseline") {
+        AppModel model; CaptureStub capture;
+        auto panel = makeGuidePanel(model); panel->setSize(260, 780);
+        auto state = fohws::Json::object(); state.set("guide", 3); state.set("step", 100); panel->loadState(state);
+        button(*panel, "Measure before change").onClick();
+        model.engine.captureEpoch.fetch_add(1); capture.finish(model);
+        CHECK(labelContains(*panel, "Store a new before trace"));
+        CHECK(button(*panel, "Measure before change").isVisible());
+    }
+    SECTION("Device change retires the current recorded verdict") {
+        AppModel model; CaptureStub capture;
+        auto panel = makeGuidePanel(model); panel->setSize(260, 780);
+        prepareVerify(*panel, model, capture);
+        button(*panel, "Re-measure to verify").onClick(); capture.finish(model);
+        noteEditor(*panel).setText("Synthetic comparison", false); noteEditor(*panel).onTextChange();
+        button(*panel, "Pass").onClick(); REQUIRE(labelContains(*panel, "PASS:"));
+        model.engine.captureEpoch.fetch_add(1); model.notify(AppModel::Settings);
+        CHECK(panel->saveState()["verificationNote"].asString().empty());
+        cannotPass(*panel);
+    }
+}
+
+TEST_CASE("Verify rejects silence clipping and invalid raw samples even with a coherent result", "[app][guide][edges]") {
+    juce::ScopedJuceInitialiser_GUI gui;
+    const float bad[] {0, 1, -1, std::numeric_limits<float>::quiet_NaN(),
+        std::numeric_limits<float>::infinity(), std::numeric_limits<float>::denorm_min()};
+    for (float sample : bad) for (int channel : {0, 1}) {
+        CAPTURE(sample, channel);
+        AppModel model; CaptureStub capture;
+        auto panel = makeGuidePanel(model); panel->setSize(260, 780);
+        prepareVerify(*panel, model, capture);
+        button(*panel, "Re-measure to verify").onClick();
+        float mic[32], ref[32];
+        std::fill_n(mic, 32, 0.1f); std::fill_n(ref, 32, 0.1f);
+        std::fill_n(channel == 0 ? mic : ref, 32, sample);
+        const float* inputs[] {mic, ref};
+        model.engine.audioDeviceIOCallbackWithContext(inputs, 2, nullptr, 0, 32, {});
+        // Later healthy input and meter resets must not erase the fault.
+        std::fill_n(mic, 32, 0.1f); std::fill_n(ref, 32, 0.1f);
+        model.engine.audioDeviceIOCallbackWithContext(inputs, 2, nullptr, 0, 32, {});
+        model.engine.micPeak.exchange(0); model.engine.refPeak.exchange(0);
+        capture.finish(model);
+        CHECK(labelContains(*panel, "Silence, clipping or invalid input"));
+        cannotPass(*panel);
+        button(*panel, "Re-measure to verify").onClick(); capture.finish(model);
+        CHECK(labelContains(*panel, "Mean change:")); // fault belongs only to the prior capture
+    }
+}
+
+TEST_CASE("Verify rejects partial frequency grids malformed vectors and nonfinite traces", "[app][guide][edges]") {
+    juce::ScopedJuceInitialiser_GUI gui;
+    for (int edge = 0; edge < 8; ++edge) {
+        CAPTURE(edge);
+        AppModel model; CaptureStub capture;
+        auto panel = makeGuidePanel(model); panel->setSize(260, 780);
+        prepareVerify(*panel, model, capture);
+        button(*panel, "Re-measure to verify").onClick();
+        foh::TFResult tf; tf.freq = {100, 1000}; tf.magDb = {0, 0}; tf.coherence = {1, 1}; tf.phaseDeg = {0, 0};
+        if (edge == 0) tf.freq[1] = 2000; // one matching bin must not enable a verdict
+        if (edge == 1) { tf.freq.push_back(2000); tf.magDb.push_back(0); tf.coherence.push_back(1); tf.phaseDeg.push_back(0); }
+        if (edge == 2) tf.fftSize = 8192;
+        if (edge == 3) tf.sampleRate = 96000;
+        if (edge == 4) tf.magDb.pop_back();
+        if (edge == 5) tf.magDb[1] = std::numeric_limits<double>::quiet_NaN();
+        if (edge == 6) tf.phaseDeg[1] = std::numeric_limits<double>::infinity();
+        if (edge == 7) tf.coherence[1] = std::numeric_limits<double>::quiet_NaN();
+        REQUIRE(model.traces.store(capture.name.toStdString(), tf, 0));
+        auto then = std::move(capture.pending); then(true);
+        CHECK(labelContains(*panel, "Frequency resolution mismatch or invalid trace"));
+        cannotPass(*panel);
+    }
+}
+
+TEST_CASE("Workspace and Show presentation changes retire pending guide work", "[app][guide][edges]") {
+    juce::ScopedJuceInitialiser_GUI gui;
+    for (bool show : {false, true}) {
+        CAPTURE(show);
+        AppModel model; CaptureStub capture;
+        auto& registry = PanelRegistry::standard();
+        fohws::Workspace first, second;
+        first.root = fohws::LayoutNode::leaf("GuideInspector"); second.root = fohws::LayoutNode::leaf("RTA");
+        WorkspaceView view(model, registry); view.setSize(400, 900); view.setVisible(true); view.setWorkspace(&first);
+        auto* panel = view.panel("GuideInspector"); REQUIRE(panel);
+        prepareVerify(*panel, model, capture);
+        button(*panel, "Re-measure to verify").onClick();
+        // Switch repeatedly while retaining the old completion, including returning
+        // to the very same step. The generation must not become valid again.
+        for (int i = 0; i < 5; ++i) {
+            if (show) { view.setShowMode(true); view.setShowMode(false); }
+            else { view.setWorkspace(&second); view.setWorkspace(&first); }
+        }
+        capture.finish(model, 3);
+        if (show) view.setShowMode(false); else view.setWorkspace(&first);
+        CHECK_FALSE(labelContains(*panel, "Mean change:"));
+        cannotPass(*panel);
+        CHECK((labelContains(*panel, "interrupted") || labelContains(*panel, "Store a new before trace")));
+    }
+    SECTION("Delay callback cannot advance a different guide") {
+        AppModel model; auto panel = makeGuidePanel(model); panel->setSize(260, 780);
+        auto state = fohws::Json::object(); state.set("guide", 0); state.set("step", 2); panel->loadState(state);
+        button(*panel, "Find + lock delay").onClick(); REQUIRE(guideDelay);
+        state.set("guide", 4); state.set("step", 0); panel->loadState(state);
+        auto then = std::move(guideDelay); then(); // a live callback would try to lock the delay
+        CHECK(panel->saveState()["step"].asInt() == 0);
+        CHECK(labelContains(*panel, "interrupted"));
+    }
+    SECTION("Dropped delay completion after device restart releases the guide buttons") {
+        AppModel model; auto panel = makeGuidePanel(model); panel->setSize(260, 780);
+        auto state = fohws::Json::object(); state.set("guide", 0); state.set("step", 2); panel->loadState(state);
+        button(*panel, "Find + lock delay").onClick(); REQUIRE(guideDelay);
+        CHECK_FALSE(button(*panel, "Find + lock delay").isEnabled());
+        model.engine.audioDeviceStopped(); model.notify(AppModel::Settings | AppModel::Capture);
+        auto then = std::move(guideDelay); then();
+        CHECK(button(*panel, "Find + lock delay").isEnabled());
+        CHECK(panel->saveState()["step"].asInt() == 2);
+        CHECK(labelContains(*panel, "interrupted"));
+    }
+    SECTION("Queued delay completion checks device state before the next model notification") {
+        AppModel model; auto panel = makeGuidePanel(model); panel->setSize(260, 780);
+        auto state = fohws::Json::object(); state.set("guide", 0); state.set("step", 2); panel->loadState(state);
+        button(*panel, "Find + lock delay").onClick(); REQUIRE(guideDelay);
+        model.engine.audioDeviceError("synthetic disconnect");
+        model.delay.confidence = 1; model.delay.arrivals.push_back({48, 1, 0, 0, false});
+        auto then = std::move(guideDelay); then(); // must not invoke lockDelayFromLast
+        CHECK(panel->saveState()["step"].asInt() == 2);
+        CHECK(labelContains(*panel, "interrupted"));
+    }
+    SECTION("Destroyed guide ignores a queued capture completion") {
+        AppModel model; CaptureStub capture;
+        auto panel = makeGuidePanel(model); panel->setSize(260, 780);
+        prepareVerify(*panel, model, capture);
+        button(*panel, "Re-measure to verify").onClick(); panel.reset();
+        capture.finish(model);
+        CHECK_FALSE(model.overlay.active);
     }
 }
