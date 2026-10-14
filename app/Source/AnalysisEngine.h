@@ -2,6 +2,7 @@
 // audio thread -> RingBuffers -> [this thread: fohcore TF / RTA / delay finder] -> SnapshotPublisher -> UI
 // UI -> CommandQueue -> this thread. The UI never runs TF/RTA/delay processing itself.
 #pragma once
+#include <optional>
 #include <juce_core/juce_core.h>
 #include <mutex>
 #include <memory>
@@ -30,6 +31,11 @@ public:
     std::atomic<bool> paused { false };
 
 private:
+    // Tests may drive the same consumer pass without starting a worker thread.
+    friend class AnalysisEngineTestAccess;
+    bool inputFailed = false; // worker only: last observed device-failure state
+    bool processPendingAudio(std::vector<float>& mic, std::vector<float>& ref,
+                             const std::vector<float>& silence, uint64_t& epoch);
     void run() override;
     void rebuild(double fs);
     void handle(const foh::Command& c);
@@ -41,6 +47,7 @@ private:
     // The same fixed-size SPSC handoff as CommandQueue; no audio-thread producer.
     struct QueuedCommand { foh::Command command; uint64_t epoch; };
     foh::SpscQueue<QueuedCommand> commands;
+    std::optional<QueuedCommand> pendingCommand; // worker only: popped, not yet handled
     std::mutex calLock; std::shared_ptr<const foh::MicCal> pendingCal; juce::String pendingCalName; bool calDirty = false;
     std::shared_ptr<const foh::MicCal> cal; std::string calName;
 

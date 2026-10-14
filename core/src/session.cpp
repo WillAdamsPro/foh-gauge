@@ -97,6 +97,11 @@ bool saveSession(const Path& folder, const Session& s, std::string& error) {
         if (!s.workspace.isObject() || !s.measurement.isObject()) throw std::runtime_error("Invalid session metadata");
         if (!std::isfinite(s.sampleRate) || s.sampleRate < 8000 || s.sampleRate > 768000 || s.bufferSize <= 0) throw std::runtime_error("Invalid device settings");
         if (!s.micCalText.empty() && !parseMicCal(s.micCalText).ok()) throw std::runtime_error("Invalid session mic calibration");
+        if (s.splCal) {
+            if (!s.splCal->isObject()) throw std::runtime_error("Invalid SPL calibration");
+            for (const auto& entry : s.splCal->members())
+                if (!SplCal::fromJson(entry.second).calibrated) throw std::runtime_error("Invalid SPL calibration");
+        }
         for (const auto& t : s.captures) captureFromJson(captureJson(t));
         if (s.captures.size() > TraceStore::kMax) throw std::runtime_error("Too many captures");
         if (std::filesystem::exists(staging) || std::filesystem::is_symlink(staging) || std::filesystem::exists(backup) || std::filesystem::is_symlink(backup)) throw std::runtime_error("A session save recovery folder already exists");

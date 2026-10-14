@@ -166,6 +166,7 @@ private:
     int savedGenerator = 0; float savedGeneratorGain = -20;
     bool savedPaused = false;
     std::string levelInputKey; uint64_t levelInputEpoch = 0; double levelTimeMs = 0;
+    friend struct AppModelMeasurementTestAccess;
     void timerCallback() override;
     juce::ListenerList<Listener> listeners;
     int lastGeneratorMode = AudioEngine::Off;

@@ -104,3 +104,37 @@ TEST_CASE("Trace manager controls edit traces and display a +6.02 dB self sum", 
     CHECK(model.traces.count() == 0); CHECK(plots[0]->series.empty());
     CHECK_FALSE(editors[0]->isEnabled());
 }
+
+TEST_CASE("Damaged saved targets clear plot overlays and tolerance bands", "[app][files][target]") {
+    juce::ScopedJuceInitialiser_GUI initialise;
+    // The test build permits modal loops. Dismiss the expected error notices
+    // automatically so a rejected file cannot leave this regression waiting.
+    struct DismissErrors : juce::Timer {
+        DismissErrors() { startTimer(10); }
+        void timerCallback() override {
+            auto* modal = juce::ModalComponentManager::getInstance()->getModalComponent(0);
+            if (auto* alert = dynamic_cast<juce::AlertWindow*>(modal)) alert->exitModalState(0);
+        }
+    } dismissErrors;
+    AppModel model;
+    for (auto id : {"TransferFunction", "RTA"}) {
+        auto panel = PanelRegistry::standard().create(id, model); REQUIRE(panel);
+        panel->addToDesktop(juce::ComponentPeer::windowIsTemporary);
+        panel->setVisible(true);
+        auto state = foh::Json::object(); state.set("targetChoice", 4);
+        state.set("targetText", "20 0\n1000 1"); state.set("targetShown", true); state.set("targetBand", true);
+        panel->loadState(state);
+        auto plots = children<PlotComponent>(*panel); REQUIRE(plots.size() == 1);
+        REQUIRE_FALSE(plots[0]->toleranceBands.empty());
+        for (const auto* bad : {"", "20 0\n1000 1\n2000 2e", "20 0\n1000 nan"}) {
+            state.set("targetText", bad); panel->loadState(state);
+            CHECK(plots[0]->toleranceBands.empty());
+            CHECK_FALSE(panel->saveState()["targetShown"].asBool());
+            CHECK(panel->saveState()["targetChoice"].asInt() == 1);
+            CHECK_FALSE(panel->saveState().has("targetText"));
+            for (const auto& series : plots[0]->series) CHECK(series.label != "Imported target");
+            state.set("targetText", "20 0\n1000 1"); panel->loadState(state);
+            CHECK_FALSE(plots[0]->toleranceBands.empty());
+        }
+    }
+}
