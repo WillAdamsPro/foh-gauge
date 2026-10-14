@@ -1,4 +1,5 @@
 #include "Widgets.h"
+#include <cstring>
 using foh::RingBuffer;
 using namespace juce;
 
@@ -176,15 +177,25 @@ void AudioEngine::audioDeviceIOCallbackWithContext(const float* const* in, int n
         int m = std::min(4096, n - off);
         const float* mp = in[mc] + off;
         const float* rp = in[rc] + off;
-        micRing.push(mp, m); refRing.push(rp, m);
-        auto peakOf = [m](const float* data) {
+        bool faulty = false;
+        auto peakOf = [m, &faulty](const float* data) {
             float peak = 0;
-            for (int i = 0; i < m; ++i)
+            for (int i = 0; i < m; ++i) {
+                uint32_t bits;
+                std::memcpy(&bits, data + i, sizeof(bits));
+                const auto magnitude = bits & 0x7fffffffU;
+                // Inspect bits because the callback flushes subnormals to zero.
+                faulty |= magnitude >= 0x7f800000U || (magnitude > 0 && magnitude < 0x00800000U);
                 if (std::isfinite(data[i])) peak = std::max(peak, std::abs(data[i]));
+            }
+            faulty |= peak <= 1.0e-12f || peak >= 0.99f;
             return peak;
         };
         fetch_max(micPeak, peakOf(mp));
         fetch_max(refPeak, peakOf(rp));
+        if (faulty) signalFaults.fetch_add(1, std::memory_order_release);
+        // Publish quality before samples can produce a settled analysis snapshot.
+        micRing.push(mp, m); refRing.push(rp, m);
     }
 }
 
