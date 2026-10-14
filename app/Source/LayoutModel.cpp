@@ -194,7 +194,7 @@ void enforceMinSizes(LayoutNode& n, int width, int height, const std::function<S
 Rect clampToDisplays(FloatingPanel& fp, const std::vector<DisplayInfo>& displays, int minW, int minH) {
     Rect r = fp.bounds; if (displays.empty()) return r;
     const DisplayInfo* d = nullptr; for (auto& x : displays) if (x.id == fp.displayId) d = &x;
-    if (!d) { // display gone: move onto the main display, keep the offset from the window's own origin if it fits
+    if (!d) { // display gone: move onto the main display with an inset so the title bar is accessible
         const DisplayInfo* m = &displays.front(); for (auto& x : displays) if (x.isMain) m = &x;
         r.x = m->area.x + 40; r.y = m->area.y + 40; d = m; fp.displayId = m->id;
     }

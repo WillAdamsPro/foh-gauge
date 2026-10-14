@@ -70,15 +70,21 @@ void MainComponent::openFloatingWindows() {
     auto* w = view.workspace(); if (!w) return;
     for (auto& f : w->floating) { auto* p = view.panel(f.panel); if (!p) continue; view.releasePanel(f.panel, p);
         auto* win = floats.add(new FloatingPanelWindow(*p, f)); std::string id = f.panel;
-        win->onDock = [this, id] { MessageManager::callAsync([sp = SafePointer<MainComponent>(this), id] { if (sp) sp->dockPanel(id); }); };
-        win->onClose = [this, id] { MessageManager::callAsync([sp = SafePointer<MainComponent>(this), id] { if (sp) { // close = hide; Workspace > Show Panels brings it back
-            auto* w2 = sp->view.workspace(); if (!w2) return; for (int k = sp->floats.size(); --k >= 0;) if (&sp->floats[k]->panel == sp->view.panel(id, false)) sp->floats.remove(k);
-            w2->floating.erase(std::remove_if(w2->floating.begin(), w2->floating.end(), [&](auto& x) { return x.panel == id; }), w2->floating.end()); sp->updateSwitcher(); } }); };
+        auto window = SafePointer<FloatingPanelWindow>(win);
+        // Ignore queued actions if a workspace switch or reset has already destroyed the window.
+        win->onDock = [this, id, window] { MessageManager::callAsync([sp = SafePointer<MainComponent>(this), id, window] { if (sp && window) sp->dockPanel(id); }); };
+        win->onClose = [this, id, window] { MessageManager::callAsync([sp = SafePointer<MainComponent>(this), id, window] { if (sp && window) { // close = hide; Workspace > Show Panels brings it back
+            auto* w2 = sp->view.workspace(); if (!w2) return;
+            // Erasing from the state vector invalidates references held by every later window.
+            sp->closeFloatingWindows();
+            w2->floating.erase(std::remove_if(w2->floating.begin(), w2->floating.end(), [&](auto& x) { return x.panel == id; }), w2->floating.end());
+            sp->openFloatingWindows(); sp->updateSwitcher(); } }); };
         win->onChanged = [this] { updateSwitcher(); }; }
 }
 void MainComponent::closeFloatingWindows() { floats.clear(); }
 void MainComponent::floatPanel(const std::string& id) {
     auto* w = view.workspace(); auto* p = view.panel(id, false); if (!w || !p) return;
+    if (std::any_of(w->floating.begin(), w->floating.end(), [&](const auto& f) { return f.panel == id; })) return;
     auto screen = p->getScreenBounds().withHeight(jmax(p->getHeight() + foh::theme::ws::floatTitleBarHeight, foh::theme::ws::floatMinHeight)).translated(24, 24);
     fohws::FloatingPanel f; f.panel = id; f.bounds = { screen.getX(), screen.getY(), jmax(screen.getWidth(), foh::theme::ws::floatMinWidth), screen.getHeight() };
     f.displayId = displayIdFor(screen); f.returnNeighbour = fohws::removePanel(w->root, id);
@@ -117,8 +123,8 @@ void MainComponent::showWorkspaceMenu() {
         auto reload = [&s] { int c = s.current; s.closeFloatingWindows(); s.view.setWorkspace(&s.mgr.at(c)); s.openFloatingWindows(); s.updateSwitcher(); };
         switch (r) {
             case 1: s.view.storePanelStates(); s.mgr.save(s.current); s.updateSwitcher(); break;
-            case 3: s.mgr.revert(s.current); reload(); break;
-            case 4: s.mgr.resetToDefault(s.current); reload(); break;
+            case 3: s.closeFloatingWindows(); s.mgr.revert(s.current); reload(); break;
+            case 4: s.closeFloatingWindows(); s.mgr.resetToDefault(s.current); reload(); break;
             case 2: case 5: {
                 auto* aw = new AlertWindow(r == 2 ? "Save Workspace As" : "Rename Workspace", "Name:", MessageBoxIconType::NoIcon);
                 aw->addTextEditor("name", r == 2 ? String(s.mgr.at(s.current).name) + " copy" : String(s.mgr.at(s.current).name)); aw->addButton("OK", 1, KeyPress(KeyPress::returnKey)); aw->addButton("Cancel", 0, KeyPress(KeyPress::escapeKey));
@@ -141,7 +147,7 @@ bool MainComponent::keyPressed(const KeyPress& k) {
         return true;
     }
     if (m.isCommandDown() && !m.isAltDown() && code >= '1' && code <= '4') { selectWorkspace(code - '1'); return true; }
-    if (m.isCommandDown() && m.isAltDown() && code == '0') { if (current >= 0) { mgr.revert(current); closeFloatingWindows(); view.setWorkspace(&mgr.at(current)); openFloatingWindows(); updateSwitcher(); } return true; }
+    if (m.isCommandDown() && m.isAltDown() && code == '0') { if (current >= 0) { closeFloatingWindows(); mgr.revert(current); view.setWorkspace(&mgr.at(current)); openFloatingWindows(); updateSwitcher(); } return true; }
     if (m.isCommandDown() && m.isAltDown() && (code == 'I' || code == 'i')) { if (auto* w = view.workspace()) if (!w->root.contains("Inspector")) { fohws::addAsTab(w->root, "Inspector", view.focusedPanel()); view.rebuild(); updateSwitcher(); } return true; }
     if (m.isCommandDown() && !m.isAltDown() && (code == 'W' || code == 'w')) { if (!view.focusedPanel().empty()) view.closePanel(view.focusedPanel()); return true; }
     return false;
