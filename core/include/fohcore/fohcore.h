@@ -282,10 +282,15 @@ private:
 // than 26 dB below #1 on that envelope are dropped (PHAT artefacts).
 struct Arrival { double delaySamples; double delayMs; double distanceM; double relLevelDb; bool inverted = false; // inverted: correlation peak negative (polarity flip)
                  double weightedRelLevelDb = 0; }; // level on the timing (PHAT) correlation, for diagnostics
-// Two-spike rule (QA D4): flag <=> (#1 dB - #2 dB) <= 3 dB AND |t2 - t1| > 0.5 ms.
+// Two-spike rule (QA D4): flag <=> |level1 - level2| <= 3 dB AND |t2 - t1| > 0.5 ms.
 constexpr double kTwoSpikeWithinDb = 3.0, kTwoSpikeMinSeparationMs = 0.5;
 constexpr bool twoSpikeFlag(double level1Db, double level2Db, double dtMs) {
-    return (level1Db - level2Db) <= kTwoSpikeWithinDb && (dtMs < 0 ? -dtMs : dtMs) > kTwoSpikeMinSeparationMs;
+    // Range checks reject NaN and infinity while retaining C++17 constexpr use.
+    constexpr double limit = std::numeric_limits<double>::max();
+    return level1Db >= -limit && level1Db <= limit && level2Db >= -limit && level2Db <= limit
+        && dtMs >= -limit && dtMs <= limit
+        && (level1Db > level2Db ? level1Db - level2Db : level2Db - level1Db) <= kTwoSpikeWithinDb
+        && (dtMs < 0 ? -dtMs : dtMs) > kTwoSpikeMinSeparationMs;
 }
 struct DelayResult {
     std::vector<Arrival> arrivals; double confidence = 0; std::vector<double> impulse;
@@ -295,7 +300,7 @@ struct DelayResult {
     std::string error;              // empty on success; set for unusable input (too short, bad rate, silent, all-NaN)
     bool ok() const { return error.empty() && !arrivals.empty(); }
 };
-bool twoSpikeFlag(const std::vector<Arrival>& arrivals); // applies the rule to arrivals[0] vs arrivals[1]
+bool twoSpikeFlag(const std::vector<Arrival>& arrivals); // compares the primary with every secondary arrival
 // Paired samples require a shared sample clock, as for TransferFunction.
 // Cross-correlation of meas vs ref (meas = ref delayed). Returns top 3 peaks with
 // sub-sample (parabolic) interpolation. phat = GCC-PHAT weighting.
@@ -343,10 +348,11 @@ struct SweepResult {
 SweepResult deconvolveSweep(const std::vector<float>& reference,
                            const std::vector<float>& measurement, double sampleRate);
 
-// Direction of the strongest absolute impulse sample (first on ties).
+// Direction of the strongest absolute impulse sample after DC removal.
 // For an isolated box measured near-field against a loopback reference. This is
 // acoustic impulse direction, not proof of wiring polarity through filters/mic.
-// Empty, silent (peak <= 1e-12), or non-finite impulses are inconclusive.
+// Fewer than 3 samples, silence (peak <= 1e-12), non-finite samples, or
+// opposite directions within 3 dB are inconclusive.
 // No allocations, locks or I/O.
 enum class ImpulsePolarity { Unknown, Normal, Inverted };
 ImpulsePolarity polarityFromImpulse(const std::vector<double>& impulse);

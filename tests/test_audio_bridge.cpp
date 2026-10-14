@@ -1689,3 +1689,22 @@ TEST_CASE("Changing SPL calibration during active integration discards old expos
     CHECK_FALSE(model.splCal().calibrated);
     CHECK(model.splCal().level(feed(0.01).session[2]) == Catch::Approx(-40).margin(0.01));
 }
+
+TEST_CASE("Missing reference completes delay requests with an invalid snapshot", "[app][delay][edges]") {
+    AudioEngine engine;
+    AnalysisEngine analysis(engine);
+    analysis.start();
+    REQUIRE(analysis.send(foh::Command::resetAverages(1)));
+    REQUIRE(waitFor([&] { return analysis.latest().resetSeq == 1; }));
+    std::vector<float> mic(4096), ref(4096); mic[1000] = -0.5f;
+    capture(engine, mic.data(), ref.data(), int(mic.size()));
+    REQUIRE(waitFor([&] { return engine.micRing.available() == 0 && engine.refRing.available() == 0; }));
+    for (uint64_t id : {1u, 2u}) {
+        REQUIRE(analysis.send(foh::Command::findDelay(id == 2, id)));
+        REQUIRE(waitFor([&] { return analysis.latest().delaySeq == id; }));
+        const auto result = analysis.latest().delay;
+        REQUIRE_FALSE(result.ok()); REQUIRE(result.error == "reference is silent");
+        REQUIRE(result.arrivals.empty()); REQUIRE(result.confidence == 0);
+    }
+    analysis.stop();
+}
