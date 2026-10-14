@@ -4,7 +4,7 @@ juce_add_gui_app(FOHGauge
     BUNDLE_ID "com.willadams.fohgauge"
     MICROPHONE_PERMISSION_ENABLED TRUE
     MICROPHONE_PERMISSION_TEXT "FOH Gauge needs audio input to measure your sound system.")
-target_sources(FOHGauge PRIVATE Source/Main.cpp Source/MainComponent.cpp Source/AudioEngine.cpp Source/AnalysisEngine.cpp Source/Widgets.cpp Source/AppModel.cpp Source/LayoutModel.cpp Source/Panels.cpp Source/GuidePanel.cpp Source/WorkspaceView.cpp)
+target_sources(FOHGauge PRIVATE Source/Main.cpp Source/MainComponent.cpp Source/AudioEngine.cpp Source/AnalysisEngine.cpp Source/Widgets.cpp Source/AppModel.cpp Source/LayoutModel.cpp Source/Panels.cpp Source/GuidePanel.cpp Source/WorkspaceView.cpp Source/WorkspaceManager.cpp Source/FloatingPanels.cpp)
 juce_add_binary_data(FOHGaugeData SOURCES Resources/Fonts/Inter-Regular.ttf Resources/Fonts/Inter-SemiBold.ttf Resources/Fonts/Inter-Bold.ttf)
 set_target_properties(FOHGaugeData PROPERTIES POSITION_INDEPENDENT_CODE ON)
 target_compile_definitions(FOHGauge PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JUCE_APPLICATION_NAME_STRING="$<TARGET_PROPERTY:FOHGauge,JUCE_PRODUCT_NAME>" JUCE_APPLICATION_VERSION_STRING="$<TARGET_PROPERTY:FOHGauge,JUCE_VERSION>")

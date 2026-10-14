@@ -35,6 +35,7 @@ public:
     void applyTheme(); // re-read ColourIds from the current Theme
     juce::Typeface::Ptr getTypefaceForFont(const juce::Font&) override;
     void drawButtonBackground(juce::Graphics&, juce::Button&, const juce::Colour&, bool, bool) override;
+    void drawDocumentWindowTitleBar(juce::DocumentWindow&, juce::Graphics&, int w, int h, int titleSpaceX, int titleSpaceW, const juce::Image*, bool drawTitleTextOnLeft) override; // floating panel chrome (ws spec §5)
     static juce::Font font(float size, bool bold = false, bool semibold = false);
     static juce::Font numeric(float size, bool bold = true); // readouts: monospaced digits (no OpenType tnum in JUCE)
     static juce::Typeface::Ptr regular, semibold, bold;
@@ -88,6 +89,7 @@ public:
     juce::BigInteger disabled; // segments that cannot be picked (e.g. SPL not built yet)
     void setSelected(int i, bool notify = false) { if (i >= 0 && disabled[i]) return; if (i == sel) return; sel = i; repaint(); if (notify && onChange) onChange(sel); }
     int getSelected() const { return sel; }
+    void setLabels(juce::StringArray l) { if (l != labels) { labels = std::move(l); repaint(); } }
     void paint(juce::Graphics&) override;
     void mouseDown(const juce::MouseEvent& e) override { if (labels.isEmpty()) return; setSelected(juce::jlimit(0, labels.size() - 1, e.x * labels.size() / juce::jmax(1, getWidth())), true); }
 private:

@@ -1,7 +1,8 @@
 // MainComponent: window frame only. Toolbar (title, workspace switcher, status pills, Stop), sidebar
 // (workspace nav, appearance, UI scale) and the WorkspaceView that hosts the panels.
 #pragma once
-#include "WorkspaceView.h"
+#include "FloatingPanels.h"
+#include "WorkspaceManager.h"
 
 class MainComponent : public juce::Component, private juce::Timer, private juce::ChangeListener, private AppModel::Listener {
 public:
@@ -9,13 +10,20 @@ public:
     void paint(juce::Graphics&) override; void resized() override;
     void selectWorkspace(int index);
     void selectWorkspace(const std::string& id);
+    bool keyPressed(const juce::KeyPress&) override;
+    void floatPanel(const std::string& id);
+    void dockPanel(const std::string& id);
 protected:
     void timerCallback() override; void changeListenerCallback(juce::ChangeBroadcaster*) override; void modelChanged(int what) override;
     virtual void workspaceSelected() {}
     bool sidebarVisible() const { return getWidth() >= 1280; } // spec §7: sidebar collapses under 1280 px
     FohLookAndFeel lnf;
     AppModel model;
-    std::vector<fohws::Workspace> workspaces; int current = -1;
+    WorkspaceManager mgr; int current = -1;
+    juce::OwnedArray<FloatingPanelWindow> floats;
+    juce::TextButton wsMenuBtn;
+    void openFloatingWindows(); void closeFloatingWindows();
+    void showWorkspaceMenu(); void updateSwitcher(); void leaveWorkspace();
     WorkspaceView view { model, PanelRegistry::standard() };
     juce::Label toolbarTitle; SegmentedControl switcher {{"Setup", "Alignment", "Tuning", "RTA/Show"}};
     StatusPills status; juce::TextButton pauseBtn;
