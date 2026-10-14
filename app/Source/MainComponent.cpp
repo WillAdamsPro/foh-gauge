@@ -7,7 +7,7 @@ namespace D = foh::ui::dim;
 namespace T = foh::theme::type;
 
 MainComponent::MainComponent(juce::File workspaceFolder) : mgr(std::move(workspaceFolder)) {
-    if (auto* pf = model.settings.getUserSettings()) foh::theme::ThemeManager::get().setTheme(pf->getValue("appearance") == "sunlight" ? "apple-pro-sunlight" : "apple-pro-dark");
+    if (auto* pf = model.settings.getUserSettings()) foh::theme::ThemeManager::get().setTheme(pf->getValue("appearance", "pro-dark"));
     if (auto* t = std::getenv("FOH_THEME")) foh::theme::ThemeManager::get().setTheme(t); // dev aid
     setLookAndFeel(&lnf); LookAndFeel::setDefaultLookAndFeel(&lnf); lnf.applyTheme(); // default too, so floating panel windows get the ws chrome
     foh::theme::ThemeManager::get().addChangeListener(this); model.addListener(this);
@@ -18,19 +18,19 @@ MainComponent::MainComponent(juce::File workspaceFolder) : mgr(std::move(workspa
     contentCanvas.addAndMakeVisible(content);
     addChildComponent(microphoneNotice);
     microphoneNotice.setText("Microphone access is blocked. Enable it in System Settings.", dontSendNotification);
-    microphoneNotice.setFont(FohLookAndFeel::font(T::small));
+    microphoneNotice.setFont(FohLookAndFeel::font(T::body));
     addChildComponent(microphoneSettingsBtn);
     microphoneSettingsBtn.onClick = [] {
         URL("x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone").launchInDefaultBrowser();
     };
-    content.addAndMakeVisible(toolbarTitle); toolbarTitle.setFont(FohLookAndFeel::font(T::small + 1, true));
+    content.addAndMakeVisible(toolbarTitle); toolbarTitle.setFont(FohLookAndFeel::font(T::title, true));
     content.addAndMakeVisible(switcher); switcher.onChange = [this](int i) { selectWorkspace(i); };
     content.addAndMakeVisible(status);
     content.addChildComponent(outputOn);
     outputOn.setButtonText(u8("\xe2\x96\xb2 Output on"));
     outputOn.setTitle("Stop generator output");
     outputOn.onClick = [this] { model.stopGenerator(); timerCallback(); };
-    content.addChildComponent(audioNotice); audioNotice.setFont(FohLookAndFeel::font(T::small));
+    content.addChildComponent(audioNotice); audioNotice.setFont(FohLookAndFeel::font(T::body));
     content.addAndMakeVisible(expertBtn); expertBtn.setButtonText("Expert"); expertBtn.setClickingTogglesState(true);
     expertBtn.setToggleState(model.expertMode(), dontSendNotification);
     expertBtn.setTooltip("Reveal all charts and settings in every workspace; guides remain available");
@@ -258,8 +258,8 @@ bool MainComponent::keyPressed(const KeyPress& k) {
 
 // These settings and transforms run exclusively on the message thread.
 void MainComponent::setSunlightTheme(bool enabled) {
-    foh::theme::ThemeManager::get().setTheme(enabled ? "apple-pro-sunlight" : "apple-pro-dark");
-    if (auto* pf = model.settings.getUserSettings()) { pf->setValue("appearance", enabled ? "sunlight" : "dark"); pf->saveIfNeeded(); }
+    foh::theme::ThemeManager::get().setTheme(enabled ? "pro-sunlight" : "pro-dark");
+    if (auto* pf = model.settings.getUserSettings()) { pf->setValue("appearance", enabled ? "pro-sunlight" : "pro-dark"); pf->saveIfNeeded(); }
 }
 void MainComponent::setUiScale(int percent) {
     if (scaleBox.indexOfItemId(percent) < 0) return;
@@ -362,6 +362,8 @@ void MainComponent::layoutContent() {
 }
 
 void MainComponent::changeListenerCallback(ChangeBroadcaster*) {
+    lnf.refreshThemeFonts(*this);
+    for (auto* f : floats) lnf.refreshThemeFonts(*f);
     appearance.setSelected(foh::theme::ThemeManager::get().current().isLight ? 1 : 0); lnf.applyTheme(); makePrimary(pauseBtn);
     toolbarTitle.setColour(Label::textColourId, C::textPrimary());
     sendLookAndFeelChange(); model.notify(AppModel::Theme | AppModel::Snapshot | AppModel::Delay | AppModel::Traces);

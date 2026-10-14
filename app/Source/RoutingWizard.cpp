@@ -16,7 +16,7 @@ String endpoint(const StringArray& names, int index, const char* direction) {
 RoutingWizard::RoutingWizard(AudioEngine& e) : engine(e) {
     addAndMakeVisible(form);
     form.canvas.onPaint = [this](Graphics& g) { paintDiagram(g); };
-    title.setFont(FohLookAndFeel::font(20, true));
+    title.setFont(FohLookAndFeel::font(foh::theme::type::heading, false, true));
     explanation.setJustificationType(Justification::topLeft);
     for (auto* label : { &title, &explanation, &presetNotice, &testStatus }) form.canvas.addAndMakeVisible(label);
     form.canvas.addAndMakeVisible(channel);

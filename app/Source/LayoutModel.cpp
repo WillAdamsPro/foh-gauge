@@ -247,22 +247,21 @@ std::vector<Workspace> builtInPresets() {
     auto T = [](std::vector<std::string> ids) { return LayoutNode::tabs(std::move(ids), 0); };
     std::vector<Workspace> v;
     { Workspace w; w.id = "setup"; w.name = "Setup"; w.builtIn = true;
-      // spec: H[0.62 V[0.55 InputsAndDevices, 0.45 H[0.5 SignalMeters, 0.5 Calibration]], 0.38 V[0.60 LimitPreset, 0.40 Inspector]]
       // Generator is stacked as a tab with SignalMeters (the spec tree has no generator leaf).
       w.root = H({ {0.62, V({ {0.55, L("InputsAndDevices")}, {0.45, H({ {0.5, T({"SignalMeters", "Generator"})}, {0.5, L("Calibration")} })} })},
-                   {0.38, V({ {0.60, L("LimitPreset")}, {0.40, L("Inspector")} })} });
+                   {0.38, L("Inspector")} });
       v.push_back(w); }
     { Workspace w; w.id = "alignment"; w.name = "Alignment"; w.builtIn = true;
       w.root = H({ {0.74, V({ {0.58, T({"TransferFunction", "Impulse"})}, {0.27, L("Phase")}, {0.15, H({ {0.6, L("DelayFinder")}, {0.4, L("Coherence")} })} })},
                    {0.26, T({"GuideInspector", "Inspector"})} });
       v.push_back(w); }
     { Workspace w; w.id = "tuning"; w.name = "Tuning"; w.builtIn = true;
-      w.root = H({ {0.74, V({ {0.62, L("TransferFunction")}, {0.38, H({ {0.55, T({"RTA", "Phase"})}, {0.45, L("EQSuggestions")} })} })},
+      w.root = H({ {0.74, V({ {0.62, L("TransferFunction")}, {0.38, T({"RTA", "Phase"})} })},
                    {0.26, V({ {0.55, L("TraceList")}, {0.45, L("Inspector")} })} });
       v.push_back(w); }
     { Workspace w; w.id = "rta-show"; w.name = "RTA/Show"; w.builtIn = true;
-      w.root = H({ {0.70, V({ {0.65, T({"ShowMonitoring", "RTA"})}, {0.35, L("SPLHistory")} })},
-                   {0.30, V({ {0.45, L("SPLNumbers")}, {0.25, L("Dose")}, {0.30, T({"Inspector", "Events"})} })} });
+      w.root = H({ {0.70, T({"ShowMonitoring", "RTA"})},
+                   {0.30, V({ {0.60, L("SPLNumbers")}, {0.40, L("Inspector")} })} });
       v.push_back(w); }
     return v;
 }

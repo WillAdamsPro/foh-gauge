@@ -1,3 +1,7 @@
+option(FOH_SHOW_UNFINISHED "Expose unfinished panels in the Panels menu" OFF)
+add_library(foh_panel_options INTERFACE)
+target_compile_definitions(foh_panel_options INTERFACE FOH_SHOW_UNFINISHED=$<BOOL:${FOH_SHOW_UNFINISHED}>)
+
 option(FOH_ENABLE_ASIO "Enable Windows ASIO (requires a local Steinberg SDK)" OFF)
 set(FOH_ASIO_SDK_DIR "" CACHE PATH "Local ASIO SDK root containing common/asio.h")
 add_library(foh_audio_backends INTERFACE)
@@ -67,18 +71,18 @@ target_sources(FOHGauge PRIVATE ${foh_notices})
 set_source_files_properties(${foh_notices} PROPERTIES MACOSX_PACKAGE_LOCATION Resources)
 set_target_properties(FOHGaugeData PROPERTIES POSITION_INDEPENDENT_CODE ON)
 target_compile_definitions(FOHGauge PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JUCE_APPLICATION_NAME_STRING="$<TARGET_PROPERTY:FOHGauge,JUCE_PRODUCT_NAME>" JUCE_APPLICATION_VERSION_STRING="$<TARGET_PROPERTY:FOHGauge,JUCE_VERSION>")
-target_link_libraries(FOHGauge PRIVATE fohcore fohconsole foh_sanitizers foh_audio_backends FOHGaugeData juce::juce_audio_utils juce::juce_audio_devices juce::juce_gui_extra
+target_link_libraries(FOHGauge PRIVATE fohcore fohconsole foh_sanitizers foh_audio_backends foh_panel_options FOHGaugeData juce::juce_audio_utils juce::juce_audio_devices juce::juce_gui_extra
     PUBLIC juce::juce_recommended_config_flags juce::juce_recommended_warning_flags)
 if(FOH_TSAN)
     target_link_libraries(FOHGauge PRIVATE foh_sanitizers)
 endif()
 
 if(FOH_BUILD_TESTS)
-    add_executable(fohapp_tests ../tests/test_acknowledgements.cpp ../tests/test_console_window.cpp ../tests/test_audio_bridge.cpp ../tests/test_workspace_presets.cpp ../tests/test_workspace_restore.cpp ../tests/test_guide_panel.cpp ../tests/test_routing_wizard.cpp ../tests/test_app_lifetime.cpp ../tests/test_easy_setup.cpp ../tests/test_stored_traces.cpp ../tests/test_show_monitoring.cpp ../tests/test_signal_views.cpp ../tests/test_long_session.cpp ../tests/test_target_overlays.cpp
+    add_executable(fohapp_tests ../tests/test_theme_tokens.cpp ../tests/test_acknowledgements.cpp ../tests/test_console_window.cpp ../tests/test_audio_bridge.cpp ../tests/test_workspace_presets.cpp ../tests/test_workspace_restore.cpp ../tests/test_guide_panel.cpp ../tests/test_routing_wizard.cpp ../tests/test_app_lifetime.cpp ../tests/test_easy_setup.cpp ../tests/test_stored_traces.cpp ../tests/test_show_monitoring.cpp ../tests/test_signal_views.cpp ../tests/test_long_session.cpp ../tests/test_target_overlays.cpp
         Source/console/ConsoleWindow.cpp Source/AudioEngine.cpp Source/AnalysisEngine.cpp Source/GeneratorSafety.cpp Source/AppModelMeasurement.cpp Source/LayoutModel.cpp Source/WorkspaceManager.cpp Source/WorkspaceView.cpp Source/FloatingPanels.cpp Source/Widgets.cpp Source/GuidePanel.cpp Source/RoutingWizard.cpp Source/EasySetup.cpp Source/SetupPage.cpp Source/Panels.cpp Source/MainComponent.cpp Source/SessionFiles.cpp Source/Diagrams.cpp Source/SessionFiles.cpp)
     target_include_directories(fohapp_tests PRIVATE Source)
     target_compile_definitions(fohapp_tests PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JUCE_MODAL_LOOPS_PERMITTED=1)
-target_link_libraries(fohapp_tests PRIVATE fohcore fohconsole foh_sanitizers foh_audio_backends FOHGaugeData Catch2::Catch2WithMain juce::juce_audio_utils juce::juce_gui_extra
+target_link_libraries(fohapp_tests PRIVATE fohcore fohconsole foh_sanitizers foh_audio_backends foh_panel_options FOHGaugeData Catch2::Catch2WithMain juce::juce_audio_utils juce::juce_gui_extra
         juce::juce_recommended_config_flags)
     if(FOH_TSAN)
         target_link_libraries(fohapp_tests PRIVATE foh_sanitizers)
