@@ -1,5 +1,8 @@
 #include <catch2/catch_test_macros.hpp>
 #include "console/ConsoleWindow.h"
+#if JUCE_MAC
+#import <AppKit/AppKit.h>
+#endif
 TEST_CASE("Console text decodes UTF-8 punctuation without corrupting labels", "[app][console][regression]") {
     juce::ScopedJuceInitialiser_GUI initialise;
     foh::console::ConsolePanel panel;
@@ -33,4 +36,30 @@ TEST_CASE("Console window owns its panel and closes without connecting or writin
         CHECK(window.isVisible());
     }
     juce::MessageManager::getInstance()->runDispatchLoopUntil(20);
+}
+
+TEST_CASE("Console window visibility changes cannot leave native animations after teardown", "[app][console][lifetime][regression]") {
+    juce::ScopedJuceInitialiser_GUI initialise;
+    const auto peers = juce::Desktop::getInstance().getNumComponents();
+    for (int cycle = 0; cycle < 24; ++cycle) {
+        INFO("window lifetime " << cycle);
+        {
+            foh::console::ConsoleWindow window;
+            REQUIRE(window.getPeer() != nullptr);
+#if JUCE_MAC
+            NSWindow* native = [(NSView*) window.getPeer()->getNativeHandle() window];
+            REQUIRE(native != nil);
+            CHECK(native.animationBehavior == NSWindowAnimationBehaviorNone);
+#endif
+            window.closeButtonPressed();
+            CHECK_FALSE(window.isVisible());
+            window.setVisible(true);
+            CHECK(window.isVisible());
+            // Destroy immediately after reopening, before AppKit can complete
+            // an automatic animation. No connection or console write is made.
+        }
+        juce::MessageManager::getInstance()->runDispatchLoopUntil(20);
+        CHECK(juce::Desktop::getInstance().getNumComponents() == peers);
+    }
+    juce::MessageManager::getInstance()->runDispatchLoopUntil(250);
 }

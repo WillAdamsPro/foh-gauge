@@ -2,6 +2,9 @@
 #include <catch2/catch_test_macros.hpp>
 #include "MainComponent.h"
 #include <thread>
+#if JUCE_MAC
+#import <AppKit/AppKit.h>
+#endif
 
 namespace {
 struct TemporaryWorkspaces {
@@ -391,6 +394,34 @@ TEST_CASE("Session notices expire with their owner before and after asynchronous
         drainMessages();
         CHECK(juce::ModalComponentManager::getInstance()->getNumModalComponents() == 0);
     }
+}
+
+TEST_CASE("Session notice replacement and owner teardown cannot leave native animations", "[app][session][lifetime][regression]") {
+    juce::ScopedJuceInitialiser_GUI initialise;
+    TemporaryWorkspaces temporary;
+    const auto peers = juce::Desktop::getInstance().getNumComponents();
+    auto main = std::make_unique<TestMain>(temporary.folder);
+    for (int cycle = 0; cycle < 8; ++cycle) {
+        INFO("notice replacement " << cycle);
+        // A missing synthetic session creates a notice and closes its predecessor.
+        REQUIRE_FALSE(main->readSession(temporary.folder.getChildFile("Missing.fohsession")));
+        drainMessages();
+        auto* modals = juce::ModalComponentManager::getInstance();
+        REQUIRE(modals->getNumModalComponents() == 1);
+        auto* notice = dynamic_cast<juce::AlertWindow*>(modals->getModalComponent(0));
+        REQUIRE(notice != nullptr);
+        REQUIRE(notice->getPeer() != nullptr);
+#if JUCE_MAC
+        NSWindow* native = [(NSView*) notice->getPeer()->getNativeHandle() window];
+        REQUIRE(native != nil);
+        CHECK(native.animationBehavior == NSWindowAnimationBehaviorNone);
+#endif
+    }
+    main.reset();
+    drainMessages();
+    juce::MessageManager::getInstance()->runDispatchLoopUntil(250);
+    CHECK(juce::ModalComponentManager::getInstance()->getNumModalComponents() == 0);
+    CHECK(juce::Desktop::getInstance().getNumComponents() == peers);
 }
 
 TEST_CASE("Merged measurement panels repeatedly release listeners and pending UI work", "[app][lifetime][stress]") {

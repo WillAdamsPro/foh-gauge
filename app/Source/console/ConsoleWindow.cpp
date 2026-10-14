@@ -1,5 +1,8 @@
 #include "ConsoleWindow.h"
 #include <cstdlib>
+#if JUCE_MAC
+#import <AppKit/AppKit.h>
+#endif
 using namespace juce;
 namespace foh::console {
 ConsolePanel::Worker::Worker(String h) : Thread("Console control"), host(std::move(h)) { startThread(); }
@@ -118,6 +121,14 @@ void ConsoleWindow::closeButtonPressed() {
     setVisible(false);
 }
 ConsoleWindow::ConsoleWindow() : DocumentWindow("Console control", Colours::darkgrey, DocumentWindow::closeButton) {
-    setUsingNativeTitleBar(true); setContentOwned(new ConsolePanel, true); centreWithSize(getWidth(), getHeight()); setVisible(true);
+    setUsingNativeTitleBar(true); setContentOwned(new ConsolePanel, true); centreWithSize(getWidth(), getHeight());
+#if JUCE_MAC
+    // Closing and immediately reopening or destroying this window must not
+    // leave an AppKit animation using its deleted JUCE peer (macOS 26).
+    // Set this before the first show, as for FloatingPanelWindow.
+    if (auto* peer = getPeer())
+        [(NSView*) peer->getNativeHandle() window].animationBehavior = NSWindowAnimationBehaviorNone;
+#endif
+    setVisible(true);
 }
 }
