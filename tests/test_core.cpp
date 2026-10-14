@@ -1,3 +1,4 @@
+#include <array>
 #include <algorithm>
 #include <limits>
 #include <catch2/catch_test_macros.hpp>
