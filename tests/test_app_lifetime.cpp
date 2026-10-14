@@ -1,6 +1,7 @@
 #include <functional>
 #include <catch2/catch_test_macros.hpp>
 #include "MainComponent.h"
+#include "WindowBounds.h"
 #include <thread>
 #if JUCE_MAC
 #import <AppKit/AppKit.h>
@@ -17,6 +18,15 @@ public:
     explicit TestMain(const juce::File& folder) : MainComponent(folder) {}
     using MainComponent::saveWorkspaceAs;
     using MainComponent::setShowMode;
+    bool resetFromFloating() {
+        return MainComponent::keyPressed(juce::KeyPress('0', juce::ModifierKeys::commandModifier, 0), floats[0]);
+    }
+    juce::Viewport& viewport() { return contentViewport; }
+    juce::Component& canvas() { return contentCanvas; }
+    juce::Component& logicalContent() { return content; }
+    std::vector<juce::Component*> toolbarControls() {
+        return { &switcher, &wsMenuBtn, &expertBtn, &showModeBtn, &pauseBtn, &setupBtn, &splBtn };
+    }
     bool inShowMode() const { return showMode; }
     AppModel& appModel() { return model; }
     juce::TextButton& expertToggle() { return expertBtn; }
@@ -753,4 +763,91 @@ TEST_CASE("Session traces colours and delays survive a different live sample rat
         juce::Thread::sleep(5);
     }
     CHECK(delaySamples == 120);
+}
+
+TEST_CASE("Scaled workspace overflow stays reachable and reset restores the origin", "[app][scale][stress]") {
+    juce::ScopedJuceInitialiser_GUI initialise;
+    TemporaryWorkspaces temporary;
+    TestMain main(temporary.folder);
+    main.setShowMode(false);
+    main.showWorkspace();
+    main.selectWorkspace(1);
+    main.floatPanel("TransferFunction");
+    REQUIRE(main.floatingCount() == 1);
+    auto* floating = main.floating(0);
+    auto* panel = &floating->panel;
+    const auto floatingBounds = floating->getBounds();
+    for (bool show : {false, true}) {
+        main.setShowMode(show);
+        for (int scale : {100, 125, 150, 200}) {
+            for (auto size : {juce::Point<int>{640, 400}, {1512, 982}, {6000, 4000}, {80, 60}}) {
+                CAPTURE(show, scale, size.x, size.y);
+                main.setSize(size.x, size.y);
+                const auto bounds = main.getBounds();
+                main.setUiScale(scale);
+                CHECK(main.getBounds() == bounds);
+                for (auto* control : main.toolbarControls()) {
+                    CHECK(main.logicalContent().getLocalBounds().contains(control->getBounds()));
+                    // Scroll each control into view in physical canvas coordinates.
+                    auto r = main.canvas().getLocalArea(control, control->getLocalBounds());
+                    main.viewport().setViewPosition(r.getX(), r.getY());
+                    CHECK(main.viewport().getViewArea().intersects(r));
+                }
+                main.viewport().setViewPosition(100000, 100000);
+                CHECK(main.viewport().getViewPositionX() + main.viewport().getViewWidth() >= main.canvas().getWidth());
+                CHECK(main.viewport().getViewPositionY() + main.viewport().getViewHeight() >= main.canvas().getHeight());
+                if (show) REQUIRE(main.keyPressed(juce::KeyPress('0', juce::ModifierKeys::commandModifier, 0)));
+                else REQUIRE(main.resetFromFloating());
+                CHECK(main.uiScalePercent() == 100);
+                CHECK(main.viewport().getViewPosition() == juce::Point<int>{});
+                CHECK(main.inShowMode() == show);
+                if (!show) {
+                    REQUIRE(main.floatingCount() == 1);
+                    CHECK(main.floating(0) == floating);
+                    CHECK(&main.floating(0)->panel == panel);
+                    CHECK(main.floating(0)->getBounds() == floatingBounds);
+                }
+            }
+        }
+    }
+    main.setShowMode(false);
+    main.setSize(1512, 982);
+    main.setUiScale(200);
+    main.fitSavedScale();
+    CHECK(main.uiScalePercent() == 150);
+    main.setSize(640, 400);
+    main.setUiScale(200);
+    main.fitSavedScale();
+    CHECK(main.uiScalePercent() == 100);
+    main.setSize(1500, 900);
+    main.setUiScale(200);
+    main.setMicrophoneAccessBlocked(true);
+    main.fitSavedScale();
+    CHECK(main.uiScalePercent() == 125);
+    main.setMicrophoneAccessBlocked(false);
+    main.setUiScale(200);
+    main.fitSavedScale();
+    CHECK(main.uiScalePercent() == 150);
+    main.setSize(6000, 4000);
+    main.setUiScale(100);
+    CHECK_FALSE(main.viewport().getHorizontalScrollBar().isVisible());
+    CHECK_FALSE(main.viewport().getVerticalScrollBar().isVisible());
+}
+
+TEST_CASE("Window geometry clamps both size extremes after display resolution changes", "[app][scale][window]") {
+    const juce::Rectangle<int> large {-2560, -100, 2560, 1400};
+    const juce::Rectangle<int> small {100, 40, 320, 200};
+    for (auto area : {large, small, juce::Rectangle<int>{0, 25, 1512, 957}}) {
+        for (auto bounds : {juce::Rectangle<int>{-9000, -9000, 8000, 5000},
+                            juce::Rectangle<int>{9000, 9000, 1, 1}}) {
+            const auto clamped = fohui::clampWindowBounds(bounds, area, 640, 400);
+            CHECK(area.contains(clamped));
+            CHECK(clamped.getWidth() >= juce::jmin(640, area.getWidth()));
+            CHECK(clamped.getHeight() >= juce::jmin(400, area.getHeight()));
+            CHECK(fohui::clampWindowBounds(clamped, area, 640, 400) == clamped);
+            const auto shrunk = fohui::clampWindowBounds(clamped, small, 640, 400);
+            CHECK(shrunk == small);
+            CHECK(fohui::clampWindowBounds(shrunk, {}, 640, 400) == shrunk);
+        }
+    }
 }

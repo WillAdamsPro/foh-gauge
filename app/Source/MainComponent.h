@@ -49,6 +49,12 @@ protected:
     } content { *this };
     void paintContent(juce::Graphics&);
     void layoutContent();
+    // The viewport scrolls a pixel-sized canvas, never the transformed child:
+    // JUCE's scrollbar visibility calculation uses untransformed component bounds.
+    juce::Component contentCanvas;
+    juce::Viewport contentViewport;
+    static constexpr int minimumContentWidth = 1000;
+    static constexpr int minimumContentHeight = 600;
     int uiScale = 100;
     juce::File sessionFolder;
     std::unique_ptr<juce::FileChooser> sessionChooser;
