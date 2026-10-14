@@ -11,3 +11,13 @@ set_target_properties(FOHGaugeData PROPERTIES POSITION_INDEPENDENT_CODE ON)
 target_compile_definitions(FOHGauge PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JUCE_APPLICATION_NAME_STRING="$<TARGET_PROPERTY:FOHGauge,JUCE_PRODUCT_NAME>" JUCE_APPLICATION_VERSION_STRING="$<TARGET_PROPERTY:FOHGauge,JUCE_VERSION>")
 target_link_libraries(FOHGauge PRIVATE fohcore FOHGaugeData juce::juce_audio_utils juce::juce_audio_devices juce::juce_gui_extra
     PUBLIC juce::juce_recommended_config_flags juce::juce_recommended_warning_flags)
+
+if(FOH_BUILD_TESTS)
+    add_executable(fohapp_tests ../tests/test_audio_bridge.cpp Source/AudioEngine.cpp Source/AnalysisEngine.cpp)
+    target_include_directories(fohapp_tests PRIVATE Source)
+    target_compile_definitions(fohapp_tests PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
+    target_link_libraries(fohapp_tests PRIVATE fohcore Catch2::Catch2WithMain juce::juce_audio_utils juce::juce_gui_extra
+        juce::juce_recommended_config_flags)
+    include(Catch)
+    catch_discover_tests(fohapp_tests)
+endif()

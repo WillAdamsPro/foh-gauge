@@ -39,6 +39,6 @@ private:
     double fs = 0; int fftN = 16384;
     std::unique_ptr<foh::TransferFunction> tf; std::unique_ptr<foh::RTA> rta;
     int smoothing = 12, rtaFrac = 3, averages = 16; double blankThr = 0.6;
-    std::vector<float> histRef, histMic; int histPos = 0; // last 4 s for the delay finder
+    std::vector<float> histRef, histMic; int histPos = 0; // last 3 s, including the sub delay window
     foh::DelayResult delay; uint64_t delaySeq = 0; bool delayWasSub = false;
 };
