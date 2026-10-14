@@ -475,6 +475,48 @@ TEST_CASE("Device stop and rate/buffer restarts cancel playback and clear analys
     analysis.stop();
 }
 
+TEST_CASE("Device rebuild rejects queued capture commands but preserves settings", "[app][audio][delay]") {
+    AudioEngine engine; AnalysisEngine analysis(engine); SyntheticDevice device;
+    engine.audioDeviceAboutToStart(&device); analysis.start();
+    REQUIRE(waitFor([&] { return engine.analysisEpoch.load() == engine.captureEpoch.load(); }));
+    analysis.stop();
+    // Deterministically enqueue work using the old device's history and sample units.
+    REQUIRE(analysis.send(foh::Command::referenceDelay(240)));
+    REQUIRE(analysis.send(foh::Command::findDelay(true, 75)));
+    REQUIRE(analysis.send(foh::Command::resetAverages(75)));
+    REQUIRE(analysis.send(foh::Command::micPosition(0, 5)));
+    foh::Command sweep; sweep.type = foh::CommandType::MeasureSweep;
+    REQUIRE(analysis.send(sweep));
+    REQUIRE(analysis.send(foh::Command::averages(4)));
+    REQUIRE(analysis.send(foh::Command::rtaFraction(6)));
+    const auto oldEpoch = engine.captureEpoch.load();
+    engine.audioDeviceStopped(); device.rate = 96000; device.block = 64;
+    engine.audioDeviceAboutToStart(&device);
+    // A UI lock may arrive after the rebuild while carrying an old snapshot's samples.
+    REQUIRE(analysis.send(foh::Command::referenceDelay(480), oldEpoch));
+    analysis.start();
+    REQUIRE(waitFor([&] { return analysis.latest().inputEpoch == engine.captureEpoch.load(); }));
+    const auto snapshot = analysis.latest();
+    CHECK(snapshot.tf.sampleRate == 96000);
+    CHECK(snapshot.refDelaySamples == 0);
+    CHECK(snapshot.delaySeq == 0);
+    CHECK_FALSE(snapshot.delayWasSub);
+    CHECK(snapshot.resetSeq != 75);
+    CHECK(snapshot.positionCount == 0);
+    CHECK_FALSE(snapshot.sweepCapturing);
+    CHECK(engine.gen.load() == AudioEngine::Off);
+    CHECK(snapshot.rtaFraction == 6);
+    // Commands submitted before the worker acknowledges the new device must survive.
+    analysis.stop();
+    engine.audioDeviceStopped(); device.block = 1024;
+    engine.audioDeviceAboutToStart(&device);
+    REQUIRE(analysis.send(foh::Command::referenceDelay(96)));
+    REQUIRE(analysis.send(foh::Command::resetAverages(76)));
+    analysis.start();
+    REQUIRE(waitFor([&] { return analysis.latest().resetSeq == 76; }));
+    CHECK(analysis.latest().refDelayMs == Catch::Approx(1));
+}
+
 TEST_CASE("Reference rerouting and unavailable channels invalidate capture", "[app][audio]") {
     AudioEngine engine;
     float signal[64] {}; const float* inputs[] {signal, signal};
@@ -599,9 +641,11 @@ namespace {
 // restarts with I/O. The test thread acts only as the message-thread consumer.
 class ConcurrentCapture {
 public:
-    explicit ConcurrentCapture(AudioEngine& e) : engine(e), worker([this] { run(); }) {}
+    explicit ConcurrentCapture(AudioEngine& e, bool constantEnergy = false)
+        : engine(e), fixedEnergy(constantEnergy), worker([this] { run(); }) {}
     ~ConcurrentCapture() { done.store(true); worker.join(); }
     std::atomic<double> requestedRate{48000}, runningRate{0};
+    std::atomic<int> requestedBlock{1024}, runningBlock{0};
     std::atomic<bool> requestedRunning{true}, running{false};
     std::atomic<uint64_t> blocks{0}, allocations{0}, audibleBlocks{0}, silentBlocks{0};
     std::atomic<bool> finiteOutput{true};
@@ -613,7 +657,17 @@ private:
         float* outputs[] {left, right};
         foh::PinkNoise noise(43);
         noise.process(signal, 1024);
+        if (fixedEnergy) {
+            // Balanced synthetic broadband pairs: every supported block has
+            // zero DC and exactly -20 dBFS energy, independent of buffer length.
+            for (int i = 0; i < 1024; i += 2) {
+                signal[i] = signal[i] >= 0 ? 0.07071068f : -0.07071068f;
+                signal[i + 1] = -signal[i];
+            }
+        }
+        device.block = requestedBlock.load();
         engine.audioDeviceAboutToStart(&device);
+        runningBlock.store(device.block);
         runningRate.store(device.rate);
         running.store(true);
         while (!done.load()) {
@@ -627,10 +681,12 @@ private:
                 running.store(true);
             }
             const auto rate = requestedRate.load();
-            if (rate != device.rate) {
+            const auto block = requestedBlock.load();
+            if (rate != device.rate || block != device.block) {
                 engine.audioDeviceStopped();
-                device.rate = rate;
+                device.rate = rate; device.block = block;
                 engine.audioDeviceAboutToStart(&device);
+                runningBlock.store(block);
                 runningRate.store(rate);
             }
             // Exercise handoffs, not worker throughput: an instrumented Debug
@@ -639,11 +695,11 @@ private:
             // This pacing belongs only to the test producer, never the callback.
             if (engine.micRing.available() < 4096 && engine.refRing.available() < 4096) {
                 callbackAllocations = 0; auditAllocations = true;
-                engine.audioDeviceIOCallbackWithContext(inputs, 2, outputs, 2, 1024, {});
+                engine.audioDeviceIOCallbackWithContext(inputs, 2, outputs, 2, device.block, {});
                 auditAllocations = false;
                 allocations.fetch_add(uint64_t(callbackAllocations));
                 bool audible = false;
-                for (int i = 0; i < 1024; ++i) {
+                for (int i = 0; i < device.block; ++i) {
                     if (!std::isfinite(left[i]) || !std::isfinite(right[i])) finiteOutput.store(false);
                     audible |= left[i] != 0 || right[i] != 0;
                 }
@@ -656,6 +712,7 @@ private:
         engine.audioDeviceStopped();
     }
     AudioEngine& engine;
+    const bool fixedEnergy;
     std::atomic<bool> done{false};
     std::thread worker;
 };
@@ -678,6 +735,61 @@ TEST_CASE("Sample-rate changes overlap live analysis and snapshot reads", "[app]
         REQUIRE(snapshot.rtaDb.size() == snapshot.rtaBands.size());
         for (auto level : snapshot.rtaDb) REQUIRE(std::isfinite(level));
     }
+}
+
+TEST_CASE("Buffer and rate rebuilds clear live history while retaining stored traces and calibration", "[app][audio][concurrent][multipos][spl]") {
+    AudioEngine engine; AnalysisEngine analysis(engine);
+    analysis.start(); ConcurrentCapture producer(engine, true);
+    const auto cal = std::make_shared<const foh::MicCal>(foh::parseMicCal("20 2\n1000 2\n20000 2\n"));
+    REQUIRE(cal->ok()); analysis.setCal(cal, "Synthetic");
+    foh::TraceStore traces;
+    foh::SplCal spl; REQUIRE(spl.calibrate(-20, 94));
+    for (const auto config : {std::pair<double, int>{48000, 64}, {96000, 256}, {96000, 1024},
+                              {44100, 128}, {48000, 1024}}) {
+        REQUIRE(waitFor([&] { const auto& s = analysis.latest(); return s.tf.averages > 0 && s.micLevelValid && s.leq.valid && s.calApplied; }));
+        REQUIRE(analysis.send(foh::Command::micPosition(0, 2.5)));
+        REQUIRE(analysis.send(foh::Command::findDelay(false, 75)));
+        REQUIRE(waitFor([&] { return analysis.latest().positionCount == 1 && analysis.latest().delaySeq == 75; }));
+        const auto before = analysis.latest();
+        REQUIRE(before.delay.ok());
+        if (traces.count() == 0) REQUIRE(traces.store("Synthetic before", before.tf, before.refDelayMs));
+        const auto stored = traces.at(0);
+        producer.requestedRunning.store(false);
+        REQUIRE(waitFor([&] { const auto& s = analysis.latest(); return !producer.running.load()
+            && s.inputEpoch == engine.captureEpoch.load() && s.tf.averages == 0; }));
+        const auto cleared = analysis.latest();
+        CHECK(cleared.leq.seconds == 0); CHECK_FALSE(cleared.leq.valid);
+        CHECK_FALSE(cleared.micLevelValid); CHECK(cleared.positionMask == 0);
+        CHECK(cleared.positionCount == 0); CHECK(cleared.multiPosition.H.empty());
+        CHECK_FALSE(cleared.delay.ok()); CHECK(cleared.delaySeq == 0); CHECK_FALSE(cleared.delayWasSub);
+        CHECK(cleared.refDelaySamples == 0);
+        // A delay request while stopped must not recover the previous device's history.
+        REQUIRE(analysis.send(foh::Command::findDelay(true, 76)));
+        REQUIRE(waitFor([&] { return analysis.latest().delaySeq == 76; }));
+        CHECK_FALSE(analysis.latest().delay.ok());
+        producer.requestedRate.store(config.first); producer.requestedBlock.store(config.second);
+        producer.requestedRunning.store(true);
+        REQUIRE(waitFor([&] { const auto& s = analysis.latest(); return producer.runningRate.load() == config.first
+            && producer.runningBlock.load() == config.second && s.inputEpoch == engine.captureEpoch.load()
+            && s.tf.sampleRate == config.first && s.tf.averages > 0 && s.leq.valid && s.micLevelValid; }));
+        const auto after = analysis.latest();
+        CHECK(after.positionMask == 0); CHECK(after.delaySeq == 0); CHECK(after.calApplied);
+        // Rate/buffer changes must not add an SPL offset to the unweighted signal.
+        CHECK(after.leq.level[2] == Catch::Approx(before.leq.level[2]).margin(0.05));
+        CHECK(spl.level(after.leq.level[2]) == Catch::Approx(94).margin(0.05));
+        CHECK(traces.at(0).tf.H == stored.tf.H); CHECK(traces.at(0).tf.sampleRate == stored.tf.sampleRate);
+        CHECK(traces.at(0).refDelayMs == stored.refDelayMs);
+    }
+    CHECK(producer.allocations.load() == 0); CHECK(producer.finiteOutput.load());
+}
+
+TEST_CASE("A device epoch change invalidates the UI delay before its next timer tick", "[app][audio][delay]") {
+    juce::ScopedJuceInitialiser_GUI initialise;
+    AppModel model;
+    model.delay.confidence = 1; model.delay.arrivals.push_back({240, 5, 0, 0, false});
+    REQUIRE(model.delayLocked());
+    model.engine.audioDeviceStopped();
+    CHECK_FALSE(model.delayLocked());
 }
 
 TEST_CASE("Capture reset and pause commands overlap the analysis job", "[app][audio][concurrent]") {
