@@ -369,7 +369,7 @@ PanelRegistry& PanelRegistry::standard() {
         add("Inspector", "Inspector", [](AppModel& m) { return std::make_unique<InspectorPanel>(m); });
         add("GuideInspector", "Guide", [](AppModel& m) { return makeGuidePanel(m); });
         auto ph = [&add](std::string id, String title, String what) { add(id, title, [id, title, what](AppModel& m) { return std::make_unique<PlaceholderPanel>(m, id, title, what); }); };
-        ph("LimitPreset", "Limit Preset", "SPL limit preset (venue / regulation) for exposure monitoring.");
+        ph("LimitPreset", "Limit Preset", "SPL limit preset for exposure monitoring.");
         ph("EQSuggestions", "EQ Suggestions", "Suggested EQ moves from the transfer function, coherence-weighted.");
         ph("SPLHistory", "SPL History", "SPL over time with LAeq / LCeq traces.");
         ph("SPLNumbers", "SPL Numbers", "LAeq-15 / LCeq-15 / LAeq-1 readouts.");
