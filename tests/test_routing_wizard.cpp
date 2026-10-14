@@ -186,3 +186,80 @@ TEST_CASE("Routing navigation and hiding retire connection tests before re-entry
         CHECK(choice(wizard).getSelectedId() == 2);
     }
 }
+
+TEST_CASE("Wizard detection edges report failure and allow retry", "[app][routing][edges]") {
+    juce::ScopedJuceInitialiser_GUI gui;
+    AudioEngine engine; RoutingWizard wizard(engine);
+    wizard.setChannels({"In 1", "In 2"}, {"Out 1", "Out 2"});
+    wizard.setDevices("Unknown USB", "Unknown USB"); wizard.begin();
+    auto contains = [&](const char* text) {
+        for (auto* child : wizard.getChildren())
+            if (auto* label = dynamic_cast<juce::Label*>(child))
+                if (label->getText().contains(text)) return true;
+        return false;
+    };
+    auto waitFor = [&](const char* text) {
+        for (int i = 0; i < 50 && !contains(text); ++i) {
+            juce::Thread::sleep(10); juce::Timer::callPendingTimersSynchronously();
+        }
+        CHECK(contains(text)); CHECK(button(wizard, "Test connection").isEnabled());
+    };
+    CHECK(contains("Unknown interface: choose channels manually."));
+    std::vector<float> signal(48000, 0.1f), quiet(48000), clipped(48000, 1.f), low(48000, 0.0001f);
+    std::vector<float> a(48000), b(48000); float* outputs[] {a.data(), b.data()};
+    for (int edge = 0; edge < 8; ++edge) {
+        button(wizard, "Test connection").onClick();
+        const float* inputs[] {signal.data(), quiet.data()};
+        if (edge == 0) inputs[1] = signal.data();
+        if (edge == 1) inputs[0] = quiet.data();
+        if (edge == 2) inputs[0] = low.data();
+        if (edge == 3) inputs[0] = clipped.data();
+        if (edge < 4) engine.audioDeviceIOCallbackWithContext(inputs, 2, outputs, 2, 48000, {});
+        if (edge == 4) engine.audioDeviceStopped();
+        if (edge == 5) engine.audioDeviceError("Synthetic unplug");
+        if (edge == 6) wizard.setDevices("Replacement USB", "Replacement USB");
+        if (edge == 7) wizard.setChannels({"Replacement 1", "Replacement 2"}, {"Out 1", "Out 2"});
+        waitFor("Fail:");
+        engine.deviceFailed = false; engine.state = AudioEngine::Ready;
+        button(wizard, "Test connection").onClick();
+        const float* good[] {signal.data(), quiet.data()};
+        engine.audioDeviceIOCallbackWithContext(good, 2, outputs, 2, 48000, {});
+        waitFor("Pass:");
+    }
+}
+
+TEST_CASE("Back and Skip stop active routing playback and reject stale results", "[app][routing][edges]") {
+    juce::ScopedJuceInitialiser_GUI gui;
+    AudioEngine engine; RoutingWizard wizard(engine);
+    wizard.setChannels({"In 1", "In 2"}, {"Out 1", "Out 2"});
+    float signal[256], a[256] {}, b[256] {}; std::fill(std::begin(signal), std::end(signal), 0.1f);
+    const float* inputs[] {signal, signal}; float* outputs[] {a, b};
+    for (bool skip : {false, true}) {
+        wizard.begin(); button(wizard, "Next").onClick();
+        button(wizard, "Test connection").onClick();
+        engine.audioDeviceIOCallbackWithContext(inputs, 2, outputs, 2, 256, {});
+        button(wizard, skip ? "Skip" : "Back").onClick();
+        for (int i = 0; i < 200; ++i) {
+            engine.audioDeviceIOCallbackWithContext(inputs, 2, outputs, 2, 256, {});
+            CHECK(std::all_of(std::begin(a), std::end(a), [](float v) { return v == 0; }));
+            CHECK(std::all_of(std::begin(b), std::end(b), [](float v) { return v == 0; }));
+        }
+        CHECK(engine.connectionResult() == foh::ConnectionResult::pending);
+        wizard.begin(); CHECK(button(wizard, "Test connection").isEnabled());
+    }
+}
+
+TEST_CASE("Re-entering manual routing clamps stale engine channel choices", "[app][routing][edges]") {
+    juce::ScopedJuceInitialiser_GUI gui;
+    AudioEngine engine; RoutingWizard wizard(engine);
+    wizard.setChannels({"In 1", "In 2"}, {"Out 1", "Out 2"});
+    engine.micCh = 7; engine.refCh = 8; engine.outB = 9; engine.outA = 10;
+    wizard.begin();
+    for (int step = 0; step < 4; ++step) {
+        CHECK(choice(wizard).getSelectedId() == 1);
+        if (step < 3) button(wizard, "Next").onClick();
+    }
+    button(wizard, "Finish").onClick();
+    CHECK(engine.micCh == -1); CHECK(engine.refCh == -1);
+    CHECK(engine.outA == -1); CHECK(engine.outB == -1);
+}

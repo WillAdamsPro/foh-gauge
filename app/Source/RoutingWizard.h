@@ -29,7 +29,7 @@ private:
     juce::String inputDevice, outputDevice, suggestion;
     std::array<juce::String, 4> results;
     double testStartedMs = 0;
-    bool refreshing = false, active = false;
+    bool refreshing = false, active = false, channelsKnown = false;
     juce::Label title, explanation, presetNotice, testStatus;
     juce::ComboBox channel;
     juce::TextButton back { "Back" }, next { "Next" }, skip { "Skip" };

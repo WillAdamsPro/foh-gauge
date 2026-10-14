@@ -26,8 +26,8 @@ TEST_CASE("Connection detection distinguishes expected, swapped, and absent sign
     inputs[1] = leak; detector.reset(1); detector.process(inputs, 2, 4);
     CHECK(detector.result() == foh::ConnectionResult::swapInputs);
     inputs[1] = signal; detector.reset(1); detector.process(inputs, 2, 4);
-    CHECK(detector.result() == foh::ConnectionResult::pass);
-    inputs[0] = quiet; inputs[1] = nullptr;
+    CHECK(detector.result() == foh::ConnectionResult::ambiguous);
+    inputs[0] = quiet; inputs[1] = quiet;
     detector.reset(1); detector.process(inputs, 2, 4);
     CHECK(detector.result() == foh::ConnectionResult::noSignal);
     detector.reset(2); detector.process(inputs, 2, 4);
@@ -37,4 +37,30 @@ TEST_CASE("Connection detection distinguishes expected, swapped, and absent sign
     CHECK(detector.result() == foh::ConnectionResult::invalid);
     detector.reset(0); detector.process(nullptr, 65, 4);
     CHECK(detector.result() == foh::ConnectionResult::invalid);
+}
+
+TEST_CASE("Connection tests reject clipping, low levels and changing input counts", "[routing][edges]") {
+    foh::ConnectionDetector detector;
+    const float good[] {0.1f, -0.1f}, low[] {0.0001f, -0.0001f};
+    const float clipped[] {0.99f, -1.f}, quiet[] {0, 0};
+    const float* inputs[] {good, quiet};
+    for (const auto* bad : {low, clipped}) {
+        inputs[0] = bad; detector.reset(0); detector.process(inputs, 2, 2);
+        CHECK(detector.result() == (bad == low ? foh::ConnectionResult::noSignal : foh::ConnectionResult::clipped));
+        CHECK(std::string_view(foh::connectionHint(detector.result())).find("Fail:") == 0);
+    }
+    inputs[0] = good;
+    for (int count : {0, 1}) {
+        detector.reset(0); detector.process(inputs, 2, 2);
+        detector.process(inputs, count, 2);
+        detector.process(inputs, 2, 2);
+        CHECK(detector.result() == foh::ConnectionResult::invalid);
+    }
+    detector.reset(0); detector.process(inputs, 2, 2);
+    inputs[0] = nullptr; detector.process(inputs, 2, 2);
+    inputs[0] = good; detector.process(inputs, 2, 2);
+    CHECK(detector.result() == foh::ConnectionResult::invalid);
+    // Ordinary low-level crosstalk does not make an otherwise clear test fail.
+    inputs[1] = low; detector.reset(0); detector.process(inputs, 2, 2);
+    CHECK(detector.result() == foh::ConnectionResult::pass);
 }
