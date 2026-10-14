@@ -924,6 +924,10 @@ FOR ANY DAMAGES OR OTHER LIABILITY, WHETHER IN CONTRACT, TORT OR OTHERWISE,
 ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 
+## NumPy 1.26.4 — BSD-3-Clause (test-only; not shipped)
+
+Used only by the golden-signal generator in tools/ (installed from https://github.com/numpy/numpy/tree/v1.26.4). Not bundled with or linked into the app.
+
 ## Original assets
 
 The generated setup chime and built-in target curves are original work by

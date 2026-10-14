@@ -1,5 +1,4 @@
 """Synthetic repositories exercise the guard without downloading dependencies."""
-import hashlib
 import json
 from pathlib import Path
 import subprocess
@@ -28,13 +27,17 @@ class LicenseGuardTests(unittest.TestCase):
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(text)
 
+    def notices(self):
+        self.write('THIRD_PARTY_NOTICES.md', '\n'.join('## ' + e['name'] for e in self.entries))
+
     def save(self):
         self.write('compliance/third_party.json', json.dumps({'schema_version': 1, 'components': self.entries}))
+        self.notices()
 
     def approve_file(self, path, **extra):
         self.entries.append(dict(name=path, version='1', license='MIT',
                                  source='https://example.invalid/assets', ships=True,
-                                 files={path: hashlib.sha256((self.root / path).read_bytes()).hexdigest()}, **extra))
+                                 files=[path], **extra))
         self.save()
 
     def test_policy_files_are_not_vendored_license_markers(self):
@@ -50,6 +53,19 @@ class LicenseGuardTests(unittest.TestCase):
                                  dependency='JUCE', modules=['juce_opengl']))
         self.save()
         self.assertEqual(check(self.root), [])
+
+    def test_notices_must_exist_and_list_every_dependency(self):
+        (self.root / 'THIRD_PARTY_NOTICES.md').unlink()
+        self.assertIn('missing THIRD_PARTY_NOTICES.md', check(self.root))
+        self.write('THIRD_PARTY_NOTICES.md', '# notices')
+        self.assertTrue(any('Example: listed in third_party.json but missing' in e for e in check(self.root)))
+
+    def test_top_level_license_file_rejected(self):
+        for name in ('LICENSE', 'LICENSE.md', 'COPYING'):
+            with self.subTest(name=name):
+                self.write(name, 'x')
+                self.assertIn(f'top-level license file is not allowed: {name}', check(self.root))
+                (self.root / name).unlink()
 
     def test_seeded_repo_passes(self):
         self.assertEqual(check(self.root), [])
@@ -125,7 +141,7 @@ class LicenseGuardTests(unittest.TestCase):
         self.approve_file(path)
         self.assertEqual(check(self.root), [])
         self.write(path, '<svg>changed</svg>')
-        self.assertTrue(any('changed file' in e for e in check(self.root)))
+        self.assertEqual(check(self.root), [])  # content edits no longer need a checksum bump
         (self.root / path).unlink()
         self.assertTrue(any('missing inventory file' in e for e in check(self.root)))
 
