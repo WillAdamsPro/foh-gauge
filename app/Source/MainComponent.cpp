@@ -1,3 +1,4 @@
+#include <BinaryData.h>
 #include "MainComponent.h"
 using namespace juce;
 namespace C = foh::ui::col;
@@ -320,8 +321,12 @@ void MainComponent::paintContent(Graphics& g) {
     g.setColour(C::statusBarBackground()); g.fillRect(0, 0, content.getWidth(), top);
     g.setColour(C::border()); g.fillRect(0.f, top - D::hairline(), (float) content.getWidth(), D::hairline());
     if (nw) { g.setColour(C::navBackground()); g.fillRect(0, top, nw, content.getHeight() - top); g.setColour(C::border()); g.fillRect((float) nw - D::hairline(), (float) top, D::hairline(), (float) content.getHeight()); }
-    g.setFont(FohLookAndFeel::font(T::logo, true)); g.setColour(C::textPrimary()); g.drawText("FOH", 16, 0, 40, top, Justification::centredLeft);
-    g.setColour(C::accent()); g.drawText("Gauge", 52, 0, 80, top, Justification::centredLeft);
+    // Brand lockup (outlined wordmark, embedded PNG); light variant for the Sunlight theme.
+    static const Image dark = ImageCache::getFromMemory(BinaryData::toolbarlockupdark_png, BinaryData::toolbarlockupdark_pngSize);
+    static const Image light = ImageCache::getFromMemory(BinaryData::toolbarlockuplight_png, BinaryData::toolbarlockuplight_pngSize);
+    const auto& logo = isSunlightTheme() ? light : dark;
+    if (logo.isValid())
+        g.drawImageWithin(logo, 12, 4, 118, top - 8, RectanglePlacement::xLeft | RectanglePlacement::yMid | RectanglePlacement::onlyReduceInSize);
 }
 void MainComponent::layoutContent() {
     const int top = D::statusBarHeight(), nw = sidebarVisible() ? D::navWidth() : 0;

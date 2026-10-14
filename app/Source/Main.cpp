@@ -10,6 +10,11 @@ public:
     const juce::String getApplicationName() override { return "FOH Gauge"; }
     const juce::String getApplicationVersion() override { return "0.1.0"; }
     void initialise(const juce::String&) override {
+        // Brief launch splash (embedded PNG); click to dismiss early. Deletes itself.
+        auto splash = juce::ImageCache::getFromMemory(BinaryData::splash_png, BinaryData::splash_pngSize);
+        if (splash.isValid())
+            (new juce::SplashScreen("FOH Gauge", splash.rescaled(640, 400, juce::Graphics::highResamplingQuality), true))
+                ->deleteAfterDelay(juce::RelativeTime::seconds(1.5), true);
 #if JUCE_MAC
         // Resolve consent before MainComponent constructs AppModel and opens audio
         // devices. A known decision (including denial) must never request again.

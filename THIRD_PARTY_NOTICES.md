@@ -930,7 +930,8 @@ Used only by the golden-signal generator in tools/ (installed from https://githu
 
 ## Original assets
 
-The generated setup chime and built-in target curves are original work by
+The generated setup chime, built-in target curves and app artwork (icon, logos,
+splash) are original work by
 Will Adams, Copyright (c) 2026 Will Adams. All rights reserved.
 Synthetic test signals and fixtures are generated or authored within this project
 and are not shipped. No imported measurement or calibration data is included.
