@@ -24,6 +24,7 @@ TEST_CASE("Loopback sweep deconvolution recovers 4.80 ms", "[sweep]") {
     REQUIRE(result.response.ok());
     CHECK(result.response.arrivals.front().delayMs == Catch::Approx(4.8).margin(0.02));
     CHECK(result.response.arrivals.front().inverted == inverted);
+    CHECK(polarityFromImpulse(result.response.impulse) == (inverted ? ImpulsePolarity::Inverted : ImpulsePolarity::Normal));
     REQUIRE(result.etcDb.size() == result.response.impulse.size());
     CHECK(*std::max_element(result.etcDb.begin(), result.etcDb.end()) == Catch::Approx(0).margin(1e-10));
     for (auto db : result.etcDb) { REQUIRE(std::isfinite(db)); REQUIRE(db <= 0); }
@@ -64,4 +65,22 @@ TEST_CASE("Sweep ETC preserves synthetic reflection energy", "[sweep]") {
     REQUIRE(result.response.ok());
     CHECK(result.etcDb[direct] == Catch::Approx(0).margin(0.1));
     CHECK(result.etcDb[reflection] == Catch::Approx(-6.0206).margin(0.2));
+}
+
+TEST_CASE("Near-field impulse direction distinguishes normal and inverted boxes", "[polarity]") {
+    const double sign = GENERATE(1.0, -1.0);
+    std::vector<double> impulse(512, 0);
+    impulse[48] = 0.8 * sign; // direct arrival
+    impulse[49] = -0.3 * sign; // opposite ringing lobe
+    impulse[240] = -0.2 * sign; // later reflection
+    CHECK(polarityFromImpulse(impulse) == (sign > 0 ? ImpulsePolarity::Normal : ImpulsePolarity::Inverted));
+}
+
+TEST_CASE("Impulse polarity is inconclusive for unusable measurements", "[polarity]") {
+    CHECK(polarityFromImpulse({}) == ImpulsePolarity::Unknown);
+    CHECK(polarityFromImpulse({0, 0, 0}) == ImpulsePolarity::Unknown);
+    CHECK(polarityFromImpulse({1e-13, -1e-13}) == ImpulsePolarity::Unknown);
+    CHECK(polarityFromImpulse({1, std::numeric_limits<double>::quiet_NaN()}) == ImpulsePolarity::Unknown);
+    CHECK(polarityFromImpulse({std::numeric_limits<double>::infinity(), -1}) == ImpulsePolarity::Unknown);
+    CHECK(polarityFromImpulse({-0.5, 0.5}) == ImpulsePolarity::Inverted);
 }

@@ -360,3 +360,59 @@ TEST_CASE("Placement stays fixed through Store Apply and Verify", "[app][guide][
         button(*panel, "Re-measure to verify").onClick(); capture.finish(model); checkDiagram();
     }
 }
+
+TEST_CASE("W6 checks each isolated box with fresh sweep impulse direction", "[app][guide][polarity]") {
+    juce::ScopedJuceInitialiser_GUI gui;
+    AppModel model;
+    auto panel = makeGuidePanel(model); panel->setSize(260, panel->minSize().h);
+    auto state = fohws::Json::object(); state.set("guide", 5); state.set("step", 0);
+    panel->loadState(state);
+    REQUIRE(panel->saveState()["guide"].asInt() == 5);
+    CHECK(labelContains(*panel, "Mute every other box"));
+    button(*panel, "Box isolated").onClick();
+    // A previous box's result must never be accepted as a fresh measurement.
+    model.sweep.response.impulse = {0, 1, 0};
+    model.sweep.response.arrivals.push_back({});
+    auto measure = [&](const char* action, double sign) {
+        button(*panel, action).onClick();
+        CHECK_FALSE(button(*panel, action).isEnabled());
+        model.notify(AppModel::Snapshot);
+        CHECK_FALSE(button(*panel, action).isEnabled());
+        model.sweepCapturing = true; model.notify(AppModel::Snapshot);
+        model.sweepCapturing = false;
+        model.sweep.response.impulse = {0, sign, -0.2 * sign};
+        model.notify(AppModel::Snapshot);
+    };
+    measure("Measure box sweep", -1);
+    CHECK(labelContains(*panel, "INVERTED (negative)"));
+    REQUIRE(panel->saveState()["step"].asInt() == 2);
+    CHECK(model.engine.gen.load() == AudioEngine::Off);
+    button(*panel, "Polarity state confirmed").onClick();
+    CHECK_FALSE(button(*panel, "Pass").isEnabled());
+    measure("Verify box sweep", 1);
+    CHECK(labelContains(*panel, "Before: INVERTED (negative); now: NORMAL (positive)"));
+    noteEditor(*panel).setText("Matches expected driver direction", false);
+    noteEditor(*panel).onTextChange();
+    REQUIRE(button(*panel, "Pass").isEnabled());
+    button(*panel, "Pass").onClick();
+    CHECK(panel->saveState()["step"].asInt() == 4);
+    button(*panel, "Check next box").onClick();
+    CHECK(panel->saveState()["step"].asInt() == 0);
+    button(*panel, "Box isolated").onClick();
+    measure("Measure box sweep", 0);
+    CHECK(panel->saveState()["step"].asInt() == 1);
+    CHECK(labelContains(*panel, "Inconclusive impulse"));
+    CHECK(button(*panel, "Measure box sweep").isEnabled());
+    measure("Measure box sweep", 1);
+    CHECK(labelContains(*panel, "This box: NORMAL (positive)"));
+    button(*panel, "Polarity state confirmed").onClick();
+    model.engine.captureEpoch.fetch_add(1);
+    button(*panel, "Verify box sweep").onClick();
+    CHECK(panel->saveState()["step"].asInt() == 1);
+    CHECK(labelContains(*panel, "Audio routing changed"));
+    // Restoring Apply/Verify cannot reuse a non-persisted baseline.
+    state.set("step", 3); panel->loadState(state);
+    CHECK(panel->saveState()["step"].asInt() == 1);
+    for (auto* child : panel->getChildren())
+        if (child->isVisible()) CHECK(panel->getLocalBounds().contains(child->getBounds()));
+}

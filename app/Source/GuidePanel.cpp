@@ -36,8 +36,13 @@ static const std::vector<std::vector<Step>> kGuides = {
    kStore,
    {"Apply", "Confirm the DSP state", "For a correction, enter it yourself in your DSP. FOH Gauge never applies it. If all checks passed, leave the DSP unchanged. Keep the mic, routing, speaker configuration and reference delay fixed, then confirm below. If fault isolation takes longer than five minutes, resolve it before declaring ready.", "DSP state confirmed", 21, 6},
    kVerify },
+ { {"Isolate", "Check one box at a time", "Mute every other box. Place the mic near-field, close to and on-axis with the driver being checked, clear of the cone. Keep the loopback reference connected. Start at a low generator level and avoid clipping. Repeat for each box/driver with the same mic orientation.", "Box isolated", 23, 0},
+   {"Measure", "Measure impulse direction", "Run a log sweep and inspect the signed impulse in the Impulse panel; ETC shows energy and cannot show direction. Normal means a positive dominant impulse; inverted means negative. Compare like boxes/drivers with the same mic and routing. Filters and mic polarity affect direction; this is not sub-to-main alignment.", "Measure box sweep", 24, 0},
+   {"Apply", "Confirm this box's polarity", "If the direction differs from the expected response of a matching box/driver, investigate routing and enter any polarity correction yourself in the DSP. FOH Gauge never applies it. Otherwise leave it unchanged. Keep this box isolated and the mic fixed for Verify.", "Polarity state confirmed", 25, 0},
+   {"Verify", "Verify impulse direction", "Run a fresh sweep after confirming the DSP state. Check that the direction now matches the expected box/driver response. Record Pass or Fail with a note. An inconclusive result requires another measurement.", "Verify box sweep", 26, 0},
+   {"Next box", "Repeat for the next box", "Mute the checked box, select the next box/driver, and move the mic near-field to it. Repeat the same check for every box. Restore the intended speaker configuration when finished.", "Check next box", 27, 0} },
 };
-static const char* kGuideNames[] = {"Setup + reference delay", "Align sub to mains", "Align fills to mains", "Tuning", "Pre-doors check"};
+static const char* kGuideNames[] = {"Setup + reference delay", "Align sub to mains", "Align fills to mains", "Tuning", "Pre-doors check", "Per-box polarity"};
 class GuidePanel : public Panel {
 public:
     explicit GuidePanel(AppModel& m) : Panel(m, "GuideInspector", "Guide") {
@@ -74,12 +79,13 @@ public:
     void loadState(const fohws::Json& j) override {
         if (!j.isObject()) return; resetVerification();
         setGuide(j["guide"].asInt(guide), j["step"].asInt(0));
-        if (step >= (int) kGuides[(size_t) guide].size() - 2) step = std::max(0, (int) kGuides[(size_t) guide].size() - 3);
+        if (guide != 5 && step >= (int) kGuides[(size_t) guide].size() - 2) step = std::max(0, (int) kGuides[(size_t) guide].size() - 3);
+        if (guide == 5) step = std::min(step, 1); // A restored box always needs a fresh impulse.
         verificationRecord = String(j["verificationNote"].asString());
         say(verificationRecord.isEmpty() ? String() : "Previous verification: " + verificationRecord);
         refresh(); }
     void setGuide(int g, int s) {
-        int requested = jlimit(0, 4, g);
+        int requested = jlimit(0, 5, g);
         guide = availableGuide(requested);
         step = guide == requested ? jlimit(0, (int) kGuides[(size_t) guide].size() - 1, s) : 0;
         guideBox.setSelectedId(guide + 1, dontSendNotification); refresh();
@@ -98,6 +104,9 @@ public:
         if (w & AppModel::Rig) { updateGuides(); refresh(); }
         if (w & AppModel::Theme) { restyle(); repaint(); }
         if (w & AppModel::Capture) refresh();
+        if ((w & AppModel::Snapshot) && guide == 5) {
+            if (boxSweepPending) finishBoxSweep(); else refresh();
+        }
     }
     void visibilityChanged() override { buildOverlay(); model.notify(AppModel::Overlay); }
 
@@ -122,7 +131,7 @@ public:
 
 private:
     int availableGuide(int requested) const {
-        if (requested >= 3 && requested <= 4) return requested; // W4 tuning and W5 pre-doors apply to every rig
+        if (requested >= 3 && requested <= 5) return requested; // W4-W6 apply to every rig
         for (auto id : foh::rigSteps(model.rigProfile))
             if (static_cast<int>(id) == requested + 1) return requested;
         return 0;
@@ -133,7 +142,7 @@ private:
             int i = static_cast<int>(id) - 1;
             guideBox.addItem(String("W") + String(i + 1) + ": " + kGuideNames[i], i + 1);
         }
-        for (int i = 3; i < 5; ++i) guideBox.addItem(String("W") + String(i + 1) + ": " + kGuideNames[i], i + 1);
+        for (int i = 3; i < 6; ++i) guideBox.addItem(String("W") + String(i + 1) + ": " + kGuideNames[i], i + 1);
         int selected = availableGuide(guide);
         if (selected != guide) { guide = selected; step = 0; result.setText({}, dontSendNotification); }
         guideBox.setSelectedId(guide + 1, dontSendNotification);
@@ -147,7 +156,7 @@ private:
         titleLabel.setVisible(true); titleLabel.setText(u8(st.title), dontSendNotification); titleLabel.setBounds(c.removeFromTop(26)); c.removeFromTop(6);
         auto buttons = c.removeFromBottom(36); c.removeFromBottom(8);
         for (auto& row : delayChoices) row.setVisible(st.chart == 3);
-        const bool verifying = st.act == 22;
+        const bool verifying = st.act == 22 || st.act == 26;
         note.setVisible(verifying); pass.setVisible(verifying); fail.setVisible(verifying);
         if (verifying) {
             auto verdict = c.removeFromBottom(28); c.removeFromBottom(6);
@@ -183,10 +192,10 @@ private:
         }
         progress = c.removeFromBottom(26); c.removeFromBottom(4);
         result.setVisible(true); result.setBounds(c);
-        prev.setVisible(step > 0); prev.setEnabled(!frameCapturePending); act.setVisible(true); act.setButtonText(u8(st.action));
+        prev.setVisible(step > 0); prev.setEnabled(!frameCapturePending && !boxSweepPending); act.setVisible(true); act.setButtonText(u8(st.action));
         if (step > 0) { prev.setBounds(buttons.removeFromLeft(72)); buttons.removeFromLeft(8); }
         act.setBounds(buttons);
-        act.setEnabled(!frameCapturePending && (!(st.act == 20 || st.act == 22) || !model.capture.active) && ((st.act != 21 && st.act != 22) || baselineValid));
+        act.setEnabled(!((st.act == 25 || st.act == 26) && boxBaseline == foh::ImpulsePolarity::Unknown) && !boxSweepPending && !(guide == 5 && model.sweepCapturing) && !frameCapturePending && (!(st.act == 20 || st.act == 22) || !model.capture.active) && ((st.act != 21 && st.act != 22) || baselineValid));
         buildOverlay(); model.notify(AppModel::Overlay); repaint();
     }
 
@@ -311,6 +320,9 @@ private:
                     p.suggestedChange = o; p.next(); p.say(o); p.refresh(); });
                 return;
 
+            case 24: case 26: startBoxSweep(a == 26); return;
+            case 25: if (boxBaseline != foh::ImpulsePolarity::Unknown) { verified = false; note.clear(); next(); } break;
+            case 27: step = 0; resetVerification(); out = "Select and isolate the next box."; break;
             case 23: next(); break; // Manual checklist acknowledgement; no engine or DSP changes.
             case 20: case 22: captureFrame(a == 22); return;
             case 21: if (baselineValid) { verified = false; note.clear(); out = "DSP state confirmed by you. Re-measure, compare and record a verdict."; next(); } break;
@@ -319,8 +331,55 @@ private:
         say(out); refresh();
     }
 
+    // Observe a new capture's start and finish; never classify a previous box's sweep.
+    // Runs only on the message thread, using the existing analysis-worker sweep path.
+    void startBoxSweep(bool verify) {
+        if (boxSweepPending || model.sweepCapturing || (verify && boxBaseline == foh::ImpulsePolarity::Unknown)) return;
+        if (verify && boxSweepEpoch != model.engine.captureEpoch.load()) {
+            boxBaseline = foh::ImpulsePolarity::Unknown; step = 1;
+            say("Audio routing changed. Measure this box again before Apply and Verify."); refresh(); return;
+        }
+        verified = false; note.clear(); verificationRecord.clear();
+        boxSweepPending = true; boxSweepStarted = false; boxSweepVerify = verify;
+        boxSweepEpoch = model.engine.captureEpoch.load();
+        boxSweepStartMs = Time::getMillisecondCounterHiRes();
+        foh::Command command; command.type = foh::CommandType::MeasureSweep;
+        if (!model.analysis.send(command)) {
+            boxSweepPending = false; say("Measurement busy. Retry the box sweep."); refresh(); return;
+        }
+        say("Measuring this box's sweep... See the signed impulse in the Impulse panel."); refresh();
+    }
+    static String direction(foh::ImpulsePolarity p) {
+        return p == foh::ImpulsePolarity::Normal ? "NORMAL (positive)" : "INVERTED (negative)";
+    }
+    void finishBoxSweep() {
+        if (boxSweepEpoch != model.engine.captureEpoch.load()) {
+            boxSweepPending = false; boxBaseline = foh::ImpulsePolarity::Unknown; step = 1;
+            say("Audio routing changed. Measure this box again before Apply and Verify."); refresh(); return;
+        }
+        if (model.sweepCapturing) { boxSweepStarted = true; return; }
+        if (!boxSweepStarted) {
+            if (Time::getMillisecondCounterHiRes() - boxSweepStartMs < 12000) return;
+            boxSweepPending = false;
+            say("Sweep did not start. Open Audio Setup, resume measurement and retry."); refresh(); return;
+        }
+        boxSweepPending = false;
+        const auto p = model.sweep.response.ok() ? foh::polarityFromImpulse(model.sweep.response.impulse) : foh::ImpulsePolarity::Unknown;
+        if (p == foh::ImpulsePolarity::Unknown) {
+            say("Inconclusive impulse. Check signal, isolation and routing, then repeat. " + String(model.sweep.response.error)); refresh(); return;
+        }
+        if (!boxSweepVerify) {
+            boxBaseline = p; next(); say("This box: " + direction(p) + ". Compare with the expected matching box/driver response before changing DSP.");
+        } else {
+            verified = true;
+            say("Before: " + direction(boxBaseline) + "; now: " + direction(p) + ". Compare with the expected response, then record Pass/Fail with a note.");
+        }
+        refresh();
+    }
+
     // All capture completion and comparison work runs on the message thread.
     void resetVerification() {
+        boxSweepPending = boxSweepStarted = false; boxBaseline = foh::ImpulsePolarity::Unknown;
         ++frameGeneration; frameCapturePending = false; baselineValid = verified = false;
         baseline = {}; after = {}; suggestedChange.clear(); verificationRecord.clear(); note.clear();
     }
@@ -332,6 +391,7 @@ private:
         if (!verified || frameCapturePending || note.getText().trim().isEmpty()) return;
         verificationRecord = verdict + ": " + note.getText().trim();
         say(verificationRecord);
+        if (guide == 5) { next(); refresh(); }
     }
     void captureFrame(bool verify) {
         if (model.capture.active || frameCapturePending || (verify && !baselineValid)) return;
@@ -381,6 +441,10 @@ private:
     double baselineDelayMs = 0; uint64_t baselineEpoch = 0;
     bool baselineValid = false, verified = false, frameCapturePending = false;
     int frameGeneration = 0;
+    foh::ImpulsePolarity boxBaseline = foh::ImpulsePolarity::Unknown;
+    bool boxSweepPending = false, boxSweepStarted = false, boxSweepVerify = false;
+    uint64_t boxSweepEpoch = 0;
+    double boxSweepStartMs = 0;
     std::array<ToggleButton, 4> delayChoices;
     std::array<double, 4> choiceMs {};
     size_t selectedDelay = 0;
