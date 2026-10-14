@@ -11,6 +11,12 @@ void AnalysisEngine::cancelSweep(const char* reason) {
     sweepResult = {}; sweepResult.response.error = reason;
 }
 
+uint64_t AnalysisEngine::setLoopback(std::shared_ptr<const foh::LoopbackCorrection> c, uint64_t epoch) {
+    std::lock_guard<std::mutex> l(calLock);
+    pendingLoopback = std::move(c); pendingLoopbackEpoch = epoch; loopbackDirty = true;
+    return ++pendingLoopbackRevision;
+}
+
 void AnalysisEngine::rebuild(double newFs) {
     leq = std::make_unique<foh::LeqMeter>(newFs);
     positions = {}; positionMask = 0; positionAverage = {}; positionCount = 0;
@@ -74,9 +80,12 @@ void AnalysisEngine::handle(const foh::Command& c) {
 
 void AnalysisEngine::publish() {
     auto& s = publisher.beginWrite();
+    s.loopbackRevision = loopbackRevision;
+    s.rawTf = tf->result(0);
+    s.tf = tf->result(smoothing, loopbackEpoch == inputEpoch ? loopback.get() : nullptr);
+    s.smoothingFraction = smoothing;
     s.positionMask = positionMask; s.positionCount = positionCount;
     s.multiPosition = positionAverage;
-    s.tf = tf->result(smoothing); s.smoothingFraction = smoothing;
     if (cal) cal->apply(s.tf);
     s.rtaDb = rta->bandsDb(); s.rtaBands = rta->bands(); s.rtaFraction = rtaFrac;
     s.sweep = sweepResult; s.sweepCapturing = sweepCapturing;
@@ -115,6 +124,10 @@ void AnalysisEngine::run() {
             engine.analysisEpoch.store(epoch, std::memory_order_release);
         }
         { std::lock_guard<std::mutex> l(calLock);
+          if (loopbackDirty) {
+              loopback = pendingLoopback; loopbackEpoch = pendingLoopbackEpoch;
+              loopbackRevision = pendingLoopbackRevision; loopbackDirty = false;
+          }
           if (calDirty) { positions = {}; positionMask = 0; positionAverage = {}; positionCount = 0;
                           cal = pendingCal; calName = pendingCalName.toStdString(); calDirty = false;
                           rta->setCalibrationDb(cal ? cal->correctionDb(fftN / 2 + 1, fs / fftN) : std::vector<double>{}); } }

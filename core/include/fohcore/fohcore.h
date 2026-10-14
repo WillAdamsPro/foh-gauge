@@ -136,6 +136,19 @@ struct TFResult {
     bool isBlanked(size_t k) const { return k < blanked.size() && blanked[k] != 0; }
     TrafficLight light(size_t k) const { return k < coherence.size() ? classifyCoherence(coherence[k]) : TrafficLight::Red; }
 };
+// Stored complex Out->In response, including its latency. Worker/message thread only.
+// Corrections require the same FFT grid and sample rate; incompatible data is untouched.
+class Json;
+struct LoopbackCorrection {
+    double sampleRate = 0;
+    int fftSize = 0;
+    std::vector<cpx> H;
+    bool valid() const;
+    static LoopbackCorrection measure(const TFResult& raw);
+    bool apply(TFResult& tf) const;
+    Json toJson() const;
+    static LoopbackCorrection fromJson(const Json&);
+};
 // Worker/message-thread only. Delay is the remaining acoustic delay in the supplied
 // TF (subtract any reference compensation already applied). Positive delay is removed.
 struct MicPosition { TFResult tf; double delayMs = 0; };
@@ -233,7 +246,7 @@ public:
     void setCoherenceBlankThreshold(double t) { blankThr = !std::isfinite(t) || t < 0 ? 0 : (t > 1 ? 1 : t); }
     double coherenceBlankThreshold() const { return blankThr; }
     void reset();
-    TFResult result(int smoothingFraction = 0) const;
+    TFResult result(int smoothingFraction = 0, const LoopbackCorrection* loopback = nullptr) const;
     int frames() const { return frameCount; }
     void setConvergence(const ConvergenceSettings& c) { conv = c; resetConvergence(); }
     const ConvergenceSettings& convergenceSettings() const { return conv; }
@@ -433,6 +446,8 @@ private:
 struct AnalysisSnapshot {
     uint64_t seq = 0;           // increments on every publish
     TFResult tf;                // smoothed + blanked TF
+    TFResult rawTf;             // uncorrected, unsmoothed; loopback capture only
+    uint64_t loopbackRevision = 0; // last stored-correction update consumed by analysis
     TFResult multiPosition;
     int positionCount = 0;
     uint8_t positionMask = 0;
