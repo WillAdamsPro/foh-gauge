@@ -28,7 +28,7 @@ class GuidePanel : public Panel {
 public:
     explicit GuidePanel(AppModel& m) : Panel(m, "GuideInspector", "Guide") {
         helpText = "Step-by-step guides. The charts for each step appear in the Transfer Function and Phase panels.";
-        for (int i = 0; i < 3; ++i) guideBox.addItem(String("W") + String(i + 1) + ": " + kGuideNames[i], i + 1);
+        updateGuides();
         guideBox.setSelectedId(guide + 1, dontSendNotification);
         guideBox.onChange = [this] { guide = guideBox.getSelectedId() - 1; step = 0; result.setText({}, dontSendNotification); refresh(); };
         for (auto* c : std::initializer_list<Component*>{&guideBox, &stepLabel, &titleLabel, &body, &result, &readout, &polarity, &prev, &act, &doneActions}) addChildComponent(c);
@@ -54,9 +54,14 @@ public:
     int priority() const override { return 60; }
     fohws::Json saveState() const override { auto j = fohws::Json::object(); j.set("guide", guide); j.set("step", step); return j; }
     void loadState(const fohws::Json& j) override {
-        if (!j.isObject()) return; guide = jlimit(0, 2, j["guide"].asInt(guide)); step = jlimit(0, (int) kGuides[(size_t) guide].size() - 1, j["step"].asInt(0));
-        guideBox.setSelectedId(guide + 1, dontSendNotification); refresh(); }
-    void setGuide(int g, int s) { guide = jlimit(0, 2, g); step = jlimit(0, (int) kGuides[(size_t) guide].size() - 1, s); guideBox.setSelectedId(guide + 1, dontSendNotification); refresh(); }
+        if (j.isObject()) setGuide(j["guide"].asInt(guide), j["step"].asInt(0));
+    }
+    void setGuide(int g, int s) {
+        int requested = jlimit(0, 2, g);
+        guide = availableGuide(requested);
+        step = guide == requested ? jlimit(0, (int) kGuides[(size_t) guide].size() - 1, s) : 0;
+        guideBox.setSelectedId(guide + 1, dontSendNotification); refresh();
+    }
 
     void restyle() {
         stepLabel.setFont(FohLookAndFeel::font(T::label, true)); stepLabel.setColour(Label::textColourId, C::accent());
@@ -69,6 +74,7 @@ public:
         makePrimary(act);
     }
     void modelChanged(int w) override {
+        if (w & AppModel::Rig) { updateGuides(); refresh(); }
         if (w & AppModel::Theme) { restyle(); repaint(); }
         if (w & AppModel::Capture) repaint(progress);
     }
@@ -100,6 +106,21 @@ public:
     void resized() override { refresh(); }
 
 private:
+    int availableGuide(int requested) const {
+        for (auto id : foh::rigSteps(model.rigProfile))
+            if (static_cast<int>(id) == requested + 1) return requested;
+        return 0;
+    }
+    void updateGuides() {
+        guideBox.clear(dontSendNotification);
+        for (auto id : foh::rigSteps(model.rigProfile)) {
+            int i = static_cast<int>(id) - 1;
+            guideBox.addItem(String("W") + String(i + 1) + ": " + kGuideNames[i], i + 1);
+        }
+        int selected = availableGuide(guide);
+        if (selected != guide) { guide = selected; step = 0; result.setText({}, dontSendNotification); }
+        guideBox.setSelectedId(guide + 1, dontSendNotification);
+    }
     void refresh() {
         auto& steps = kGuides[(size_t) guide]; step = jlimit(0, (int) steps.size() - 1, step); auto& st = steps[(size_t) step];
         auto c = getLocalBounds().reduced(pad, 8);
