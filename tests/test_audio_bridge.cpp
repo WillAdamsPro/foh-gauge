@@ -268,6 +268,20 @@ TEST_CASE("SPL level snapshots measure the selected input and reset on routing c
     REQUIRE(first.micLevelDbfs == Catch::Approx(-20).margin(0.01));
     foh::SplCal cal; REQUIRE(cal.calibrate(first.micLevelDbfs, 94));
     REQUIRE(cal.level(first.micLevelDbfs) == Catch::Approx(94).margin(0.1));
+    REQUIRE(first.leq.seconds == Catch::Approx(0.1));
+    for (int w : {0, 1, 2}) {
+        REQUIRE(cal.level(first.leq.level[w]) == Catch::Approx(94).margin(0.1));
+        REQUIRE(cal.level(first.leq.session[w]) == Catch::Approx(94).margin(0.1));
+    }
+    analysis.paused = true;
+    capture(engine, mic.data(), ref.data(), int(mic.size()));
+    REQUIRE(waitFor([&] { return engine.micRing.available() == 0; }));
+    REQUIRE(waitFor([&] { return !analysis.latest().micLevelValid; }));
+    REQUIRE(analysis.latest().leq.seconds == Catch::Approx(0.1));
+    ++analysis.leqRevision;
+    REQUIRE(waitFor([&] { return analysis.latest().leqRevision == 1; }));
+    REQUIRE(analysis.latest().leq.seconds == 0);
+    analysis.paused = false;
     engine.micCh = 1;
     capture(engine, mic.data(), ref.data(), int(mic.size())); // Discard while routing restart is acknowledged.
     REQUIRE(waitFor([&] { return engine.analysisEpoch.load() == engine.captureEpoch.load(); }));
@@ -275,6 +289,8 @@ TEST_CASE("SPL level snapshots measure the selected input and reset on routing c
     REQUIRE(waitFor([&] { const auto& s = analysis.latest(); return s.micLevelValid && s.micChannel == 1; }));
     const auto second = analysis.latest();
     REQUIRE(second.inputEpoch != first.inputEpoch);
+    REQUIRE(second.leq.seconds == Catch::Approx(0.1));
+    REQUIRE(second.leq.session[2] == Catch::Approx(-26.0206).margin(0.01));
     REQUIRE(second.micLevelDbfs == Catch::Approx(-26.0206).margin(0.01));
     REQUIRE(waitFor([&] { return !analysis.latest().micLevelValid; })); // Never calibrate a stale snapshot.
     analysis.stop();
@@ -693,4 +709,179 @@ TEST_CASE("Settings and calibration changes overlap a synthetic measurement", "[
         REQUIRE(snapshot.rtaDb.size() == snapshot.rtaBands.size());
         REQUIRE(snapshot.inputEpoch == engine.captureEpoch.load());
     }
+}
+
+TEST_CASE("Multi-mic worker captures replaces clears and compensates reference delay", "[app][audio][multipos]") {
+    AudioEngine engine; AnalysisEngine analysis(engine); analysis.start();
+    REQUIRE(waitFor([&] { return engine.analysisEpoch.load() == engine.captureEpoch.load(); }));
+    REQUIRE(analysis.send(foh::Command::micPosition(0, 0)));
+    // No averaged audio yet: a capture must not create a position.
+    REQUIRE(analysis.send(foh::Command::resetAverages(100)));
+    REQUIRE(waitFor([&] { return analysis.latest().resetSeq == 100; }));
+    REQUIRE(analysis.latest().positionCount == 0);
+    foh::PinkNoise noise(123);
+    std::vector<float> signal(8192);
+    auto feed = [&] {
+        for (int i = 0; i < 8; ++i) {
+            noise.process(signal.data(), (int)signal.size());
+            capture(engine, signal.data(), signal.data(), (int)signal.size());
+            REQUIRE(waitFor([&] { return engine.micRing.available() == 0 && engine.refRing.available() == 0; }));
+        }
+        REQUIRE(waitFor([&] { return analysis.latest().tf.averages > 0; }));
+    };
+    feed();
+    REQUIRE(analysis.send(foh::Command::micPosition(0, 0)));
+    REQUIRE(waitFor([&] { return analysis.latest().positionCount == 1; }));
+    REQUIRE(analysis.latest().multiPosition.H.empty());
+    // The raw channels still match. Reference compensation creates +phase, which
+    // must be undone by the residual position delay (total 0 ms minus ref 1 ms).
+    REQUIRE(analysis.send(foh::Command::referenceDelay(48)));
+    REQUIRE(analysis.send(foh::Command::resetAverages(101)));
+    REQUIRE(waitFor([&] { return analysis.latest().resetSeq == 101; }));
+    feed();
+    REQUIRE(analysis.send(foh::Command::micPosition(1, 0)));
+    REQUIRE(waitFor([&] { return analysis.latest().positionCount == 2; }));
+    auto avg = analysis.latest().multiPosition;
+    REQUIRE(avg.H.size() == 8193);
+    // 999 Hz bin: without removing the applied reference delay, the two
+    // positions would cancel almost completely instead of remaining at 0 dB.
+    const size_t bin = 341;
+    REQUIRE(avg.magDb[bin] == Catch::Approx(0).margin(0.1));
+    REQUIRE(avg.phaseDeg[bin] == Catch::Approx(0).margin(1));
+    REQUIRE(analysis.send(foh::Command::micPosition(2, 0)));
+    REQUIRE(waitFor([&] { return analysis.latest().positionMask == 7; }));
+    REQUIRE(analysis.latest().positionCount == 3);
+    // Replacement and invalid slots cannot grow past three positions.
+    REQUIRE(analysis.send(foh::Command::micPosition(1, 0)));
+    REQUIRE(analysis.send(foh::Command::micPosition(3, 0)));
+    REQUIRE(analysis.send(foh::Command::resetAverages(102)));
+    REQUIRE(waitFor([&] { return analysis.latest().resetSeq == 102; }));
+    REQUIRE(analysis.latest().positionCount == 3);
+    REQUIRE(analysis.send(foh::Command::clearMicPositions()));
+    REQUIRE(waitFor([&] { return analysis.latest().positionCount == 0; }));
+    REQUIRE(analysis.latest().multiPosition.H.empty());
+    feed();
+    REQUIRE(analysis.send(foh::Command::micPosition(0, 0)));
+    REQUIRE(waitFor([&] { return analysis.latest().positionCount == 1; }));
+    engine.captureEpoch.fetch_add(1);
+    REQUIRE(waitFor([&] { return analysis.latest().positionCount == 0; }));
+    REQUIRE(analysis.latest().positionMask == 0);
+    analysis.stop();
+}
+
+TEST_CASE("Multi-mic TF average overlays the target with controls reachable", "[app][multipos][ui]") {
+    juce::ScopedJuceInitialiser_GUI initialise;
+    AppModel model;
+    auto panel = PanelRegistry::standard().create("TransferFunction", model);
+    REQUIRE(panel);
+    const auto minimum = panel->minSize();
+    panel->setBounds(0, 0, minimum.w, minimum.h);
+    panel->addToDesktop(0);
+    panel->setVisible(true);
+    auto state = fohws::Json::object(); state.set("targetShown", true);
+    panel->loadState(state);
+    PlotComponent* plot = nullptr;
+    juce::ToggleButton* show = nullptr;
+    for (auto* child : panel->getChildren()) {
+        if (auto* p = dynamic_cast<PlotComponent*>(child)) plot = p;
+        if (auto* b = dynamic_cast<juce::ToggleButton*>(child); b && b->getButtonText() == "Multi-mic") show = b;
+        if (auto* b = dynamic_cast<juce::TextButton*>(child)) {
+            if (b->getButtonText() == "Use found" || b->getButtonText() == "Capture" || b->getButtonText() == "Clear") {
+                REQUIRE(panel->getLocalBounds().contains(b->getBounds()));
+                REQUIRE(b->getWidth() > 40);
+            }
+        }
+    }
+    REQUIRE(plot); REQUIRE(show);
+    REQUIRE(panel->getLocalBounds().contains(show->getBounds()));
+    REQUIRE(show->getWidth() > 80);
+    model.multiPosition.fftSize = 1024;
+    model.multiPosition.magDb.assign(513, 2);
+    model.multiPosition.coherence.assign(513, 1);
+    model.positionCount = 2;
+    panel->modelChanged(AppModel::Snapshot);
+    auto hasSeries = [&](const juce::String& name) {
+        return std::any_of(plot->series.begin(), plot->series.end(), [&](const auto& s) { return s.label == name; });
+    };
+    REQUIRE(hasSeries("Multi-mic average"));
+    for (const auto& series : plot->series) if (series.label == "Multi-mic average") {
+        REQUIRE_FALSE(series.v.empty());
+        for (double value : series.v) REQUIRE(value == 2);
+    }
+    REQUIRE(hasSeries("Target +6"));
+    show->setToggleState(false, juce::dontSendNotification); show->onClick();
+    REQUIRE_FALSE(hasSeries("Multi-mic average"));
+    REQUIRE(hasSeries("Target +6"));
+    show->setToggleState(true, juce::dontSendNotification);
+    model.positionCount = 1; panel->modelChanged(AppModel::Snapshot);
+    REQUIRE_FALSE(hasSeries("Multi-mic average"));
+}
+
+TEST_CASE("Sweep measurement captures loopback and publishes impulse and ETC", "[app][audio][sweep]") {
+    AudioEngine engine; AnalysisEngine analysis(engine);
+    foh::Command command; command.type = foh::CommandType::MeasureSweep;
+    // In hardware this preparation occurs in JUCE's serialized about-to-start callback.
+    // The test device supplies 48 kHz, matching the synthetic input stream.
+    SyntheticDevice device; device.block = 512;
+    engine.audioDeviceAboutToStart(&device);
+    analysis.start();
+    REQUIRE(waitFor([&] { return engine.analysisEpoch.load() == engine.captureEpoch.load(); }));
+    REQUIRE(analysis.send(command));
+    REQUIRE(waitFor([&] { return analysis.latest().sweepCapturing; }));
+    constexpr int block = 512;
+    std::vector<float> output(330000), mic(block), ref(block), second(block);
+    for (int offset = 0; offset + block <= int(output.size()); offset += block) {
+        for (int i = 0; i < block; ++i) {
+            const int source = offset + i - block; // common I/O latency cancels
+            ref[i] = source >= 0 ? output[size_t(source)] : 0;
+            mic[i] = source >= 231 ? 0.6f * (0.6f * output[size_t(source-230)] + 0.4f * output[size_t(source-231)]) : 0;
+        }
+        const float* inputs[] { mic.data(), ref.data() };
+        float* outputs[] { output.data() + offset, second.data() };
+        engine.audioDeviceIOCallbackWithContext(inputs, 2, outputs, 2, block, {});
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    REQUIRE(waitFor([&] { return !analysis.latest().sweepCapturing; }));
+    const auto result = analysis.latest().sweep;
+    REQUIRE(result.response.ok());
+    CHECK(result.response.arrivals[0].delayMs == Catch::Approx(4.8).margin(0.02));
+    CHECK(result.etcDb.size() == result.response.impulse.size());
+    CHECK(engine.gen.load() == AudioEngine::Off);
+    CHECK(std::all_of(output.begin() + 240000, output.end(), [](float value) { return value == 0; }));
+    analysis.stop();
+}
+
+TEST_CASE("Sweep playback ramps down on stop and up on restart", "[app][audio][sweep]") {
+    AudioEngine engine; SyntheticDevice device; engine.audioDeviceAboutToStart(&device);
+    std::array<float, 512> a{}, b{};
+    float* outputs[] {a.data(), b.data()};
+    engine.gen.store(AudioEngine::Sweep);
+    for (int block = 0; block < 20; ++block)
+        engine.audioDeviceIOCallbackWithContext(nullptr, 0, outputs, 2, 512, {});
+    engine.gen.store(AudioEngine::Off);
+    engine.audioDeviceIOCallbackWithContext(nullptr, 0, outputs, 2, 512, {});
+    for (int i = 0; i < 512; ++i) {
+        CHECK(std::abs(a[size_t(i)]) <= 0.1 * std::max(0.0, 1 - (i+1)/480.0) + 1e-7);
+        CHECK(a[size_t(i)] == b[size_t(i)]);
+    }
+    engine.gen.store(AudioEngine::Sweep);
+    engine.audioDeviceIOCallbackWithContext(nullptr, 0, outputs, 2, 512, {});
+    CHECK(a.front() == 0);
+    for (int i = 0; i < 480; ++i)
+        CHECK(std::abs(a[size_t(i)]) <= 0.1 * i/480.0 + 1e-7);
+}
+
+TEST_CASE("Pausing cancels a sweep capture and stops playback", "[app][audio][sweep]") {
+    AudioEngine engine; SyntheticDevice device; engine.audioDeviceAboutToStart(&device);
+    AnalysisEngine analysis(engine); analysis.start();
+    REQUIRE(waitFor([&] { return engine.analysisEpoch.load() == engine.captureEpoch.load(); }));
+    foh::Command command; command.type = foh::CommandType::MeasureSweep;
+    REQUIRE(analysis.send(command));
+    REQUIRE(waitFor([&] { return analysis.latest().sweepCapturing; }));
+    analysis.paused.store(true);
+    REQUIRE(waitFor([&] { return !analysis.latest().sweepCapturing; }));
+    CHECK_FALSE(analysis.latest().sweep.response.error.empty());
+    CHECK(analysis.latest().sweep.response.impulse.empty());
+    CHECK(engine.gen.load() == AudioEngine::Off);
+    analysis.stop();
 }
