@@ -588,3 +588,80 @@ TEST_CASE("C6/C8 unsorted, duplicate and malformed cal files") {
     auto comma = parseMicCal("20,5;0,1\n"); REQUIRE(!comma.ok()); REQUIRE(!comma.error.empty()); // decimal comma rejected clearly
     REQUIRE(!loadMicCal("/nonexistent/x.csv").ok());
 }
+// ---- QA Part A: remaining NEW rows
+static std::vector<float> hpf2(const std::vector<float>& x, double fc, double fs) { return biquad(x, true, fc, 0.70710678, fs); }
+TEST_CASE("S2/S3/S7/S12: PEQ, HPF and gain DUTs at 44.1/48/96 kHz") {
+    for (double fs : {44100.0, 48000.0, 96000.0}) { INFO("fs " << fs);
+        int N = fs > 50000 ? 32768 : 16384; auto x = pink((int)(fs*8), 101);
+        auto bin = [&](const TFResult& r, double f){ return (size_t)std::lround(f/(fs/N)); };
+        TransferFunction a(N, fs); a.setAverages(0); auto y = peq(x, 1000, 6, 1, fs); a.process(x.data(), y.data(), (int)x.size()); auto r = a.result();
+        REQUIRE(r.magDb[bin(r,1000)]==Approx(6.0).margin(0.3)); REQUIRE(std::fabs(r.phaseDeg[bin(r,1000)]) < 5);
+        REQUIRE(r.magDb[bin(r,500)]==Approx(1.9).margin(0.5)); REQUIRE(r.magDb[bin(r,2000)]==Approx(1.9).margin(0.5));
+        TransferFunction h(N, fs); h.setAverages(0); auto z = hpf2(x, 100, fs); h.process(x.data(), z.data(), (int)x.size()); auto q = h.result();
+        REQUIRE(q.magDb[bin(q,100)]==Approx(-3.0).margin(0.5)); REQUIRE(q.magDb[bin(q,63)]==Approx(-8.6).margin(0.6));
+        REQUIRE(q.magDb[bin(q,31.5)]==Approx(-20.3).margin(1.0)); REQUIRE(q.phaseDeg[bin(q,100)]==Approx(90).margin(5));
+        for (float g : {0.5f, 3.98107f}) { std::vector<float> w(x.size()); for (size_t i=0;i<w.size();++i) w[i]=g*x[i];
+            TransferFunction t(N, fs); t.setAverages(0); t.process(x.data(), w.data(), (int)x.size()); auto u = t.result();
+            REQUIRE(u.magDb[bin(u,1000)]==Approx(20*std::log10(g)).margin(0.05)); }
+    }
+}
+TEST_CASE("T1 defaults and T2 fixed 16-average Welch") {
+    TransferFunction tf; auto x = pink(48000*4, 102); tf.process(x.data(), x.data(), (int)x.size()); auto r = tf.result();
+    REQUIRE(r.fftSize==16384); REQUIRE(r.sampleRate==48000); REQUIRE(r.averages==tf.frames()); REQUIRE(r.freq.size()==8193);
+    REQUIRE(tf.frameSeconds()==Approx(8192/48000.0)); REQUIRE(tf.coherenceBlankThreshold()==0); REQUIRE(tf.convergenceTimeout()==10);
+    // fixed 16 (default): after a gain step the estimate reaches the new level within ~4x16 frames
+    auto y = x; std::vector<float> xs = pink(48000*14, 103), ys(xs.size()); for (size_t i=0;i<xs.size();++i) ys[i] = xs[i]*(i < 48000*2 ? 1.f : 0.5f);
+    TransferFunction e; e.process(xs.data(), ys.data(), (int)xs.size()); REQUIRE(e.result(3).magDb[binOf(r,1000)]==Approx(-6.02).margin(0.3));
+    // infinite: variance falls with frames (noisy DUT)
+    auto nz = pink(48000*14, 104); std::vector<float> yn(xs.size()); for (size_t i=0;i<xs.size();++i) yn[i]=xs[i]+nz[i];
+    auto spread = [&](int frames){ TransferFunction t; t.setAverages(0); t.process(xs.data(), yn.data(), 8192*(frames+1)); auto q=t.result(); double s=0; int n=0;
+        for (size_t k=binOf(q,1000);k<binOf(q,2000);++k){ s+=q.magDb[k]*q.magDb[k]; ++n; } return std::sqrt(s/n); };
+    REQUIRE(spread(60) < spread(8));
+}
+TEST_CASE("T5 blanking keeps data and clamps the threshold") {
+    auto x = pink(48000*6, 105), nz = pink(48000*6, 106); std::vector<float> y(x.size()); for (size_t i=0;i<y.size();++i) y[i]=x[i]+nz[i];
+    TransferFunction a; a.setAverages(0); a.process(x.data(), y.data(), (int)x.size()); auto off = a.result(3);
+    for (double thr : {0.6, 0.9}) { a.setCoherenceBlankThreshold(thr); auto on = a.result(3);
+        REQUIRE(on.magDb==off.magDb); REQUIRE(on.H==off.H); REQUIRE(on.coherence==off.coherence);
+        for (size_t k=1;k<on.freq.size();++k) REQUIRE(on.isBlanked(k)==(on.coherence[k] < thr)); }
+    a.setCoherenceBlankThreshold(-1); REQUIRE(a.coherenceBlankThreshold()==0); a.setCoherenceBlankThreshold(7); REQUIRE(a.coherenceBlankThreshold()==1);
+}
+TEST_CASE("S13 long delays 50/200/500 ms: found, or clearly out of range") {
+    auto src = pink(1<<18, 107);
+    for (double ms : {50.0, 200.0, 500.0}) { auto m = fdel(src, ms*48); auto r = findDelay(head(src, 96000), head(m, 96000), 48000);
+        REQUIRE(r.ok()); REQUIRE(r.arrivals[0].delayMs==Approx(ms).margin(0.05)); }
+    DelayOptions o; o.maxDelayMs = 100; auto m = fdel(src, 200*48); auto r = findDelay(head(src, 96000), head(m, 96000), 48000, o);
+    REQUIRE((!r.ok() || r.confidence < 0.3 || std::fabs(r.arrivals[0].delayMs - 200) > 1)); // beyond the search range: not reported as a confident 200 ms
+    for (auto& a : r.arrivals) REQUIRE(a.delayMs <= 100.1);
+}
+TEST_CASE("S9 RTA pink -12 dBFS RMS: flat 1/3 & 1/6 bands, IEC base-10 centres") {
+    // exact 1/f pink like gen_stimuli.py (FFT-shaped white noise), not the Kellet generator
+    std::mt19937 rg(108); std::normal_distribution<double> nd; int Np=1<<20; FFT F(Np); std::vector<cpx> P((size_t)Np);
+    for (auto& v : P) v = nd(rg); F.forward(P); for (int k=0;k<Np;++k){ double kk = k<=Np/2 ? k : Np-k; P[(size_t)k] /= std::sqrt(std::max(kk, 1.0)); } F.inverse(P);
+    std::vector<float> x((size_t)Np); for (int i=0;i<Np;++i) x[(size_t)i]=(float)P[(size_t)i].real(); double s=0; for (float v : x) s+=v*v; float g=(float)(std::pow(10,-12/20.0)/std::sqrt(s/x.size())); for (auto& v : x) v*=g;
+    for (int frac : {3, 6}) { RTA r(16384,48000,frac); r.avgAlpha=0.02; r.process(x.data(),(int)x.size()); auto b=r.bandsDb(); auto& bands=r.bands();
+        double ref=0; int n=0; std::vector<double> mid; for (size_t i=0;i<bands.size();++i) if (bands[i].fCenter>=100 && bands[i].fCenter<=10000) mid.push_back(b[i]);
+        for (double v : mid) { ref+=v; ++n; } ref/=n; for (size_t i=0;i<bands.size();++i) if (bands[i].fCenter>=100 && bands[i].fCenter<=10000) { INFO("band " << bands[i].fCenter);
+            REQUIRE(b[i]==Approx(ref).margin(bands[i].fCenter >= 200 ? 0.5 : 1.5)); } // <200 Hz: only ~4-8 FFT bins per band -> spectral scatter up to ~1.2 dB (QA: tolerance applies >= 200 Hz)
+        bool has1k=false; for (auto& bd : bands) if (std::fabs(bd.fCenter-1000)<1e-9) has1k=true; REQUIRE(has1k);
+        REQUIRE(bands[1].fCenter/bands[0].fCenter==Approx(std::pow(10.0, 0.3/frac)).epsilon(1e-9)); }
+}
+TEST_CASE("TR2 trace show/hide keeps data; delete reorders") {
+    TraceStore s; TFResult t; t.magDb={1,2,3}; for (int i=0;i<3;++i) REQUIRE(s.store("T"+std::to_string(i), t, i));
+    s.at(1).visible=false; REQUIRE(s.at(1).tf.magDb==t.magDb); s.at(1).visible=true; REQUIRE(s.at(1).tf.magDb==t.magDb);
+    REQUIRE(s.remove(1)); REQUIRE(s.count()==2); REQUIRE(s.at(1).name=="T2"); REQUIRE(s.at(1).refDelayMs==2); REQUIRE(!s.remove(5));
+}
+TEST_CASE("P-VS/S14 virtual sum: +6.02 dB coherent, null with inverted copy; INV vs half-period options both available") {
+    TFResult a; a.sampleRate=48000; a.fftSize=16384; size_t M=8193; a.freq.resize(M); a.H.assign(M,1); a.magDb.assign(M,0); a.phaseDeg.assign(M,0); a.coherence.assign(M,1);
+    for (size_t k=0;k<M;++k) a.freq[k]=k*48000.0/16384;
+    REQUIRE(virtualSum(a,a).magDb[200]==Approx(6.02).margin(0.01));
+    TFResult inv=a; for (auto& h : inv.H) h=-h; REQUIRE(virtualSum(a,inv).magDb[200] <= -40);
+    // sub 5 ms + INV vs sub 10 ms normal, XO 100 Hz: identical at 100 Hz (half period = 5 ms), so the guide must show both
+    TFResult s5=a, s10=a; for (size_t k=0;k<M;++k){ s5.H[k]=-std::polar(1.0,-2*M_PI*a.freq[k]*0.005); s10.H[k]=std::polar(1.0,-2*M_PI*a.freq[k]*0.010); }
+    size_t k100=(size_t)std::lround(100/(48000.0/16384)); double f=a.freq[k100];
+    REQUIRE(std::abs(s5.H[k100]-s10.H[k100]) < 0.1*std::abs(1.0) + std::fabs(f-100)*0.1);
+    auto e5 = subDelayFromPhase(a, s5, 80, 125, 100), e10 = subDelayFromPhase(a, s10, 80, 125, 100);
+    REQUIRE(e10.primaryMs==Approx(10).margin(0.25));
+    // same phase at the XO -> same candidate set (no auto polarity pick, P-NA); only the slope differs
+    REQUIRE(e5.phaseDeg==Approx(e10.phaseDeg).margin(1)); REQUIRE(e5.slopeMs==Approx(5).margin(0.5)); REQUIRE(e10.slopeMs==Approx(10).margin(0.5));
+}
