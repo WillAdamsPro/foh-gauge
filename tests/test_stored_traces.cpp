@@ -127,11 +127,20 @@ TEST_CASE("Damaged saved targets clear plot overlays and tolerance bands", "[app
         auto plots = children<PlotComponent>(*panel); REQUIRE(plots.size() == 1);
         REQUIRE_FALSE(plots[0]->toleranceBands.empty());
         for (const auto* bad : {"", "20 0\n1000 1\n2000 2e", "20 0\n1000 nan"}) {
+            panel->setVisible(false);
             state.set("targetText", bad); panel->loadState(state);
+            panel->setVisible(true);
             CHECK(plots[0]->toleranceBands.empty());
             CHECK_FALSE(panel->saveState()["targetShown"].asBool());
             CHECK(panel->saveState()["targetChoice"].asInt() == 1);
             CHECK_FALSE(panel->saveState().has("targetText"));
+            // A failed saved import must not leave an empty import selectable.
+            for (int i = 0; i < panel->getNumChildComponents(); ++i) {
+                auto* controls = panel->getChildComponent(i);
+                for (int k = 0; k < controls->getNumChildComponents(); ++k)
+                    if (auto* choice = dynamic_cast<juce::ComboBox*>(controls->getChildComponent(k)))
+                        CHECK(choice->getNumItems() == 3);
+            }
             for (const auto& series : plots[0]->series) CHECK(series.label != "Imported target");
             state.set("targetText", "20 0\n1000 1"); panel->loadState(state);
             CHECK_FALSE(plots[0]->toleranceBands.empty());
