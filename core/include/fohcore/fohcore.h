@@ -1,6 +1,7 @@
 // FOH Gauge DSP core. JUCE-free, allocation-free on the audio-thread paths
 // (generators, RingBuffer::push). Analysis runs on a worker/UI thread.
 #pragma once
+#include "fohcore/format.h"
 #include <atomic>
 #include <complex>
 #include <cstdint>
