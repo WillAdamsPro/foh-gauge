@@ -45,20 +45,20 @@ TEST_CASE("Optional routing walkthrough applies physical channels only on Finish
     CHECK(engine.outB.load() == 2); CHECK(engine.outA.load() == 3);
     CHECK(applied == 1); CHECK(closed == 1);
     // The callback uses these exact indices, rather than a separate wizard map.
-    const float a[] {0.1f}, b[] {0.2f}, mic[] {0.3f}, ref[] {0.4f};
+    const float a[32] {0.1f}, b[32] {0.2f}, mic[32] {0.3f}, ref[32] {0.4f};
     const float* inputs[] {a, b, mic, ref};
-    // A mic-channel change restarts capture (#81); acknowledge it as the analysis worker would.
-    engine.audioDeviceIOCallbackWithContext(inputs, 4, nullptr, 0, 1, {});
+    float out0[32] {}, out1[32] {}, out2[32] {}, out3[32] {};
+    float* outputs[] {out0, out1, out2, out3};
+    // A channel-map change restarts capture; acknowledge it as the worker would.
+    engine.audioDeviceIOCallbackWithContext(inputs, 4, outputs, 4, 1, {});
     engine.analysisEpoch.store(engine.captureEpoch.load());
-    engine.audioDeviceIOCallbackWithContext(inputs, 4, nullptr, 0, 1, {});
+    engine.audioDeviceIOCallbackWithContext(inputs, 4, outputs, 4, 1, {});
     float capturedMic = 0, capturedRef = 0;
     REQUIRE(engine.micRing.pop(&capturedMic, 1) == 1);
     REQUIRE(engine.refRing.pop(&capturedRef, 1) == 1);
     CHECK(capturedMic == mic[0]); CHECK(capturedRef == ref[0]);
-    float out0[32] {}, out1[32] {}, out2[32] {}, out3[32] {};
-    float* outputs[] {out0, out1, out2, out3};
     engine.playChime();
-    engine.audioDeviceIOCallbackWithContext(nullptr, 0, outputs, 4, 32, {});
+    engine.audioDeviceIOCallbackWithContext(inputs, 4, outputs, 4, 32, {});
     CHECK(out2[16] == 0); CHECK(out3[16] != 0);
     CHECK(out0[16] == 0); CHECK(out1[16] == 0);
 }

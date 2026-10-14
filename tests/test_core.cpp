@@ -871,6 +871,11 @@ TEST_CASE("Virtual sum rejects incomplete traces and mismatched frequency grids"
     }
     auto different = trace; different.freq[1] = 2000;
     CHECK(foh::virtualSum(trace, different).freq.empty());
+    auto shorter = trace;
+    shorter.freq.pop_back(); shorter.H.pop_back(); shorter.magDb.pop_back();
+    shorter.phaseDeg.pop_back(); shorter.coherence.pop_back();
+    CHECK(foh::virtualSum(trace, shorter).freq.empty());
+    CHECK(foh::virtualSum(shorter, trace).freq.empty());
     CHECK(foh::virtualSum({}, {}).freq.empty());
 }
 
@@ -900,5 +905,71 @@ TEST_CASE("Guide capture silence times out and reset permits a fresh settled mea
         CHECK(retry.settled);
         CHECK_FALSE(retry.unsettled);
         CHECK(tf.result().sampleRate == rate);
+    }
+}
+
+TEST_CASE("Virtual sum preserves self gain, silence and operand blanking", "[traces][edges]") {
+    TFResult trace;
+    trace.freq = {0, 100, 1000}; trace.H.assign(3, {1, 0});
+    trace.magDb.assign(3, 0); trace.phaseDeg.assign(3, 0); trace.coherence.assign(3, 1);
+    auto self = virtualSum(trace, trace);
+    REQUIRE(self.magDb.size() == 3);
+    for (auto db : self.magDb) CHECK(db == Approx(6.0206).margin(0.0001));
+    auto silence = trace;
+    silence.H.assign(3, {0, 0}); silence.magDb.assign(3, -std::numeric_limits<double>::infinity());
+    silence.blanked = {0, 1, 0};
+    for (auto sum : {virtualSum(trace, silence), virtualSum(silence, trace)}) {
+        REQUIRE(sum.magDb.size() == 3);
+        for (auto db : sum.magDb) CHECK(db == Approx(0).margin(0.0001));
+        CHECK(sum.isBlanked(1));
+    }
+    auto zero = virtualSum(silence, silence);
+    REQUIRE(zero.magDb.size() == 3);
+    for (size_t k = 0; k < 3; ++k) {
+        CHECK(std::isfinite(zero.magDb[k])); CHECK(std::isfinite(zero.phaseDeg[k]));
+        CHECK(zero.magDb[k] <= -200);
+    }
+}
+
+TEST_CASE("Virtual sum rejects invalid rates, numeric data and overflow", "[traces][edges]") {
+    TFResult trace;
+    trace.freq = {0, 100, 1000}; trace.H.assign(3, {1, 0});
+    trace.magDb.assign(3, 0); trace.phaseDeg.assign(3, 0); trace.coherence.assign(3, 1);
+    for (double rate : {44100.0, 0.0, -1.0, std::numeric_limits<double>::infinity(),
+                        std::numeric_limits<double>::quiet_NaN()}) {
+        auto bad = trace; bad.sampleRate = rate;
+        CHECK(virtualSum(trace, bad).freq.empty()); CHECK(virtualSum(bad, trace).freq.empty());
+        if (rate != 44100) CHECK(virtualSum(bad, bad).freq.empty());
+    }
+    for (double value : {std::numeric_limits<double>::infinity(), std::numeric_limits<double>::quiet_NaN()}) {
+        for (int field = 0; field < 4; ++field) {
+            auto bad = trace;
+            if (field == 0) bad.freq[1] = value;
+            if (field == 1) bad.H[1] = {value, 0};
+            if (field == 2) bad.H[1] = {0, value};
+            if (field == 3) bad.coherence[1] = value;
+            CHECK(virtualSum(trace, bad).freq.empty()); CHECK(virtualSum(bad, trace).freq.empty());
+        }
+    }
+    auto bad = trace; bad.freq[1] = -100;
+    CHECK(virtualSum(bad, bad).freq.empty());
+    bad.freq = {0, 1000, 100}; CHECK(virtualSum(bad, bad).freq.empty());
+    bad.freq = {0, 100, 100}; CHECK(virtualSum(bad, bad).freq.empty());
+    bad = trace; bad.H[1] = {std::numeric_limits<double>::max(), 0};
+    CHECK(virtualSum(bad, bad).freq.empty());
+    bad.H[1] = {std::numeric_limits<double>::max(), std::numeric_limits<double>::max()};
+    CHECK(virtualSum(bad, trace).freq.empty());
+}
+
+TEST_CASE("Trace store rapid deletion owns synthetic data and tolerates duplicate names", "[traces][edges]") {
+    TraceStore store;
+    TFResult trace; trace.freq = {1000}; trace.H = {{1, 0}};
+    for (int iteration = 0; iteration < 100; ++iteration) {
+        REQUIRE(store.store("", trace, 0)); REQUIRE(store.store("", trace, 0));
+        trace.H[0] = {2, 0}; CHECK(store.at(0).tf.H[0] == cpx(1, 0));
+        CHECK_FALSE(store.remove(-1)); CHECK_FALSE(store.remove(2));
+        REQUIRE(store.remove(0)); CHECK(store.count() == 1);
+        REQUIRE(store.remove(0)); CHECK(store.count() == 0);
+        trace.H[0] = {1, 0};
     }
 }

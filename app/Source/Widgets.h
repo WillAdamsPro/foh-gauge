@@ -18,7 +18,8 @@ inline double consoleMs(double ms) { return std::round(ms * 100.0) / 100.0; }
 
 // Audio engine: generator out + capture of mic/ref into lock-free rings. RT-safe callback.
 class AudioEngine : public juce::AudioIODeviceCallback {
-    int lastMicChannel = 0, lastRefChannel = 1, lastInputCount = -1, lastOutputCount = -1;
+    int lastMicChannel = 0, lastRefChannel = 1, lastOutputA = 0, lastOutputB = 1;
+    int lastInputCount = -1, lastOutputCount = -1;
     bool lastInputsValid = true, lastOutputsValid = true;
 public:
     AudioEngine(); // Synthesizes the immutable chime before the audio callback is registered.
@@ -62,7 +63,7 @@ public:
     void audioDeviceStopped() override;
     void audioDeviceError(const juce::String&) override;
 private:
-    void resetPlayback() noexcept; // JUCE lifecycle callbacks, with I/O quiesced
+    void resetPlayback() noexcept; // audio callback or JUCE lifecycle callbacks with I/O quiesced
     std::array<float, 28801> chime {}; // 0.6 seconds at 48 kHz, final sample is zero
     std::atomic<uint64_t> chimeRequest {0};
     uint64_t lastChimeRequest = 0;

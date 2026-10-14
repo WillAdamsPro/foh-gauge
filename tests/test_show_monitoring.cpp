@@ -106,11 +106,12 @@ TEST_CASE("W7 visible synthetic programme CPU measurement", "[app][show][cpu]") 
     std::atomic<bool> running {true}; std::atomic<float> gain {1};
     std::thread feeder([&] {
         std::mt19937 rng(7); std::uniform_real_distribution<float> noise(-0.1f, 0.1f);
-        float mic[512], ref[512]; const float* inputs[] {mic, ref};
+        float mic[512], ref[512], a[512], b[512]; const float* inputs[] {mic, ref};
+        float* outputs[] {a, b};
         auto next = std::chrono::steady_clock::now();
         while (running.load()) {
             for (int i = 0; i < 512; ++i) { ref[i] = noise(rng); mic[i] = ref[i] * gain.load(); }
-            model.engine.audioDeviceIOCallbackWithContext(inputs, 2, nullptr, 0, 512, {});
+            model.engine.audioDeviceIOCallbackWithContext(inputs, 2, outputs, 2, 512, {});
             next += std::chrono::microseconds(10667); std::this_thread::sleep_until(next);
         }
     });
