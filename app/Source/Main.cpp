@@ -28,28 +28,50 @@ public:
         window.reset(new Window());
     }
     void shutdown() override { shuttingDown = true; window = nullptr; }
-    struct Window : juce::DocumentWindow, juce::MenuBarModel, juce::ApplicationCommandTarget {
+    struct Window : juce::DocumentWindow, juce::MenuBarModel, juce::ApplicationCommandTarget, private juce::Timer {
         enum { resetScale = 1, largerScale, smallerScale, scale125, scale150, scale200, darkTheme, sunlightTheme };
         MainComponent* main = nullptr; // owned by DocumentWindow
         juce::ApplicationCommandManager commands;
         Window() : DocumentWindow("FOH Gauge", foh::ui::col::background(), allButtons) {
             setUsingNativeTitleBar(true);
             main = new MainComponent();
+            updateMicrophoneConsent();
             setContentOwned(main, true);
             setResizable(true, true);
             centreWithSize(getWidth(), getHeight());
             constrainToDisplay();
             main->fitSavedScale();
+            commands.registerAllCommandsForTarget(main);
             commands.registerAllCommandsForTarget(this);
             commands.setFirstCommandTarget(this);
             addKeyListener(commands.getKeyMappings());
+#if JUCE_MAC
             juce::MenuBarModel::setMacMainMenu(this);
+#else
+            setMenuBar(this);
+#endif
             setVisible(true);
+#if JUCE_MAC
+            startTimer(1000); // Refresh consent after a change in System Settings.
+#endif
         }
         ~Window() override {
+            stopTimer();
+#if JUCE_MAC
             juce::MenuBarModel::setMacMainMenu(nullptr);
+#else
+            setMenuBar(nullptr);
+#endif
             removeKeyListener(commands.getKeyMappings());
         }
+        void updateMicrophoneConsent() {
+#if JUCE_MAC
+            const auto status = [AVCaptureDevice authorizationStatusForMediaType:AVMediaTypeAudio];
+            main->setMicrophoneAccessBlocked(status == AVAuthorizationStatusDenied
+                                            || status == AVAuthorizationStatusRestricted);
+#endif
+        }
+        void timerCallback() override { updateMicrophoneConsent(); }
         void constrainToDisplay() {
             auto& displays = juce::Desktop::getInstance().getDisplays();
             if (auto* display = displays.getDisplayForRect(getBounds())) {
@@ -66,8 +88,8 @@ public:
         void moved() override { constrainToDisplay(); }
         void resized() override { DocumentWindow::resized(); constrainToDisplay(); }
         juce::StringArray getMenuBarNames() override { return { "File", "View" }; }
-        juce::PopupMenu getMenuForIndex(int index, const juce::String& name) override {
-            if (index == 0) return main->getMenuForIndex(0, name);
+        juce::PopupMenu getMenuForIndex(int index, const juce::String&) override {
+            if (index == 0) return main->getFileMenu(commands);
             juce::PopupMenu menu;
             for (int id : { resetScale, scale125, scale150, scale200, largerScale, smallerScale })
                 menu.addCommandItem(&commands, id);
@@ -76,8 +98,9 @@ public:
             menu.addCommandItem(&commands, sunlightTheme);
             return menu;
         }
-        void menuItemSelected(int id, int index) override { if (index == 0) main->menuItemSelected(id, 0); }
-        juce::ApplicationCommandTarget* getNextCommandTarget() override { return nullptr; }
+        // Command items dispatch through the manager to Window (View) or MainComponent (File).
+        void menuItemSelected(int, int) override {}
+        juce::ApplicationCommandTarget* getNextCommandTarget() override { return main; }
         void getAllCommands(juce::Array<juce::CommandID>& ids) override {
             for (int id : { resetScale, largerScale, smallerScale, scale125, scale150, scale200, darkTheme, sunlightTheme }) ids.add(id);
         }

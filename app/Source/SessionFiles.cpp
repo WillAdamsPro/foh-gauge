@@ -1,17 +1,40 @@
 #include "MainComponent.h"
 using namespace juce;
 
-PopupMenu MainComponent::getMenuForIndex(int, const String&) {
+PopupMenu MainComponent::getFileMenu(ApplicationCommandManager& commands) {
     PopupMenu menu;
-    menu.addItem(1, "Open Session...  (Cmd+O)");
-    menu.addItem(2, "Save Session  (Cmd+S)");
-    menu.addItem(3, "Save Session As...  (Shift+Cmd+S)");
+    for (auto id : { openSessionCommand, saveSessionCommand, saveSessionAsCommand })
+        menu.addCommandItem(&commands, id);
     return menu;
 }
-void MainComponent::menuItemSelected(int id, int) {
-    if (id == 1) openSession();
-    if (id == 2) saveSession(false);
-    if (id == 3) saveSession(true);
+void MainComponent::getAllCommands(Array<CommandID>& commands) {
+    for (auto id : { openSessionCommand, saveSessionCommand, saveSessionAsCommand })
+        commands.add(id);
+}
+void MainComponent::getCommandInfo(CommandID id, ApplicationCommandInfo& info) {
+    switch (id) {
+        case openSessionCommand:
+            info.setInfo("Open Session...", "Open a session folder", "File", 0);
+            info.addDefaultKeypress('O', ModifierKeys::commandModifier);
+            break;
+        case saveSessionCommand:
+            info.setInfo("Save Session", "Save the current session", "File", 0);
+            info.addDefaultKeypress('S', ModifierKeys::commandModifier);
+            break;
+        case saveSessionAsCommand:
+            info.setInfo("Save Session As...", "Save the session to a new folder", "File", 0);
+            info.addDefaultKeypress('S', ModifierKeys::commandModifier | ModifierKeys::shiftModifier);
+            break;
+        default: break;
+    }
+}
+bool MainComponent::perform(const InvocationInfo& info) {
+    switch (info.commandID) {
+        case openSessionCommand: openSession(); return true;
+        case saveSessionCommand: saveSession(false); return true;
+        case saveSessionAsCommand: saveSession(true); return true;
+        default: return false;
+    }
 }
 void MainComponent::saveSession(bool saveAs) {
     if (!saveAs && sessionFolder != File()) { writeSession(sessionFolder); return; }
