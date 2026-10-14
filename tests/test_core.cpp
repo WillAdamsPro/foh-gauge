@@ -95,7 +95,7 @@ TEST_CASE("RTA: 1 kHz full-scale sine reads ~0 dBFS in 1 kHz band (1/3 and 1/6)"
         REQUIRE(b[k]==Approx(0).margin(0.5)); REQUIRE(b[k+2] < -40); }
     REQUIRE(octaveBands(3).size()==31); REQUIRE(octaveBands(6).size()==61);
 }
-TEST_CASE("Mic cal: synthetic ECM8000-style CSV (mixed separators, CRLF, comments, out-of-order row)") {
+TEST_CASE("Mic cal: synthetic ECM8000-style CSV (mixed separators, CRLF, comments, out-of-order row)", "[PartA][C1][C5][C7]") {
     auto c = loadMicCal(std::string(FOH_TEST_DATA) + "/synthetic-mic-cal.csv");
     REQUIRE(c.ok()); REQUIRE(c.hz.size()==77); REQUIRE(c.hasPhase); REQUIRE(c.sensitivityOffsetDb==Approx(-2.10));
     REQUIRE(std::is_sorted(c.hz.begin(), c.hz.end())); REQUIRE(c.hz.front()==5.0); REQUIRE(c.hz.back()==30000.0);
@@ -103,13 +103,13 @@ TEST_CASE("Mic cal: synthetic ECM8000-style CSV (mixed separators, CRLF, comment
     REQUIRE(c.dbAt(2)==Approx(-2.234)); REQUIRE(c.dbAt(40000)==Approx(-2.468)); // clamped outside 5 Hz-30 kHz
     double mid = c.dbAt(std::sqrt(5.0*5.6123)); REQUIRE(mid==Approx((-2.234-2.191)/2).margin(1e-6));
 }
-TEST_CASE("Mic cal: tolerant parsing of .txt / .frd / headers / comments") {
+TEST_CASE("Mic cal: tolerant parsing of .txt / .frd / headers / comments", "[PartA][C3][C9]") {
     auto c = parseMicCal("\xEF\xBB\xBF\"Sens Factor =-1.5dB, SERNO: 123\"\n* comment\n# another\nFreq(Hz)\tSPL(dB)\tPhase\n\n20\t0.5\n100  0.0\r\n1000;1.0\n50,0.2,10\n");
     REQUIRE(c.ok()); REQUIRE(c.hz.size()==4); REQUIRE(!c.hasPhase); REQUIRE(c.hz[1]==50); REQUIRE(c.sensitivityOffsetDb==Approx(-1.5));
     auto frd = parseMicCal("; FRD file\n10.0 -1.0 5.0\n20000 2.0 -5.0\n"); REQUIRE(frd.ok()); REQUIRE(frd.hasPhase);
     REQUIRE(!parseMicCal("hello\nworld\n").ok());
 }
-TEST_CASE("Mic cal applied to TF removes the mic response") {
+TEST_CASE("Mic cal applied to TF removes the mic response", "[PartA][C10][C14]") {
     auto c = loadMicCal(std::string(FOH_TEST_DATA) + "/synthetic-mic-cal.csv");
     // synthetic TF equal to the mic response
     TFResult tf; tf.sampleRate=48000; tf.fftSize=16384; size_t M=8193; tf.freq.resize(M); tf.H.resize(M); tf.magDb.resize(M); tf.phaseDeg.resize(M); tf.coherence.assign(M,1);
@@ -551,7 +551,7 @@ TEST_CASE("D-SUBGD: sub delay from XO-band phase = 12.5 ms; alternatives +-1 per
 }
 // ---- Calibration (QA A4)
 static std::string slurp(const std::string& p) { std::ifstream f(p, std::ios::binary); std::stringstream ss; ss << f.rdbuf(); return ss.str(); }
-TEST_CASE("C4 Sens Factor parsed and exposed, never applied") {
+TEST_CASE("C4 Sens Factor parsed and exposed, never applied", "[PartA][C4]") {
     auto base = slurp(std::string(FOH_TEST_DATA) + "/synthetic-mic-cal.csv"); base = base.substr(base.find('\n') + 1); // drop the file's own Sens Factor line
     auto with = parseMicCal("\"Sens Factor =-1.5dB, SERNO: 123\"\r\n" + base), without = parseMicCal(base);
     REQUIRE(with.ok()); REQUIRE(with.hasSensFactor); REQUIRE(with.sensitivityOffsetDb==Approx(-1.5)); REQUIRE(with.sensFactorLine=="Sens Factor =-1.5dB, SERNO: 123");
@@ -563,25 +563,42 @@ TEST_CASE("C4 Sens Factor parsed and exposed, never applied") {
     REQUIRE(with.dbAt(1000)==without.dbAt(1000));
     auto ws = parseMicCal("Sens Factor: 2.25\n100 0\n1000 0\n"); REQUIRE(ws.hasSensFactor); REQUIRE(ws.sensitivityOffsetDb==Approx(2.25)); REQUIRE(ws.dbAt(500)==0);
 }
-TEST_CASE("C2/C2b REW .txt and .frd parse identical to the CSV; C10 sign; C12 flipped file detectably wrong") {
-    auto csv = loadMicCal(std::string(FOH_TEST_DATA) + "/synthetic-mic-cal.csv");
+TEST_CASE("C2/C2b REW .txt and .frd parse identical to the CSV; C10 sign; C12 flipped file detectably wrong", "[PartA][C2][C2b][C10][C12]") {
+    auto csv = loadMicCal(std::string(FOH_TEST_DATA) + "/synthetic-mic-cal.csv"); REQUIRE(csv.ok());
     auto txt = loadMicCal(std::string(FOH_TEST_DATA) + "/synthetic-mic-cal-rew.txt"), frd = loadMicCal(std::string(FOH_TEST_DATA) + "/synthetic-mic-cal.frd");
     for (auto* c : {&txt, &frd}) { REQUIRE(c->ok()); REQUIRE(c->hz==csv.hz); REQUIRE(c->db==csv.db); REQUIRE(c->phaseDeg==csv.phaseDeg); REQUIRE(c->hasPhase); }
-    // C10: flat 0 dB TF corrected by ECM8000 -> -cal(f): top end reads higher
+    // C10: flat 0 dB TF corrected by the synthetic mic response -> -cal(f).
     TFResult t; size_t M=8193; t.sampleRate=48000; t.fftSize=16384; t.freq.resize(M); t.H.assign(M, cpx(1,0)); t.magDb.assign(M,0); t.phaseDeg.assign(M,0); t.coherence.assign(M,1);
     for (size_t k=0;k<M;++k) t.freq[k]=k*48000.0/16384;
     auto corr = csv.correctionDb((int)M, 48000.0/16384);
-    REQUIRE(csv.dbAt(30000)==Approx(-2.468)); REQUIRE(-csv.dbAt(21999) > 1.0); REQUIRE(csv.dbAt(5)==Approx(-2.234));
+    REQUIRE(csv.dbAt(30000)==Approx(-2.468)); REQUIRE(csv.dbAt(5)==Approx(-2.234));
+    // Fixed expectations from the synthetic CSV's log-frequency interpolation.
+    REQUIRE(-csv.dbAt(21999)==Approx(1.574083).margin(1e-6));
+    REQUIRE(-csv.dbAt(20361.5)==Approx(1.270633).margin(1e-6));
+    REQUIRE(-csv.dbAt(20)==Approx(0.994));
     auto tf = t; csv.apply(tf); REQUIRE(tf.magDb[binOf(tf,21000)]==Approx(-csv.dbAt(tf.freq[binOf(tf,21000)])).margin(0.01)); REQUIRE(tf.magDb[binOf(tf,21000)] > 1.0);
     REQUIRE(corr[binOf(tf,21000)]==Approx(tf.magDb[binOf(tf,21000)]).margin(1e-9));
-    // C12: TF equal to the real mic response, corrected with the SIGN-FLIPPED file -> ~2x cal, >= 6 dB error above 20 kHz
+    // C12: synthetic mic response + sign-flipped correction -> 2x cal,
+    // about -2.599 dB at the FFT bin nearest 20.5 kHz (not the old 6 dB threshold).
     auto flip = loadMicCal(std::string(FOH_TEST_DATA) + "/synthetic-mic-cal_SIGNFLIPPED.csv"); REQUIRE(flip.ok());
+    REQUIRE(flip.hz==csv.hz); REQUIRE(flip.hasPhase);
+    for (size_t i=0;i<csv.hz.size();++i) {
+        REQUIRE(flip.db[i]==Approx(-csv.db[i]).margin(1e-12));
+        REQUIRE(flip.phaseDeg[i]==Approx(-csv.phaseDeg[i]).margin(1e-12));
+    }
     auto mic = t; for (size_t k=0;k<M;++k){ mic.H[k]=std::polar(std::pow(10.0,csv.dbAt(mic.freq[k])/20), csv.phaseAt(mic.freq[k])*M_PI/180); }
     auto good = mic, bad = mic; csv.apply(good); flip.apply(bad);
     REQUIRE(good.magDb[binOf(good,21000)]==Approx(0).margin(1e-6));
-    REQUIRE(bad.magDb[binOf(bad,21999)]==Approx(2*csv.dbAt(21999)).margin(0.05)); REQUIRE(std::fabs(bad.magDb[binOf(bad,20500)]) >= 2.5);
+    REQUIRE(bad.magDb[binOf(bad,21999)]==Approx(-3.148174).margin(1e-6));
+    REQUIRE(bad.magDb[binOf(bad,20500)]==Approx(-2.599217).margin(1e-6));
+    REQUIRE(std::fabs(bad.magDb[binOf(bad,20500)]) >= 2.5);
+    for (size_t k=1;k<M;++k) {
+        REQUIRE(good.magDb[k]==Approx(0).margin(1e-6));
+        REQUIRE(good.phaseDeg[k]==Approx(0).margin(1e-6));
+        REQUIRE(bad.magDb[k]==Approx(2*csv.dbAt(bad.freq[k])).margin(1e-6));
+    }
 }
-TEST_CASE("C6/C8 unsorted, duplicate and malformed cal files") {
+TEST_CASE("C6/C8 unsorted, duplicate and malformed cal files", "[PartA][C6][C8]") {
     auto u = parseMicCal("1000 1\n20 0\n1000 5\n100 0.5\n"); REQUIRE(u.ok()); REQUIRE(u.hz==std::vector<double>{20,100,1000}); // sorted, dedup keeps first
     REQUIRE(!parseMicCal("").ok()); REQUIRE(!parseMicCal(std::string("\x00\x01\x02\xff\xfe", 5)).ok());
     REQUIRE(!parseMicCal("abc,def\nfoo bar\n").ok()); REQUIRE(!parseMicCal("20,0\n").ok()); // one point is not a curve
