@@ -1,6 +1,7 @@
 #pragma once
 #include "fohcore.h"
 #include "json.h"
+#include "rig_profile.h"
 #include <filesystem>
 #include <optional>
 
@@ -16,6 +17,7 @@ struct Session {
     bool micCalEnabled = false;
     std::string micCalName, micCalText; // embedded copy, never an external path
     std::optional<Json> splCal, targets;
+    std::optional<RigProfile> rigProfile; // absent in older sessions: default guide flow
     std::vector<Trace> captures;
     Json workspace = Json::object(), measurement = Json::object();
 };
