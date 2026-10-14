@@ -4,7 +4,6 @@
 #pragma once
 #include "Widgets.h"
 #include "AnalysisEngine.h"
-#include "QaAdapters.h"
 
 class AppModel : private juce::Timer {
 public:
@@ -38,7 +37,7 @@ public:
     void setBlankThreshold(double t) { blankThreshold = t; send(foh::Command::blankThreshold(t)); notify(Settings); }
 
     // ---- delay finder
-    bool delayLocked() const { return !delay.arrivals.empty() && delay.confidence > 0; } // confidence 0 = no lock
+    bool delayLocked() const { return delay.ok(); }
     void requestDelay(bool sub, std::function<void()> then = {});
     void lockDelayFromLast();
     double lockedDelayMs = 0; bool delayPending = false;
@@ -50,7 +49,7 @@ public:
     void removeTrace(int i) { traces.remove(i); notify(Traces); }
     void toggleTrace(int i) { traces.at(i).visible = !traces.at(i).visible; notify(Traces); }
 
-    // ---- capture: wait for convergence.settled (20 s timeout) then store
+    // ---- capture: wait for convergence.settled (10 s timeout) then store
     struct { bool active = false; juce::String name; double startMs = 0; std::function<void(bool)> then; } capture;
     void beginCapture(const juce::String& name, std::function<void(bool)> then);
 

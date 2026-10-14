@@ -22,7 +22,7 @@ void AppModel::timerCallback() {
               if (lastDelaySeq == pendingDelay.id && pendingDelay.then) { auto t = std::move(pendingDelay.then); pendingDelay.then = {}; MessageManager::callAsync(t); } } } }
     micPeak = engine.micPeak.exchange(0); refPeak = engine.refPeak.exchange(0);
     if (capture.active) { what |= Capture;
-        double el = Time::getMillisecondCounterHiRes() - capture.startMs; bool timeout = el > 20000;
+        double el = Time::getMillisecondCounterHiRes() - capture.startMs; bool timeout = conv.timedOut || el > 10000;
         if ((conv.settled && el > 300) || timeout) { capture.active = false; auto then = std::move(capture.then); bool ok = storeTrace(capture.name); if (then) then(ok && !timeout); } }
     if (overlayBuilder && (what & (Snapshot | Delay | Traces))) { overlayBuilder(); what |= Overlay; }
     notify(what);
