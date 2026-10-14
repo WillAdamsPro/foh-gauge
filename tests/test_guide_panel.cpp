@@ -739,7 +739,7 @@ TEST_CASE("Verify rejects partial frequency grids malformed vectors and nonfinit
         if (edge == 7) tf.coherence[1] = std::numeric_limits<double>::quiet_NaN();
         REQUIRE(model.traces.store(capture.name.toStdString(), tf, 0));
         auto then = std::move(capture.pending); then(true);
-        CHECK(labelContains(*panel, "Frequency resolution mismatch or invalid trace"));
+        CHECK(labelContains(*panel, edge == 3 ? "Stored and live sample rates differ" : "Frequency resolution mismatch or invalid trace"));
         cannotPass(*panel);
     }
 }
@@ -943,4 +943,92 @@ TEST_CASE("W2 sub completion tolerates a mains capture losing its measurement", 
     CHECK(panel->saveState()["step"].asInt() == 2);
     CHECK(labelContains(*panel, "Capture mains and sub again"));
     button(*panel, "Use this delay").onClick(); CHECK(panel->saveState()["step"].asInt() == 2);
+}
+
+TEST_CASE("Apply rechecks the stored reference before acknowledging a DSP change", "[app][guide][edges]") {
+    juce::ScopedJuceInitialiser_GUI gui;
+    for (int edge = 0; edge < 5; ++edge) {
+        CAPTURE(edge);
+        AppModel model; CaptureStub capture;
+        auto panel = makeGuidePanel(model); panel->setSize(260, 780);
+        auto state = fohws::Json::object(); state.set("guide", 3); state.set("step", 3); panel->loadState(state);
+        button(*panel, "Measure before change").onClick(); capture.finish(model);
+        REQUIRE(panel->saveState()["step"].asInt() == 4);
+        // Mutate before any model notification, as a queued click can arrive first.
+        if (edge == 0) model.traces.remove(0);
+        if (edge == 1) model.engine.sampleRate = 96000;
+        if (edge == 2) model.traces.at(0).tf.sampleRate = 96000;
+        if (edge == 3) model.traces.at(0).tf.magDb.clear();
+        if (edge == 4) model.refDelayMs = 1;
+        button(*panel, "I entered the change").onClick();
+        CHECK(panel->saveState()["step"].asInt() == 3);
+        CHECK(labelContains(*panel, "Store a new before trace"));
+        CHECK(capture.calls == 1);
+        CHECK(button(*panel, "Measure before change").isEnabled());
+        cannotPass(*panel);
+    }
+}
+
+TEST_CASE("Store rejects a trace from a different live sample rate", "[app][guide][edges]") {
+    juce::ScopedJuceInitialiser_GUI gui;
+    AppModel model; CaptureStub capture;
+    model.engine.sampleRate = 96000;
+    auto panel = makeGuidePanel(model); panel->setSize(260, 780);
+    auto state = fohws::Json::object(); state.set("guide", 3); state.set("step", 3); panel->loadState(state);
+    button(*panel, "Measure before change").onClick(); capture.finish(model); // synthetic trace is 48 kHz
+    CHECK(panel->saveState()["step"].asInt() == 3);
+    CHECK(labelContains(*panel, "Stored and live sample rates differ"));
+    CHECK(button(*panel, "Measure before change").isEnabled());
+    cannotPass(*panel);
+}
+
+TEST_CASE("Empty missing silent and unsettled guide completions release the action for retry", "[app][guide][edges]") {
+    juce::ScopedJuceInitialiser_GUI gui;
+    for (bool verify : {false, true}) for (int edge = 0; edge < 4; ++edge) {
+        CAPTURE(verify, edge);
+        AppModel model; CaptureStub capture;
+        auto panel = makeGuidePanel(model); panel->setSize(260, 780);
+        auto state = fohws::Json::object(); state.set("guide", 3); state.set("step", 3); panel->loadState(state);
+        if (verify) prepareVerify(*panel, model, capture);
+        const char* action = verify ? "Re-measure to verify" : "Measure before change";
+        button(*panel, action).onClick();
+        if (edge == 0) { foh::TFResult empty; REQUIRE(model.traces.store(capture.name.toStdString(), empty, 0)); }
+        if (edge == 2) {
+            float silence[32] {}; const float* inputs[] {silence, silence};
+            model.engine.audioDeviceIOCallbackWithContext(inputs, 2, nullptr, 0, 32, {});
+        }
+        if (edge >= 2) { capture.settled = edge != 3; capture.finish(model); }
+        else { auto then = std::move(capture.pending); then(true); }
+        CHECK(labelContains(*panel, edge == 2 ? "Silence, clipping or invalid input" : "No settled measurement"));
+        CHECK(button(*panel, action).isEnabled());
+        cannotPass(*panel);
+        capture.settled = true;
+        button(*panel, action).onClick();
+        auto duplicate = capture.pending;
+        capture.finish(model);
+        const int step = panel->saveState()["step"].asInt();
+        duplicate(true); CHECK(panel->saveState()["step"].asInt() == step);
+        CHECK(labelContains(*panel, verify ? "Mean change:" : "Before trace stored"));
+        CHECK(model.engine.gen.load() == AudioEngine::Off);
+    }
+}
+
+TEST_CASE("Verify rechecks stored metadata before capture completion and verdict", "[app][guide][edges]") {
+    juce::ScopedJuceInitialiser_GUI gui;
+    for (int when = 0; when < 3; ++when) {
+        CAPTURE(when);
+        AppModel model; CaptureStub capture;
+        auto panel = makeGuidePanel(model); panel->setSize(260, 780);
+        prepareVerify(*panel, model, capture);
+        if (when > 0) button(*panel, "Re-measure to verify").onClick();
+        if (when == 2) capture.finish(model);
+        model.traces.at(0).tf.sampleRate = 96000;
+        if (when == 0) button(*panel, "Re-measure to verify").onClick();
+        if (when == 1) capture.finish(model);
+        cannotPass(*panel);
+        if (when == 2) model.notify(AppModel::Traces);
+        CHECK(labelContains(*panel, "Store a new before trace"));
+        CHECK(button(*panel, "Measure before change").isEnabled());
+        CHECK(capture.calls == (when == 0 ? 1 : 2));
+    }
 }
