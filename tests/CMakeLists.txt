@@ -14,6 +14,9 @@ catch_discover_tests(fohws_tests)
 
 # Synthetic golden WAVs are generated only in the build tree.
 find_package(Python3 REQUIRED COMPONENTS Interpreter NumPy)
+add_test(NAME license_guard_tests COMMAND "${Python3_EXECUTABLE}" -m unittest discover
+  -s "${CMAKE_SOURCE_DIR}/scripts" -p test_license_guard.py)
+add_test(NAME license_guard COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/scripts/license_guard.py")
 set(golden_dir "${CMAKE_CURRENT_BINARY_DIR}/golden")
 set(golden_outputs "${golden_dir}/manifest.tsv")
 set(golden_names

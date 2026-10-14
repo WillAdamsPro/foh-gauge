@@ -1,5 +1,6 @@
 #include <juce_gui_extra/juce_gui_extra.h>
 #include "MainComponent.h"
+#include "Acknowledgements.h"
 #if JUCE_MAC
  #import <AVFoundation/AVFoundation.h>
 #endif
@@ -29,9 +30,10 @@ public:
     }
     void shutdown() override { shuttingDown = true; window = nullptr; }
     struct Window : juce::DocumentWindow, juce::MenuBarModel, juce::ApplicationCommandTarget, private juce::Timer {
-        enum { resetScale = 1, largerScale, smallerScale, scale125, scale150, scale200, darkTheme, sunlightTheme };
+        enum { resetScale = 1, largerScale, smallerScale, scale125, scale150, scale200, darkTheme, sunlightTheme, about };
         MainComponent* main = nullptr; // owned by DocumentWindow
         juce::ApplicationCommandManager commands;
+        juce::Component::SafePointer<juce::DialogWindow> acknowledgements;
         Window() : DocumentWindow("FOH Gauge", foh::ui::col::background(), allButtons) {
             setUsingNativeTitleBar(true);
             main = new MainComponent();
@@ -57,6 +59,7 @@ public:
         }
         ~Window() override {
             stopTimer();
+            if (acknowledgements != nullptr) delete acknowledgements.getComponent();
 #if JUCE_MAC
             juce::MenuBarModel::setMacMainMenu(nullptr);
 #else
@@ -87,10 +90,11 @@ public:
         }
         void moved() override { constrainToDisplay(); }
         void resized() override { DocumentWindow::resized(); constrainToDisplay(); }
-        juce::StringArray getMenuBarNames() override { return { "File", "View" }; }
+        juce::StringArray getMenuBarNames() override { return { "File", "View", "Help" }; }
         juce::PopupMenu getMenuForIndex(int index, const juce::String&) override {
             if (index == 0) return main->getFileMenu(commands);
             juce::PopupMenu menu;
+            if (index == 2) { menu.addCommandItem(&commands, about); return menu; }
             for (int id : { resetScale, scale125, scale150, scale200, largerScale, smallerScale })
                 menu.addCommandItem(&commands, id);
             menu.addSeparator();
@@ -102,9 +106,13 @@ public:
         void menuItemSelected(int, int) override {}
         juce::ApplicationCommandTarget* getNextCommandTarget() override { return main; }
         void getAllCommands(juce::Array<juce::CommandID>& ids) override {
-            for (int id : { resetScale, largerScale, smallerScale, scale125, scale150, scale200, darkTheme, sunlightTheme }) ids.add(id);
+            for (int id : { resetScale, largerScale, smallerScale, scale125, scale150, scale200, darkTheme, sunlightTheme, about }) ids.add(id);
         }
         void getCommandInfo(juce::CommandID id, juce::ApplicationCommandInfo& info) override {
+            if (id == about) {
+                info.setInfo("About / Acknowledgements", "Third-party notices and font license", "Help", 0);
+                return;
+            }
             if (id < resetScale || id > sunlightTheme) return;
             const char* names[] = { "100%", "Increase UI Scale", "Decrease UI Scale", "125%", "150%", "200%", "Dark Theme", "Sunlight Theme" };
             info.setInfo(names[id - 1], names[id - 1], "View", 0);
@@ -115,6 +123,22 @@ public:
         }
         bool perform(const InvocationInfo& info) override {
             switch (info.commandID) {
+                case about: {
+                    if (acknowledgements != nullptr) {
+                        acknowledgements->toFront(true);
+                        break;
+                    }
+                    juce::DialogWindow::LaunchOptions options;
+                    options.content.setOwned(new Acknowledgements());
+                    options.dialogTitle = "About FOH Gauge / Acknowledgements";
+                    options.dialogBackgroundColour = foh::ui::col::background();
+                    options.componentToCentreAround = this;
+                    options.useNativeTitleBar = true;
+                    options.resizable = true;
+                    options.escapeKeyTriggersCloseButton = true;
+                    acknowledgements = options.launchAsync();
+                    break;
+                }
                 case resetScale: main->setUiScale(100); break;
                 case largerScale: main->stepUiScale(1); break;
                 case smallerScale: main->stepUiScale(-1); break;
