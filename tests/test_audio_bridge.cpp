@@ -71,6 +71,15 @@ TEST_CASE("Audio peaks include negative samples and reset between UI periods", "
     REQUIRE(engine.micPeak.exchange(0) == 0.2f);
 }
 
+TEST_CASE("Invalid input samples never poison audio peak meters", "[app][audio][edges]") {
+    AudioEngine engine;
+    const float input[] {std::numeric_limits<float>::quiet_NaN(),
+        std::numeric_limits<float>::infinity(), -std::numeric_limits<float>::infinity(), -0.5f};
+    capture(engine, input, input, 4);
+    REQUIRE(engine.micPeak.exchange(0) == 0.5f);
+    REQUIRE(engine.refPeak.exchange(0) == 0.5f);
+}
+
 TEST_CASE("Analysis restart clears queued stereo audio and delay history", "[app][audio][delay]") {
     AudioEngine engine;
     AnalysisEngine analysis(engine);
@@ -97,6 +106,10 @@ TEST_CASE("Analysis restart clears queued stereo audio and delay history", "[app
     REQUIRE(analysis.send(foh::Command::findDelay(true, 2)));
     REQUIRE(waitFor([&] { return analysis.latest().delaySeq == 2; }));
     REQUIRE_FALSE(analysis.latest().delay.ok());
+    REQUIRE(analysis.latest().tf.sampleRate == 96000);
+    REQUIRE(analysis.latest().tf.averages == 0);
+    REQUIRE_FALSE(analysis.latest().convergence.finished);
+    for (double level : analysis.latest().rtaDb) REQUIRE(std::isfinite(level));
     analysis.stop();
 }
 

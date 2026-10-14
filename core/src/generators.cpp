@@ -1,4 +1,4 @@
-#include "fohcore/fohcore.h"
+#include "dsp_safety.h"
 #include <algorithm>
 #include <cmath>
 #include <cstring>
@@ -25,7 +25,10 @@ float PinkNoise::white() noexcept { // xorshift32 -> [-1,1)
     state ^= state << 13; state ^= state >> 17; state ^= state << 5;
     return (float) ((double) state / 2147483648.0 - 1.0);
 }
-void PinkNoise::setGainDb(float db) noexcept { gain.store(0.1f * std::pow(10.0f, db / 20.0f), std::memory_order_relaxed); }
+static float safeGain(float db, float scale) noexcept {
+    return std::isfinite(db) ? scale * std::pow(10.0f, std::clamp(db, -240.f, 60.f) / 20.f) : 0.f;
+}
+void PinkNoise::setGainDb(float db) noexcept { gain.store(safeGain(db, 0.1f), std::memory_order_relaxed); }
 float PinkNoise::next() noexcept {
     float w = white();
     b0 = 0.99886f*b0 + w*0.0555179f; b1 = 0.99332f*b1 + w*0.0750759f;
@@ -35,18 +38,30 @@ float PinkNoise::next() noexcept {
     return p * gain.load(std::memory_order_relaxed);
 }
 void LogSweep::prepare(double sr, double a, double b, double s, double gap) {
-    fs = sr; f1 = a; f2 = b; T = s; sweepLen = (long) (s * sr); gapLen = (long) (gap * sr); pos = 0;
-    K = T / std::log(f2 / f1); phK = 2.0 * M_PI * f1 * K; fadeN = 0.01 * fs;
+    sweepLen = gapLen = pos = 0;
     resetReq.store(false, std::memory_order_relaxed);
+    // Invalid preparation disables playback; validate before floating-to-integer casts.
+    if (!std::isfinite(sr) || sr < 1 || !std::isfinite(a) || !std::isfinite(b)
+        || !(a > 0) || !(b > a) || b > sr / 2 || !std::isfinite(s) || !(s > 0)
+        || !std::isfinite(gap) || gap < 0) return;
+    double len = s * sr, silence = gap * sr;
+    if (!std::isfinite(len + silence) || len < 1
+        || len + silence >= (double) std::numeric_limits<long>::max()) return;
+    double logRatio = std::log(b) - std::log(a);
+    double newK = s / logRatio, newPhK = 2.0 * M_PI * a * newK;
+    if (!std::isfinite(newK) || !(newK > 0) || !std::isfinite(newPhK)) return;
+    fs = sr; f1 = a; f2 = b; T = s; sweepLen = (long) len; gapLen = (long) silence;
+    K = newK; phK = newPhK; fadeN = std::max(1.0, std::min(0.01 * fs, 0.5 * sweepLen));
 }
-void LogSweep::setGainDb(float db) noexcept { gain.store(0.25f * std::pow(10.0f, db / 20.0f), std::memory_order_relaxed); }
+void LogSweep::setGainDb(float db) noexcept { gain.store(safeGain(db, 0.25f), std::memory_order_relaxed); }
 float LogSweep::next() noexcept {
     if (resetReq.load(std::memory_order_relaxed) && resetReq.exchange(false, std::memory_order_acquire)) pos = 0;
+    if (sweepLen == 0) return 0;
     float out = 0;
     if (pos < sweepLen) {
         double t = pos / fs, ph = phK * (std::exp(t / K) - 1.0), env = 1.0;
         if (pos < fadeN) env = pos / fadeN; else if (pos > sweepLen - fadeN) env = (sweepLen - pos) / fadeN;
-        out = (float) (std::sin(ph) * env) * gain.load(std::memory_order_relaxed);
+        out = std::isfinite(ph) ? (float) (std::sin(ph) * env) * gain.load(std::memory_order_relaxed) : 0.f;
     }
     if (++pos >= sweepLen + gapLen) pos = 0;
     return out;
