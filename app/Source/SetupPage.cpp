@@ -22,7 +22,21 @@ SetupPage::SetupPage(AppModel& m, bool showDone) : model(m) {
     wizard.onApplied = [this] { model.notify(AppModel::Settings); };
     wizard.onClose = [this] { wizard.setVisible(false); refresh(); };
     addAndMakeVisible(notice);
-    addAndMakeVisible(chime); chime.setTooltip("Short chime at -18 dBFS on the selected generator and loopback outputs");
+    splInstructions.setText("SPL calibration: fit a 1 kHz calibrator to the mic, or play a steady signal and enter its known level. Keep input gain unchanged after calibration.", dontSendNotification);
+    splInstructions.setJustificationType(Justification::topLeft);
+    addAndMakeVisible(splInstructions); addAndMakeVisible(splStatus);
+    splReference.addItem("94 dB / 1 kHz", 1); splReference.addItem("114 dB / 1 kHz", 2); splReference.addItem("Known level", 3);
+    splReference.setSelectedId(1); addAndMakeVisible(splReference);
+    knownLevel.setText("94.0"); knownLevel.setInputRestrictions(7, "0123456789."); knownLevel.setReadOnly(true); addAndMakeVisible(knownLevel);
+    splReference.onChange = [this] { knownLevel.setReadOnly(splReference.getSelectedId() != 3); if (splReference.getSelectedId() != 3) knownLevel.setText(splReference.getSelectedId() == 2 ? "114.0" : "94.0"); };
+    addAndMakeVisible(calibrate); addAndMakeVisible(clearSpl);
+    calibrate.onClick = [this] {
+        if (!model.calibrateSpl(knownLevel.getText().getDoubleValue()))
+            notice.setText("Calibration needs a steady, unclipped mic signal and a valid known level (0-160 dB).", dontSendNotification);
+        else notice.setText("SPL calibration saved for this input. Keep the input gain unchanged.", dontSendNotification);
+    };
+    clearSpl.onClick = [this] { model.clearSpl(); };
+    addAndMakeVisible(chime); chime.setTooltip("Short chime at -18 dBFS on the selected generator output");
     chime.onClick = [this] { model.engine.playChime(); };
     addChildComponent(done); done.setVisible(showDone); makePrimary(done);
     done.onClick = [this] {
@@ -61,6 +75,7 @@ void SetupPage::refresh() {
     };
     auto ins = dev ? dev->getInputChannelNames() : StringArray(); auto outs = dev ? dev->getOutputChannelNames() : StringArray();
     wizard.setChannels(ins, outs);
+    wizard.setDevices(setup.inputDeviceName, setup.outputDeviceName);
     channels(mic, ins, model.engine.micCh, "Mic"); channels(ref, ins, model.engine.refCh, "Reference");
     channels(generator, outs, model.engine.outA, "Generator output"); channels(loopback, outs, model.engine.outB, "Loopback output");
     // Enable every physical channel so callback indices match the displayed channel numbers.
@@ -71,6 +86,9 @@ void SetupPage::refresh() {
         notice.setText(model.dm.setAudioDeviceSetup(setup, true), dontSendNotification);
     }
     chime.setEnabled(dev && outs.size() > 0);
+    auto c = model.splCal();
+    splStatus.setText(c.calibrated ? "This input: dB SPL (offset " + String(c.offsetDb, 2) + " dB)" : "This input: uncalibrated, dBFS", dontSendNotification);
+    calibrate.setEnabled(dev && model.engine.micCh.load() >= 0); clearSpl.setEnabled(c.calibrated);
 }
 void SetupPage::applyDevice() {
     auto setup = model.dm.getAudioDeviceSetup(); auto* type = model.dm.getCurrentDeviceTypeObject(); if (!type) return;
@@ -84,6 +102,10 @@ void SetupPage::resized() {
     auto r = getLocalBounds().reduced(16); auto heading = r.removeFromTop(32); easySetup.setBounds(heading.removeFromRight(110)); title.setBounds(heading);
     auto buttons = r.removeFromBottom(36); done.setBounds(buttons.removeFromRight(90)); chime.setBounds(buttons.removeFromLeft(130));
     notice.setBounds(r.removeFromBottom(32));
+    auto spl = r.removeFromBottom(142);
+    splInstructions.setBounds(spl.removeFromTop(48)); splStatus.setBounds(spl.removeFromTop(28));
+    auto row = spl.removeFromTop(32); splReference.setBounds(row.removeFromLeft(155)); row.removeFromLeft(6);
+    knownLevel.setBounds(row.removeFromLeft(65)); row.removeFromLeft(6); calibrate.setBounds(row.removeFromLeft(115)); row.removeFromLeft(6); clearSpl.setBounds(row.removeFromLeft(90));
     int h = jmin(40, r.getHeight() / 8);
     for (auto* box : { &deviceType, &input, &output, &rate, &mic, &ref, &generator, &loopback }) box->setBounds(r.removeFromTop(h).reduced(0, 3));
 }

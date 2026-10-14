@@ -10,6 +10,14 @@ Core-only on Linux or macOS (no JUCE fetch; this is the PR gate in `.github/work
     cmake --build build --parallel
     ctest --test-dir build --output-on-failure
 
+Opt-in AddressSanitizer + UndefinedBehaviorSanitizer core/tests build (Clang or GCC; stops on the first sanitizer finding):
+
+    cmake -S . -B build-sanitize -DFOH_BUILD_APP=OFF -DCMAKE_BUILD_TYPE=RelWithDebInfo -DFOH_SANITIZE=address,undefined
+    cmake --build build-sanitize --parallel
+    ctest --test-dir build-sanitize --output-on-failure
+
+`FOH_SANITIZE` defaults to empty; the normal build and CI gate are unchanged.
+
 macOS app (JUCE fetched by CMake; needs Xcode 26):
 
     cmake -S . -B build-app -G Xcode -DCMAKE_OSX_DEPLOYMENT_TARGET=26.0

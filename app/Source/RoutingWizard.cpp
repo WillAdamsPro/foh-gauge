@@ -16,20 +16,68 @@ String endpoint(const StringArray& names, int index, const char* direction) {
 RoutingWizard::RoutingWizard(AudioEngine& e) : engine(e) {
     title.setFont(FohLookAndFeel::font(20, true));
     explanation.setJustificationType(Justification::topLeft);
-    for (auto* label : { &title, &explanation }) addAndMakeVisible(label);
+    for (auto* label : { &title, &explanation, &presetNotice, &testStatus }) addAndMakeVisible(label);
     addAndMakeVisible(channel);
-    for (auto* button : { &back, &next, &skip }) addAndMakeVisible(button);
-    channel.onChange = [this] { if (!refreshing) { draft[(size_t) step] = channel.getSelectedId() - 2; repaint(); } };
-    back.onClick = [this] { if (step > 0) { --step; refresh(); } };
+    for (auto* button : { &back, &next, &skip, &test }) addAndMakeVisible(button);
+    channel.onChange = [this] { if (!refreshing) { cancelTest(); draft[(size_t) step] = channel.getSelectedId() - 2; results.fill({}); refresh(); } };
+    back.onClick = [this] { if (step > 0) { cancelTest(); --step; refresh(); } };
     next.onClick = [this] { advance(); };
-    skip.onClick = [this] { if (onClose) onClose(); };
+    skip.onClick = [this] { cancelTest(); if (onClose) onClose(); };
+    test.onClick = [this] { runTest(); };
     begin();
 }
+RoutingWizard::~RoutingWizard() { cancelTest(); }
+void RoutingWizard::cancelTest() {
+    stopTimer();
+    if (testingStep >= 0) {
+        engine.cancelConnectionTest();
+        results[(size_t)testingStep] = "Test canceled. Test this connection again.";
+    }
+    testingStep = -1;
+}
+void RoutingWizard::setDevices(const String& input, const String& output) {
+    if (input == inputDevice && output == outputDevice) return;
+    cancelTest(); results.fill({});
+    inputDevice = input; outputDevice = output;
+    suggestion = "Unknown interface: choose channels manually.";
+    refresh();
+}
+void RoutingWizard::runTest() {
+    cancelTest();
+    const int expected = step == 0 || step == 3 ? draft[0] : draft[1];
+    const int output = step == 0 || step == 3 ? draft[3] : draft[2];
+    engine.testConnection(output, expected);
+    testingStep = step; testStartedMs = Time::getMillisecondCounterHiRes();
+    results[(size_t)step] = "Testing connection...";
+    refresh(); startTimer(50);
+}
+void RoutingWizard::timerCallback() {
+    const auto result = engine.connectionResult();
+    if (result == foh::ConnectionResult::pending) {
+        if (Time::getMillisecondCounterHiRes() - testStartedMs < 2500) return;
+        const int failedStep = testingStep;
+        cancelTest();
+        results[(size_t)failedStep] = "Fail: audio device did not complete the test. Check Audio Setup.";
+        refresh(); return;
+    }
+    results[(size_t)testingStep] = foh::connectionHint(result);
+    stopTimer(); testingStep = -1; refresh();
+}
 void RoutingWizard::begin() {
+    cancelTest(); results.fill({});
     draft = { engine.micCh.load(), engine.refCh.load(), engine.outB.load(), engine.outA.load() };
+    suggestion = "Unknown interface: choose channels manually.";
+    const auto* preset = foh::findInterfacePreset(inputDevice.toStdString());
+    if (preset && preset == foh::findInterfacePreset(outputDevice.toStdString())
+        && inputNames.size() > jmax(preset->micInput, preset->referenceInput)
+        && outputNames.size() > jmax(preset->loopbackOutput, preset->consoleOutput)) {
+        draft = { preset->micInput, preset->referenceInput, preset->loopbackOutput, preset->consoleOutput };
+        suggestion = String(preset->name) + ": suggested channels below; change them if needed.";
+    }
     step = 0; refresh();
 }
 void RoutingWizard::setChannels(const StringArray& inputs, const StringArray& outputs) {
+    if (inputs != inputNames || outputs != outputNames) { cancelTest(); results.fill({}); }
     inputNames = inputs; outputNames = outputs;
     for (size_t i = 0; i < draft.size(); ++i) {
         auto count = i < 2 ? inputNames.size() : outputNames.size();
@@ -40,6 +88,15 @@ void RoutingWizard::setChannels(const StringArray& inputs, const StringArray& ou
 void RoutingWizard::refresh() {
     const ScopedValueSetter<bool> guard(refreshing, true);
     title.setText(titles[step], dontSendNotification);
+    presetNotice.setText(suggestion, dontSendNotification);
+    testStatus.setJustificationType(Justification::topLeft);
+    const int testInput = step == 0 || step == 3 ? draft[0] : draft[1];
+    const int testOutput = step == 0 || step == 3 ? draft[3] : draft[2];
+    testStatus.setText(results[(size_t)step].isEmpty()
+        ? "Test: " + endpoint(outputNames, testOutput, "Output") + " to " + endpoint(inputNames, testInput, "Input")
+        : results[(size_t)step], dontSendNotification);
+    test.setEnabled(testingStep < 0);
+    test.setTooltip("Plays a chime on the chosen output, then checks the expected input. Keep speaker level low.");
     explanation.setText(descriptions[step], dontSendNotification);
     channel.clear(dontSendNotification); channel.addItem("None (leave unassigned)", 1);
     const auto& names = step < 2 ? inputNames : outputNames;
@@ -50,6 +107,7 @@ void RoutingWizard::refresh() {
     repaint();
 }
 void RoutingWizard::advance() {
+    cancelTest();
     if (step < 3) { ++step; refresh(); return; }
     engine.micCh = draft[0]; engine.refCh = draft[1]; engine.outB = draft[2]; engine.outA = draft[3];
     if (onApplied) onApplied();
@@ -61,7 +119,11 @@ void RoutingWizard::resized() {
     auto buttons = r.removeFromBottom(36);
     back.setBounds(buttons.removeFromLeft(70)); skip.setBounds(buttons.removeFromLeft(70).reduced(4, 0));
     next.setBounds(buttons.removeFromRight(80));
+    auto testRow = r.removeFromBottom(72);
+    test.setBounds(testRow.removeFromTop(28).removeFromLeft(130));
+    testStatus.setBounds(testRow);
     channel.setBounds(r.removeFromBottom(40).reduced(0, 4));
+    presetNotice.setBounds(r.removeFromTop(36));
     explanation.setBounds(r.removeFromTop(jmin(180, r.getHeight() / 2)));
     diagram = r.reduced(0, 8); repaint();
 }

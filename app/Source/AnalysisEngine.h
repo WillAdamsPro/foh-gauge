@@ -36,6 +36,8 @@ private:
     std::shared_ptr<const foh::MicCal> cal; std::string calName;
 
     // analysis-thread state
+    double levelEnergy = 0; int levelSamples = 0;
+    uint64_t inputEpoch = 0; int micChannel = -1;
     double fs = 0; int fftN = 16384;
     std::unique_ptr<foh::TransferFunction> tf; std::unique_ptr<foh::RTA> rta;
     int smoothing = 12, rtaFrac = 3, averages = 16; double blankThr = 0.6;

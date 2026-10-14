@@ -345,12 +345,25 @@ struct TargetTrace {
 // the first row. Invalid numeric rows fail the import rather than hiding errors.
 TargetTrace parseTarget(const std::string& text);
 
+// ---------- SPL calibration ----------
+// Levels use the RTA convention: full-scale sine = 0 dBFS (RMS + 3.0103 dB).
+// Sensitivity is relative to the value present during calibration; never double-count it.
+class Json;
+struct SplCal {
+    double offsetDb = 0, sensitivityAtCalibrationDb = 0;
+    bool calibrated = false;
+    bool calibrate(double measuredDbfs, double knownSpl, double sensitivityDb = 0) noexcept;
+    double level(double dbfs, double sensitivityDb = 0) const noexcept;
+    Json toJson() const; // message/worker thread only
+    static SplCal fromJson(const Json&);
+    const char* unit() const noexcept { return calibrated ? "dB SPL" : "dBFS"; }
+};
+
 // ---------- Mic calibration ----------
 struct MicCal {
     std::vector<double> hz, db, phaseDeg; bool hasPhase = false;
     // "Sens Factor" header line (miniDSP UMIK/REW style), e.g. "Sens Factor =-1.5dB, SERNO: 123".
-    // Parsed and exposed for display ONLY: never applied by dbAt/correctionDb/apply (QA D8,
-    // no SPL calibration in build #1). UI: "Sens Factor -1.5 dB (not applied)".
+    // Frequency/TF correction excludes sensitivity. SplCal applies it relative to calibration.
     double sensitivityOffsetDb = 0; bool hasSensFactor = false;
     std::string sensFactorLine;     // the raw header line, trimmed
     std::string error;
@@ -409,6 +422,10 @@ struct AnalysisSnapshot {
     uint64_t resetSeq = 0;      // id of the last ResetAverages command, acknowledges a fresh capture
     ConvergenceState convergence; // progress (0..1), settled, deltaDb, frames...
     double inputPeakDbRef = -120, inputPeakDbMeas = -120;
+    double micLevelDbfs = -120;
+    uint64_t inputEpoch = 0;
+    int micChannel = -1;
+    bool micLevelValid = false;
     void setCalName(const char* n) { size_t i = 0; if (n) for (; n[i] && i + 1 < sizeof(calName); ++i) calName[i] = n[i]; calName[i] = 0; }
 };
 // Lifetime of latest(): the returned reference stays valid (and unchanged) until the SAME
