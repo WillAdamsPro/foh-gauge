@@ -577,3 +577,114 @@ TEST_CASE("Device errors from another thread silence playback until restart", "[
     engine.audioDeviceIOCallbackWithContext(nullptr, 0, outputs, 1, 256, {});
     for (float s : output) CHECK(s == 0); // no stale chime resumes
 }
+
+namespace {
+// Owns the producer and all lifecycle callbacks, just as JUCE serializes device
+// restarts with I/O. The test thread acts only as the message-thread consumer.
+class ConcurrentCapture {
+public:
+    explicit ConcurrentCapture(AudioEngine& e) : engine(e), worker([this] { run(); }) {}
+    ~ConcurrentCapture() { done.store(true); worker.join(); }
+    std::atomic<double> requestedRate{48000}, runningRate{0};
+    std::atomic<uint64_t> blocks{0};
+private:
+    void run() {
+        SyntheticDevice device;
+        float signal[1024];
+        foh::PinkNoise noise(43);
+        noise.process(signal, 1024);
+        engine.audioDeviceAboutToStart(&device);
+        runningRate.store(device.rate);
+        while (!done.load()) {
+            const auto rate = requestedRate.load();
+            if (rate != device.rate) {
+                engine.audioDeviceStopped();
+                device.rate = rate;
+                engine.audioDeviceAboutToStart(&device);
+                runningRate.store(rate);
+            }
+            capture(engine, signal, signal, 1024);
+            blocks.fetch_add(1);
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        engine.audioDeviceStopped();
+    }
+    AudioEngine& engine;
+    std::atomic<bool> done{false};
+    std::thread worker;
+};
+}
+
+TEST_CASE("Sample-rate changes overlap live analysis and snapshot reads", "[app][audio][concurrent]") {
+    AudioEngine engine; AnalysisEngine analysis(engine);
+    analysis.start();
+    ConcurrentCapture producer(engine);
+    REQUIRE(waitFor([&] { return analysis.latest().tf.averages > 0; }));
+    for (double rate : {96000.0, 44100.0, 48000.0, 96000.0, 48000.0}) {
+        producer.requestedRate.store(rate);
+        REQUIRE(waitFor([&] {
+            const auto& s = analysis.latest();
+            return producer.runningRate.load() == rate && s.tf.sampleRate == rate
+                && s.inputEpoch == engine.captureEpoch.load() && s.tf.averages > 0;
+        }));
+        const auto snapshot = analysis.latest();
+        REQUIRE(snapshot.tf.sampleRate == rate);
+        REQUIRE(snapshot.rtaDb.size() == snapshot.rtaBands.size());
+        for (auto level : snapshot.rtaDb) REQUIRE(std::isfinite(level));
+    }
+}
+
+TEST_CASE("Capture reset and pause commands overlap the analysis job", "[app][audio][concurrent]") {
+    AudioEngine engine; AnalysisEngine analysis(engine);
+    analysis.start();
+    ConcurrentCapture producer(engine);
+    REQUIRE(waitFor([&] { return analysis.latest().tf.averages > 0; }));
+    for (uint64_t id = 1; id <= 8; ++id) {
+        // Same handoffs used by beginCapture and the toolbar Stop/Start controls.
+        analysis.paused.store(true);
+        REQUIRE(analysis.send(foh::Command::resetAverages(id)));
+        REQUIRE(waitFor([&] { return analysis.latest().resetSeq == id; }));
+        const auto stopped = analysis.latest();
+        REQUIRE(stopped.tf.averages == 0);
+        REQUIRE_FALSE(stopped.micLevelValid);
+        const auto blocks = producer.blocks.load();
+        REQUIRE(waitFor([&] {
+            return producer.blocks.load() >= blocks + 8 && analysis.latest().seq > stopped.seq;
+        }));
+        REQUIRE(analysis.latest().tf.averages == 0);
+        analysis.paused.store(false);
+        REQUIRE(waitFor([&] { return analysis.latest().tf.averages > 0; }));
+        REQUIRE(analysis.latest().resetSeq == id);
+    }
+}
+
+TEST_CASE("Settings and calibration changes overlap a synthetic measurement", "[app][audio][concurrent]") {
+    AudioEngine engine; AnalysisEngine analysis(engine);
+    analysis.start();
+    ConcurrentCapture producer(engine);
+    REQUIRE(waitFor([&] { return analysis.latest().tf.averages > 0; }));
+    const auto calibration = std::make_shared<const foh::MicCal>(
+        foh::parseMicCal("20 0\n1000 0\n20000 0\n"));
+    REQUIRE(calibration->ok());
+    for (uint64_t id = 1; id <= 8; ++id) {
+        const int fraction = id % 2 ? 6 : 12;
+        engine.genGainDb.store(-30.f + float(id));
+        analysis.setCal(id % 2 ? calibration : nullptr, "Synthetic");
+        REQUIRE(analysis.send(foh::Command::smoothing(fraction)));
+        REQUIRE(analysis.send(foh::Command::rtaFraction(fraction)));
+        REQUIRE(analysis.send(foh::Command::averages(4)));
+        REQUIRE(analysis.send(foh::Command::blankThreshold(0.7)));
+        REQUIRE(analysis.send(foh::Command::referenceDelay(double(id))));
+        REQUIRE(analysis.send(foh::Command::resetAverages(id)));
+        REQUIRE(waitFor([&] {
+            const auto& s = analysis.latest();
+            return s.resetSeq == id && s.smoothingFraction == fraction
+                && s.rtaFraction == fraction && s.calApplied == bool(id % 2)
+                && s.tf.averages > 0;
+        }));
+        const auto snapshot = analysis.latest();
+        REQUIRE(snapshot.refDelaySamples == double(id));
+        REQUIRE(snapshot.rtaDb.size() == snapshot.rtaBands.size());
+        REQUIRE(snapshot.inputEpoch == engine.captureEpoch.load());
+    }
+}
