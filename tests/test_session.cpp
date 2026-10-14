@@ -18,6 +18,9 @@ foh::Session synthetic() {
     foh::SplCal first, second; first.calibrate(-20, 94, -2.1); second.calibrate(-30, 114, 1.5);
     s.splCal->set("Synthetic\nTest Input\n1", first.toJson());
     s.splCal->set("Synthetic\nTest Input\n2", second.toJson());
+    s.rigProfile = foh::RigProfile{}; s.rigProfile->clusters = 3; s.rigProfile->cabinetsPerCluster = 4;
+    s.rigProfile->control = foh::RigProfile::Control::Individual; s.rigProfile->subs = true; s.rigProfile->frontFills = true;
+    s.rigProfile->subArrangement = foh::RigProfile::SubArrangement::Distributed;
     s.targets = foh::Json::object(); s.targets->set("futureField", "preserved");
     s.workspace.set("id", "alignment"); s.measurement.set("averages", 16);
     foh::Trace t; t.name = "Synthetic capture / portable"; t.visible = false; t.refDelayMs = 1.2345678901234567;
@@ -41,6 +44,7 @@ TEST_CASE("Session bundle round trips all data and copied assets", "[session]") 
     REQUIRE(loaded.inputChannels == s.inputChannels); REQUIRE(loaded.outputChannels == s.outputChannels);
     REQUIRE(loaded.mic == s.mic); REQUIRE(loaded.reference == s.reference); REQUIRE(loaded.outputA == s.outputA); REQUIRE(loaded.outputB == s.outputB);
     REQUIRE(loaded.micCalName == s.micCalName); REQUIRE(loaded.micCalText == s.micCalText); REQUIRE(loaded.micCalEnabled);
+    REQUIRE(loaded.rigProfile); REQUIRE(loaded.rigProfile->toJson() == s.rigProfile->toJson());
     REQUIRE(loaded.splCal == s.splCal);
     REQUIRE(foh::SplCal::fromJson((*loaded.splCal)["Synthetic\nTest Input\n1"]).level(-20, -2.1) == 94);
     REQUIRE(foh::SplCal::fromJson((*loaded.splCal)["Synthetic\nTest Input\n2"]).level(-30, 1.5) == 114); REQUIRE(loaded.targets == s.targets); REQUIRE(loaded.workspace == s.workspace); REQUIRE(loaded.measurement == s.measurement);
@@ -48,8 +52,9 @@ TEST_CASE("Session bundle round trips all data and copied assets", "[session]") 
     REQUIRE(t.name == original.name); REQUIRE(t.visible == original.visible); REQUIRE(t.refDelayMs == original.refDelayMs);
     REQUIRE(t.tf.sampleRate == original.tf.sampleRate); REQUIRE(t.tf.fftSize == original.tf.fftSize); REQUIRE(t.tf.averages == original.tf.averages); REQUIRE(t.tf.blankThreshold == original.tf.blankThreshold);
     REQUIRE(t.tf.freq == original.tf.freq); REQUIRE(t.tf.magDb == original.tf.magDb); REQUIRE(t.tf.phaseDeg == original.tf.phaseDeg); REQUIRE(t.tf.coherence == original.tf.coherence); REQUIRE(t.tf.H == original.tf.H); REQUIRE(t.tf.blanked == original.tf.blanked);
-    s.captures.clear(); s.micCalText.clear(); s.micCalEnabled = false; s.targets.reset(); s.splCal.reset();
+    s.captures.clear(); s.micCalText.clear(); s.micCalEnabled = false; s.targets.reset(); s.splCal.reset(); s.rigProfile.reset();
     REQUIRE(foh::saveSession(bundle.path, s, error)); REQUIRE(foh::loadSession(bundle.path, loaded, error));
+    REQUIRE_FALSE(loaded.rigProfile); REQUIRE(foh::rigSteps(loaded.rigProfile).size() == 3);
     REQUIRE(loaded.captures.empty()); REQUIRE(loaded.micCalText.empty()); REQUIRE_FALSE(loaded.targets); REQUIRE_FALSE(loaded.splCal);
     REQUIRE_FALSE(std::filesystem::exists(bundle.path / "captures/0.json"));
 }
@@ -66,7 +71,9 @@ TEST_CASE("Session rejects damaged bundles without changing output", "[session]"
 }
 TEST_CASE("Failed session save preserves existing bundle", "[session]") {
     Bundle bundle; auto s = synthetic(); std::string error; REQUIRE(foh::saveSession(bundle.path, s, error));
-    s.captures.resize(foh::TraceStore::kMax + 1); REQUIRE_FALSE(foh::saveSession(bundle.path, s, error));
+    SECTION("too many captures") { s.captures.resize(foh::TraceStore::kMax + 1); }
+    SECTION("invalid rig answers") { s.rigProfile->clusters = 0; }
+    REQUIRE_FALSE(foh::saveSession(bundle.path, s, error));
     foh::Session loaded; REQUIRE(foh::loadSession(bundle.path, loaded, error)); REQUIRE(loaded.captures.size() == 1);
 }
 TEST_CASE("Missing session devices request Setup fallback", "[session]") {
@@ -89,6 +96,7 @@ TEST_CASE("Session asset corruption leaves the entire prior session intact", "[s
         std::ifstream f(bundle.path / file); std::string text{std::istreambuf_iterator<char>(f), {}};
         auto j = foh::Json::parse(text); mutate(j); std::ofstream(bundle.path / file) << j.dump();
     };
+    SECTION("invalid rig profile") { rewrite("session.json", [](auto& j) { auto r = j["rigProfile"]; r.set("clusters", -1); j.set("rigProfile", r); }); }
     SECTION("missing manifest") { std::filesystem::remove(bundle.path / "session.json"); }
     SECTION("empty manifest") { std::ofstream(bundle.path / "session.json"); }
     SECTION("huge manifest") { std::filesystem::resize_file(bundle.path / "session.json", 17 * 1024 * 1024); }
@@ -110,6 +118,7 @@ TEST_CASE("Session asset corruption leaves the entire prior session intact", "[s
     SECTION("invalid SPL calibration") { rewrite("session.json", [](auto& j) { auto a = foh::Json::object(); auto c = foh::Json::object(); c.set("offsetDb", 1000); c.set("sensitivityDb", 0); a.set("synthetic", c); j.set("splCal", a); }); }
     REQUIRE_FALSE(foh::loadSession(bundle.path, out, error)); REQUIRE_FALSE(error.empty());
     REQUIRE(out.inputDevice == s.inputDevice); REQUIRE(out.micCalText == s.micCalText); REQUIRE(out.workspace == s.workspace);
+    REQUIRE(out.rigProfile); REQUIRE(out.rigProfile->toJson() == s.rigProfile->toJson());
     REQUIRE(out.targets == s.targets); REQUIRE(out.captures[0].tf.freq == s.captures[0].tf.freq);
 }
 
