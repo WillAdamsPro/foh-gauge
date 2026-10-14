@@ -14,11 +14,13 @@ String endpoint(const StringArray& names, int index, const char* direction) {
 }
 }
 RoutingWizard::RoutingWizard(AudioEngine& e) : engine(e) {
+    addAndMakeVisible(form);
+    form.canvas.onPaint = [this](Graphics& g) { paintDiagram(g); };
     title.setFont(FohLookAndFeel::font(20, true));
     explanation.setJustificationType(Justification::topLeft);
-    for (auto* label : { &title, &explanation, &presetNotice, &testStatus }) addAndMakeVisible(label);
-    addAndMakeVisible(channel);
-    for (auto* button : { &back, &next, &skip, &test }) addAndMakeVisible(button);
+    for (auto* label : { &title, &explanation, &presetNotice, &testStatus }) form.canvas.addAndMakeVisible(label);
+    form.canvas.addAndMakeVisible(channel);
+    for (auto* button : { &back, &next, &skip, &test }) form.canvas.addAndMakeVisible(button);
     channel.onChange = [this] { if (!refreshing && active) { cancelTest(); draft[(size_t) step] = channel.getSelectedId() - 2; results.fill({}); refresh(); } };
     back.onClick = [this] { if (active && step > 0) { cancelTest(); --step; refresh(); } };
     next.onClick = [this] { advance(); };
@@ -69,6 +71,10 @@ void RoutingWizard::timerCallback() {
     results[(size_t)testingStep] = foh::connectionHint(result);
     stopTimer(); testingStep = -1; refresh();
 }
+void RoutingWizard::setRigProfile(const std::optional<foh::RigProfile>& profile) {
+    const String nextGuidance = profile && profile->valid() ? String(profile->routingGuidance()) : String();
+    if (nextGuidance != rigGuidance) { rigGuidance = nextGuidance; refresh(); }
+}
 void RoutingWizard::begin() {
     cancelTest(); results.fill({});
     draft = { engine.micCh.load(), engine.refCh.load(), engine.outB.load(), engine.outA.load() };
@@ -80,7 +86,7 @@ void RoutingWizard::begin() {
         draft = { preset->micInput, preset->referenceInput, preset->loopbackOutput, preset->consoleOutput };
         suggestion = String(preset->name) + ": suggested channels below; change them if needed.";
     }
-    active = true; step = 0;
+    active = true; step = 0; form.setViewPosition(0, 0);
     if (channelsKnown) setChannels(inputNames, outputNames); else refresh();
 }
 void RoutingWizard::setChannels(const StringArray& inputs, const StringArray& outputs) {
@@ -109,14 +115,14 @@ void RoutingWizard::refresh() {
         : results[(size_t)step], dontSendNotification);
     test.setEnabled(testingStep < 0);
     test.setTooltip("Plays a chime on the chosen output, then checks the expected input. Keep speaker level low.");
-    explanation.setText(descriptions[step], dontSendNotification);
+    explanation.setText(String(descriptions[step]) + (step == 3 && rigGuidance.isNotEmpty() ? "\n" + rigGuidance : String()), dontSendNotification);
     channel.clear(dontSendNotification); channel.addItem("None (leave unassigned)", 1);
     const auto& names = step < 2 ? inputNames : outputNames;
     for (int i = 0; i < names.size(); ++i)
         channel.addItem(String(step < 2 ? "Input " : "Output ") + String(i + 1) + " (" + names[i] + ")", i + 2);
     channel.setSelectedId(draft[(size_t) step] + 2, dontSendNotification);
     back.setEnabled(step > 0); next.setButtonText(step == 3 ? "Finish" : "Next");
-    repaint();
+    resized(); repaint();
 }
 void RoutingWizard::advance() {
     if (!active) return;
@@ -129,7 +135,13 @@ void RoutingWizard::advance() {
     if (safe) { auto close = safe->onClose; if (close) close(); }
 }
 void RoutingWizard::resized() {
-    auto r = getLocalBounds().reduced(16);
+    form.setBounds(getLocalBounds());
+    const int width = form.layoutWidth(300);
+    GlyphArrangement text;
+    text.addJustifiedText(explanation.getFont(), explanation.getText(), 0, explanation.getFont().getAscent(), (float)(width - 42), Justification::left);
+    const int bodyH = jmax(120, (int)std::ceil(text.getBoundingBox(0, -1, true).getBottom()) + 12);
+    form.sizeCanvas(width, jmax(520, bodyH + 320));
+    auto r = form.canvas.getLocalBounds().reduced(16);
     title.setBounds(r.removeFromTop(32));
     auto buttons = r.removeFromBottom(36);
     back.setBounds(buttons.removeFromLeft(70)); skip.setBounds(buttons.removeFromLeft(70).reduced(4, 0));
@@ -139,11 +151,13 @@ void RoutingWizard::resized() {
     testStatus.setBounds(testRow);
     channel.setBounds(r.removeFromBottom(40).reduced(0, 4));
     presetNotice.setBounds(r.removeFromTop(36));
-    explanation.setBounds(r.removeFromTop(jmin(180, r.getHeight() / 2)));
-    diagram = r.reduced(0, 8); repaint();
+    explanation.setBounds(r.removeFromTop(bodyH));
+    diagram = r.reduced(0, 8); form.canvas.repaint();
 }
 void RoutingWizard::paint(Graphics& g) {
     g.fillAll(findColour(juce::ResizableWindow::backgroundColourId));
+}
+void RoutingWizard::paintDiagram(Graphics& g) {
     if (diagram.isEmpty()) return;
     String from, to;
     switch (step) {

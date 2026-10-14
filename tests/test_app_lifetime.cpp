@@ -1,3 +1,4 @@
+#include "ui_form_helpers.h"
 #include <functional>
 #include <catch2/catch_test_macros.hpp>
 #include "MainComponent.h"
@@ -451,7 +452,7 @@ TEST_CASE("Session replacement destroys windows before replacing their borrowed 
     SECTION("Invalid optional rig answers still restore the session") {
         auto manifestFile = session.getChildFile("session.json");
         auto manifest = foh::Json::parse(manifestFile.loadFileAsString().toStdString());
-        auto rig = foh::RigProfile{}.toJson(); rig.set("clusters", -1);
+        auto rig = foh::RigProfile{}.toJson(); rig.set("clusterCabinets", foh::Json::array());
         manifest.set("rigProfile", rig);
         REQUIRE(manifestFile.replaceWithText(juce::String(manifest.dump())));
     }
@@ -487,7 +488,7 @@ TEST_CASE("Setup unsubscribes device changes and wizard cancels timers on destru
         RoutingWizard wizard(model.engine);
         wizard.setChannels({"Synthetic mic", "Synthetic reference"}, {"Synthetic output", "Synthetic loopback"});
         bool started = false;
-        for (auto* child : wizard.getChildren())
+        for (auto* child : formCanvas(wizard).getChildren())
             if (auto* button = dynamic_cast<juce::TextButton*>(child))
                 if (button->getButtonText() == "Test connection") { button->onClick(); started = true; }
         REQUIRE(started);
@@ -695,7 +696,7 @@ TEST_CASE("Bad session opens leave the running app state intact and show a notic
     auto& model = main.state();
     model.lockedDelayMs = 4.25;
     model.rigProfile = foh::RigProfile{};
-    model.rigProfile->clusters = 3;
+    model.rigProfile->clusterCabinets = {2, 3, 3};
     const auto folder = temporary.folder.getChildFile("Synthetic.fohsession");
     REQUIRE(main.writeSession(folder));
     const auto priorWorkspace = fohws::toJson(main.workspace());
@@ -718,7 +719,7 @@ TEST_CASE("Bad session opens leave the running app state intact and show a notic
     REQUIRE_FALSE(main.readSession(folder));
     CHECK(fohws::toJson(main.workspace()) == priorWorkspace);
     CHECK(model.lockedDelayMs == 4.25); CHECK(model.engine.gen.load() == AudioEngine::Pink);
-    REQUIRE(model.rigProfile); CHECK(model.rigProfile->clusters == 3);
+    REQUIRE(model.rigProfile); CHECK(model.rigProfile->clusterCabinets == std::vector<int>{2, 3, 3});
     drainMessages();
     CHECK(juce::ModalComponentManager::getInstance()->getNumModalComponents() > 0);
     drainMessages(); // Allow the asynchronous notice to enter modal state before dismissing it.
