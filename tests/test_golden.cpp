@@ -5,6 +5,7 @@
 #include "fohcore/fohcore.h"
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <fstream>
 #include <sstream>
@@ -67,11 +68,8 @@ TEST_CASE("Golden: levels (RMS dBFS, peak, DC) on ch0") {
         REQUIRE(20 * std::log10(std::sqrt(s / (double) x.size())) == Approx(r.rms).margin(0.01));
         REQUIRE(pk == Approx(r.peak).margin(1e-5)); REQUIRE(m / (double) x.size() == Approx(r.dc).margin(1e-5)); }
 }
-static bool knownIssue(const std::string& f) {
-    return f.find("_verb_") != std::string::npos || f.find("_refl2ms_") != std::string::npos || f.find("_twospike") != std::string::npos;
-}
-static void delayPairs(bool known) {
-    for (auto& r : manifest()) { if (knownIssue(r.file) != known) continue; INFO(r.file << " (" << r.note << ")");
+TEST_CASE("Golden: delay pairs via findDelay (Part A tolerances)") {
+    for (auto& r : manifest()) { INFO(r.file << " (" << r.note << ")");
         if (r.check != "delay" && r.check != "delay_neg" && r.check != "silent" && r.check != "edge") continue;
         auto w = parseWav(slurp(std::string(FOH_TEST_DATA) + "/golden/" + r.file));
         if (r.check == "silent") { REQUIRE(!findDelay(w.c[0], w.c[0], r.fs).ok()); continue; }
@@ -79,20 +77,15 @@ static void delayPairs(bool known) {
             if (std::isnan(r.d1)) REQUIRE(!d.ok()); else { REQUIRE(d.ok()); REQUIRE(d.arrivals[0].delaySamples == Approx(0).margin(0.1)); } continue; }
         if (r.check == "delay_neg") { // finder reports positive lags (mic later); swapped channels must give +|d|
             auto d = findDelay(w.c[1], w.c[0], r.fs); REQUIRE(d.ok()); REQUIRE(-d.arrivals[0].delaySamples == Approx(r.d1).margin(0.1)); continue; }
-        const bool sub = sub || r.file.find("_sub_") != std::string::npos;
+        const bool sub = r.file.find("_sub_") != std::string::npos;
         auto d = sub ? findDelay(w.c[0], w.c[1], r.fs, DelayOptions::forSubs()) : findDelay(w.c[0], w.c[1], r.fs); REQUIRE(d.ok());
         double tol = std::max(0.05e-3 * r.fs, 1.0); if (std::fabs(r.d1 - std::round(r.d1)) > 1e-6) tol = std::min(tol, 0.1 * r.fs / 48000.0 * 10); // fractional: ~±0.1 smp ×fs/48k, within ±0.05 ms
         if (r.note.find("SNR -10") != std::string::npos || sub || r.note.find("reverb") != std::string::npos) tol = std::max(0.05e-3 * r.fs, 1.0);
         CHECK(d.arrivals[0].delaySamples == Approx(r.d1).margin(tol));
         if (r.note.find("inverted") != std::string::npos) REQUIRE(d.arrivals[0].inverted);
-        if (!std::isnan(r.d2)) { for (auto& a : d.arrivals) UNSCOPED_INFO("arrival " << a.delaySamples << " smp " << a.relLevelDb << " dB"); bool found = false; for (auto& a : d.arrivals) if (std::fabs(a.delaySamples - r.d2) < std::max(0.05e-3 * r.fs, 1.0)) found = true; CHECK(found); }
+        if (!std::isnan(r.d2)) { const Arrival* hit = nullptr; for (auto& a : d.arrivals) if (std::fabs(a.delaySamples - r.d2) < std::max(0.05e-3 * r.fs, 1.0)) hit = &a;
+            CHECK(hit != nullptr);
+            // S16 level at 48k/96k (-3.08/-3.06 dB). 44.1k reads -2.52 dB and sets the two-spike flag: open finder issue, not asserted here.
+            if (hit && r.fs != 44100 && r.file.find("_refl2ms_-3dB") != std::string::npos) CHECK(hit->relLevelDb == Approx(-3.0).margin(0.25)); }
     }
 }
-TEST_CASE("Golden: delay pairs via findDelay (Part A tolerances)") { delayPairs(false); }
-// Known findDelay issues on multi-arrival / reverberant pairs (all rates; signals verified with an
-// independent numpy deconvolution: twospike peaks 144/216 smp, refl 96/480 smp at 48k). On orion/qa-part-a:
-//  - D-2Sa two-spike 3 + 4.5 ms -0.5 dB: #1 = 176.0 smp @48k (expected 144; 161.9 @44.1k, 354.1 @96k), 2nd arrival missing
-//  - S16 refl -3 dB at 10 ms: direct OK (95.94 @48k) but the reflection is not in the top 3 (spurious ~662 smp, -10 dB)
-//  - reverb tail RT60 0.4 s: #1 = 252.2 smp @48k vs 230.4 (235.0 vs 211.7 @44.1k, 489.9 vs 460.8 @96k)
-// Kept visible as mayfail until the finder handles them.
-TEST_CASE("Golden: delay pairs, known finder issues", "[!mayfail]") { delayPairs(true); }
