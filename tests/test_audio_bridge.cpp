@@ -1,5 +1,6 @@
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/catch_approx.hpp>
+#include <catch2/generators/catch_generators.hpp>
 #include "Widgets.h"
 #include "AnalysisEngine.h"
 #include "SettleStatus.h"
@@ -687,4 +688,43 @@ TEST_CASE("Settings and calibration changes overlap a synthetic measurement", "[
         REQUIRE(snapshot.rtaDb.size() == snapshot.rtaBands.size());
         REQUIRE(snapshot.inputEpoch == engine.captureEpoch.load());
     }
+}
+
+namespace {
+class PortDeviceType : public SyntheticDeviceType {
+public:
+    explicit PortDeviceType(bool independent) : separate(independent) {}
+    bool separate;
+    juce::StringArray getDeviceNames(bool) const override { return {"Synthetic", "Synthetic 2"}; }
+    bool hasSeparateInputsAndOutputs() const override { return separate; }
+    juce::AudioIODevice* createDevice(const juce::String& output, const juce::String& input) override {
+        if (!separate && input.isNotEmpty() && output.isNotEmpty() && input != output) return nullptr;
+        return new SyntheticDevice;
+    }
+};
+}
+
+TEST_CASE("Audio Setup pairs unified devices and preserves independent endpoints", "[app][devices]") {
+    juce::ScopedJuceInitialiser_GUI initialise;
+    const bool separate = GENERATE(false, true); // ASIO-style and WASAPI-style backends
+    AppModel model;
+    model.dm.addAudioDeviceType(std::make_unique<PortDeviceType>(separate));
+    model.dm.setCurrentAudioDeviceType("Synthetic", true);
+    auto state = model.dm.getAudioDeviceSetup();
+    state.inputDeviceName = state.outputDeviceName = "Synthetic";
+    REQUIRE(model.dm.setAudioDeviceSetup(state, true).isEmpty());
+    SetupPage page(model);
+    auto* input = routingChoice(page, "Input");
+    auto* output = routingChoice(page, "Output");
+    REQUIRE(input != nullptr); REQUIRE(output != nullptr);
+    input->setSelectedId(3, juce::dontSendNotification); input->onChange();
+    state = model.dm.getAudioDeviceSetup();
+    CHECK(state.inputDeviceName == "Synthetic 2");
+    CHECK(state.outputDeviceName == (separate ? "Synthetic" : "Synthetic 2"));
+    CHECK(output->getSelectedId() == (separate ? 2 : 3));
+    output->setSelectedId(separate ? 3 : 2, juce::dontSendNotification); output->onChange();
+    state = model.dm.getAudioDeviceSetup();
+    CHECK(state.outputDeviceName == (separate ? "Synthetic 2" : "Synthetic"));
+    CHECK(state.inputDeviceName == (separate ? "Synthetic 2" : "Synthetic"));
+    CHECK(model.dm.getCurrentAudioDevice() != nullptr);
 }

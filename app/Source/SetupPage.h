@@ -14,7 +14,7 @@ public:
 private:
     void modelChanged(int what) override { if (what & (AppModel::Settings | AppModel::Cal)) refresh(); }
     void refresh();
-    void applyDevice();
+    void applyDevice(bool inputChanged = false);
     void changeListenerCallback(juce::ChangeBroadcaster*) override { refresh(); }
     AppModel& model;
     juce::Label title, notice, splInstructions, splStatus;

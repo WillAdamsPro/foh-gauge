@@ -8,7 +8,8 @@ SetupPage::SetupPage(AppModel& m, bool showDone) : model(m) {
     deviceType.setTextWhenNothingSelected("Audio system"); input.setTextWhenNothingSelected("Input device");
     output.setTextWhenNothingSelected("Output device"); rate.setTextWhenNothingSelected("Sample rate");
     deviceType.onChange = [this] { if (!refreshing) model.dm.setCurrentAudioDeviceType(deviceType.getText(), true); };
-    for (auto* box : { &input, &output, &rate }) box->onChange = [this] { if (!refreshing) applyDevice(); };
+    input.onChange = [this] { if (!refreshing) applyDevice(true); };
+    for (auto* box : { &output, &rate }) box->onChange = [this] { if (!refreshing) applyDevice(); };
     auto routing = [this] {
         if (refreshing) return;
         model.engine.micCh = mic.getSelectedId() - 2; model.engine.refCh = ref.getSelectedId() - 2;
@@ -93,10 +94,16 @@ void SetupPage::refresh() {
     splStatus.setText(c.calibrated ? "This input: dB SPL (offset " + String(c.offsetDb, 2) + " dB)" : "This input: uncalibrated, dBFS", dontSendNotification);
     calibrate.setEnabled(dev && model.engine.micCh.load() >= 0); clearSpl.setEnabled(c.calibrated);
 }
-void SetupPage::applyDevice() {
+void SetupPage::applyDevice(bool inputChanged) {
     auto setup = model.dm.getAudioDeviceSetup(); auto* type = model.dm.getCurrentDeviceTypeObject(); if (!type) return;
     auto name = [type](const ComboBox& box, bool isInput) { auto names = type->getDeviceNames(isInput); int i = box.getSelectedId() - 2; return i >= 0 && i < names.size() ? names[i] : String(); };
     setup.inputDeviceName = name(input, true); setup.outputDeviceName = name(output, false);
+    // ASIO (and other unified backends) cannot open different input/output devices.
+    // WASAPI retains independent endpoint choices. All changes stay on the UI thread.
+    if (!type->hasSeparateInputsAndOutputs()) {
+        const auto selected = inputChanged ? setup.inputDeviceName : setup.outputDeviceName;
+        setup.inputDeviceName = setup.outputDeviceName = selected;
+    }
     if (rate.getSelectedId() > 0) setup.sampleRate = rate.getText().getDoubleValue();
     notice.setText(model.dm.setAudioDeviceSetup(setup, true), dontSendNotification); refresh();
 }

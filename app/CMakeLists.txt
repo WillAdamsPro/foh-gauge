@@ -1,3 +1,21 @@
+option(FOH_ENABLE_ASIO "Enable Windows ASIO (requires a local Steinberg SDK)" OFF)
+set(FOH_ASIO_SDK_DIR "" CACHE PATH "Local ASIO SDK root containing common/asio.h")
+add_library(foh_audio_backends INTERFACE)
+if(FOH_ENABLE_ASIO)
+    if(NOT WIN32)
+        message(FATAL_ERROR "FOH_ENABLE_ASIO is only supported on Windows")
+    endif()
+    if(NOT EXISTS "${FOH_ASIO_SDK_DIR}/common/asio.h" OR
+       NOT EXISTS "${FOH_ASIO_SDK_DIR}/common/iasiodrv.h")
+        message(FATAL_ERROR "FOH_ENABLE_ASIO requires FOH_ASIO_SDK_DIR pointing to a local ASIO SDK")
+    endif()
+    target_include_directories(foh_audio_backends INTERFACE "${FOH_ASIO_SDK_DIR}/common")
+endif()
+if(WIN32)
+    target_compile_definitions(foh_audio_backends INTERFACE
+        JUCE_WASAPI=1 JUCE_ASIO=$<BOOL:${FOH_ENABLE_ASIO}>)
+endif()
+
 # Keep this identity stable across builds so macOS can retain microphone consent.
 juce_add_gui_app(FOHGauge
     PRODUCT_NAME "FOH Gauge"
@@ -16,7 +34,7 @@ juce_add_binary_data(FOHGaugeData SOURCES Resources/Fonts/Inter-Regular.ttf Reso
     ../resources/targets/target-plus6.txt ../resources/targets/target-plus9.txt ../resources/targets/target-plus12.txt)
 set_target_properties(FOHGaugeData PROPERTIES POSITION_INDEPENDENT_CODE ON)
 target_compile_definitions(FOHGauge PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JUCE_APPLICATION_NAME_STRING="$<TARGET_PROPERTY:FOHGauge,JUCE_PRODUCT_NAME>" JUCE_APPLICATION_VERSION_STRING="$<TARGET_PROPERTY:FOHGauge,JUCE_VERSION>")
-target_link_libraries(FOHGauge PRIVATE fohcore foh_sanitizers FOHGaugeData juce::juce_audio_utils juce::juce_audio_devices juce::juce_gui_extra
+target_link_libraries(FOHGauge PRIVATE fohcore foh_sanitizers foh_audio_backends FOHGaugeData juce::juce_audio_utils juce::juce_audio_devices juce::juce_gui_extra
     PUBLIC juce::juce_recommended_config_flags juce::juce_recommended_warning_flags)
 if(FOH_TSAN)
     target_link_libraries(FOHGauge PRIVATE foh_sanitizers)
@@ -27,7 +45,7 @@ if(FOH_BUILD_TESTS)
         Source/AudioEngine.cpp Source/AnalysisEngine.cpp Source/LayoutModel.cpp Source/WorkspaceManager.cpp Source/WorkspaceView.cpp Source/FloatingPanels.cpp Source/Widgets.cpp Source/GuidePanel.cpp Source/RoutingWizard.cpp Source/EasySetup.cpp Source/SetupPage.cpp Source/Panels.cpp Source/MainComponent.cpp Source/SessionFiles.cpp Source/Diagrams.cpp)
     target_include_directories(fohapp_tests PRIVATE Source)
     target_compile_definitions(fohapp_tests PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JUCE_MODAL_LOOPS_PERMITTED=1)
-    target_link_libraries(fohapp_tests PRIVATE fohcore foh_sanitizers FOHGaugeData Catch2::Catch2WithMain juce::juce_audio_utils juce::juce_gui_extra
+    target_link_libraries(fohapp_tests PRIVATE fohcore foh_sanitizers foh_audio_backends FOHGaugeData Catch2::Catch2WithMain juce::juce_audio_utils juce::juce_gui_extra
         juce::juce_recommended_config_flags)
     if(FOH_TSAN)
         target_link_libraries(fohapp_tests PRIVATE foh_sanitizers)
