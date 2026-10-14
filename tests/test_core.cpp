@@ -686,3 +686,32 @@ TEST_CASE("Juno sanitizer repro cases (juno/delay-finder-repro e8ef37a) as regre
     REQUIRE(findDelay(p, d, 1.0, DelayOptions::forSubs()).arrivals.size() <= 16); // tiny fs: no clamp UB
     REQUIRE(findDelay(p, d, 48000).samplesUsed == 48000); REQUIRE(!findDelay(p, d, 48000).truncated);
 }
+// Leading-silence pairs (mic = zero-padded delayed copy, as in Juno's golden set #39): broadband finder must
+// resolve two-spike / reflection / reverb at 44.1/48/96 kHz. (Juno's reported failures came from the golden test
+// selecting DelayOptions::forSubs() via an uninitialised `sub`; forSubs() on these broadband pairs is expected to smear.)
+static std::vector<float> zpDelay(const std::vector<float>& x, double d) { // linear (not circular) fractional delay, leading zeros
+    int n=(int)x.size(), N=1; while (N < 2*n) N<<=1; std::vector<float> p(x); p.resize((size_t)N, 0.f); auto y = fdel(p, d); y.resize((size_t)n);
+    for (int i=0;i<(int)std::min<double>(n, std::floor(d)) - 2;++i) y[(size_t)i]=0.f; return y; }
+static std::vector<float> fftConv(const std::vector<float>& x, const std::vector<float>& h) {
+    size_t n=x.size()+h.size(); int N=1; while ((size_t)N<n) N<<=1; FFT f(N); std::vector<cpx> X((size_t)N), H((size_t)N);
+    for (size_t i=0;i<x.size();++i) X[i]=x[i]; for (size_t i=0;i<h.size();++i) H[i]=h[i]; f.forward(X); f.forward(H);
+    for (int k=0;k<N;++k) X[(size_t)k]*=H[(size_t)k]; f.inverse(X); std::vector<float> y(x.size()); for (size_t i=0;i<y.size();++i) y[i]=(float)X[i].real(); return y; }
+TEST_CASE("Leading-silence pairs: two-spike, S16 reflection and reverb tail at 44.1/48/96 kHz") {
+    for (double fs : {44100.0, 48000.0, 96000.0}) { INFO("fs " << fs);
+        auto src = pink((int)fs, 301); for (auto& v : src) v += 0.0175f; // golden set has DC on the reference
+        double tol = std::max(0.05e-3*fs, 1.0);
+        auto two = mix(zpDelay(src, 0.003*fs), zpDelay(src, 0.0045*fs), -0.5); auto r = findDelay(src, two, fs);
+        REQUIRE(r.ok()); REQUIRE(r.arrivals[0].delaySamples==Approx(0.003*fs).margin(tol)); REQUIRE(r.twoSimilarArrivals);
+        bool f2=false; for (auto& a : r.arrivals) if (std::fabs(a.delaySamples-0.0045*fs) < tol) f2=true; REQUIRE(f2);
+        auto refl = mix(zpDelay(src, 0.002*fs), zpDelay(src, 0.010*fs), -3.0); auto s = findDelay(src, refl, fs);
+        REQUIRE(s.arrivals[0].delaySamples==Approx(0.002*fs).margin(tol));
+        bool fr=false; for (auto& a : s.arrivals) if (std::fabs(a.delaySamples-0.010*fs) < tol) { fr=true; REQUIRE(a.relLevelDb==Approx(-3.0).margin(0.5)); } REQUIRE(fr);
+        // reverb: direct at 4.80 ms + RT60 0.4 s exponential noise tail starting 0.5 ms later
+        std::mt19937 g(9); std::normal_distribution<float> nd(0, 1.f); std::vector<float> h((size_t)(0.6*fs));
+        for (size_t i=(size_t)(0.0005*fs); i<h.size(); ++i) h[i] = 0.03f*nd(g)*(float)std::exp(-6.9078*i/fs/0.4);
+        auto verb = zpDelay(src, 0.0048*fs); auto tail = fftConv(verb, h); for (size_t i=0;i<verb.size();++i) verb[i]+=tail[i];
+        auto v = findDelay(src, verb, fs); REQUIRE(v.arrivals[0].delaySamples==Approx(0.0048*fs).margin(tol));
+        // forSubs() on the same broadband pair smears (documents the golden-test root cause)
+        auto ws = findDelay(src, two, fs, DelayOptions::forSubs()); REQUIRE(std::fabs(ws.arrivals[0].delaySamples - 0.003*fs) > tol);
+    }
+}
