@@ -156,6 +156,7 @@ TEST_CASE("Missing or damaged optional rig answers load with default guides and 
     REQUIRE(foh::saveSession(bundle.path, s, error));
     std::ifstream file(bundle.path / "session.json");
     const std::string text{std::istreambuf_iterator<char>(file), {}};
+    file.close(); // Windows cannot rename the bundle while its manifest is open.
     auto manifest = foh::Json::parse(text);
     std::vector<foh::Json> bad{foh::Json(), foh::Json::object(), foh::Json::array(), foh::Json(""), foh::Json("{\"clusters\":")};
     for (const char* key : {"clusters", "cabinetsPerCluster", "control", "frontFills", "subs", "subArrangement"}) {

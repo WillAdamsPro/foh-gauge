@@ -57,7 +57,9 @@ inline bool recoverAudioPreferences(juce::PropertySet& prefs) {
     // the same corrupt value again through ApplicationProperties' fallback.
     prefs.setValue("audioDeviceState", "");
     for (const auto* key : {"micChannel", "refChannel", "generatorChannel", "loopbackChannel"}) prefs.setValue(key, -1);
-    prefs.setValue("setupComplete", false);
+    // Use the value overload explicitly: MSVC can convert literal false to
+    // a null XmlElement pointer, storing an empty string instead of "0".
+    prefs.setValue("setupComplete", juce::var(false));
     return true;
 }
 }
