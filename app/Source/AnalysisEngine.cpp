@@ -13,6 +13,7 @@ void AnalysisEngine::cancelSweep(const char* reason) {
 
 void AnalysisEngine::rebuild(double newFs) {
     leq = std::make_unique<foh::LeqMeter>(newFs);
+    positions = {}; positionMask = 0; positionAverage = {}; positionCount = 0;
     fs = newFs; levelEnergy = 0; levelSamples = 0;
     tf = std::make_unique<foh::TransferFunction>(fftN, fs); rta = std::make_unique<foh::RTA>(fftN, fs, rtaFrac);
     tf->setConvergenceTimeout(10.0);
@@ -41,6 +42,21 @@ void AnalysisEngine::handle(const foh::Command& c) {
             sweepCapturing = true; sweepStartMs = juce::Time::getMillisecondCounterHiRes();
             engine.startSweepMeasurement(); break;
         }
+        case T::StoreMicPosition: {
+            if (c.i < 0 || c.i >= 3 || !std::isfinite(c.d) || paused.load()
+                || engine.deviceFailed.load() || tf->convergence().frames == 0) break;
+            auto result = tf->result();
+            if (cal) cal->apply(result);
+            positions[(size_t)c.i] = {std::move(result), c.d - tf->referenceDelaySamples() / fs * 1000.0};
+            positionMask |= uint8_t(1 << c.i);
+            std::vector<foh::MicPosition> captured;
+            for (size_t i = 0; i < positions.size(); ++i)
+                if (positionMask & (1 << i)) captured.push_back(positions[i]);
+            positionCount = (int)captured.size();
+            positionAverage = foh::multiPositionAverage(captured);
+            break;
+        }
+        case T::ClearMicPositions: positions = {}; positionMask = 0; positionAverage = {}; positionCount = 0; break;
         case T::SetSmoothing: smoothing = c.i; break;
         case T::SetRtaFraction: rtaFrac = c.i; rta->setFraction(c.i); break;
         case T::SetBlankThreshold: blankThr = c.d; tf->setCoherenceBlankThreshold(c.d); break;
@@ -58,6 +74,8 @@ void AnalysisEngine::handle(const foh::Command& c) {
 
 void AnalysisEngine::publish() {
     auto& s = publisher.beginWrite();
+    s.positionMask = positionMask; s.positionCount = positionCount;
+    s.multiPosition = positionAverage;
     s.tf = tf->result(smoothing); s.smoothingFraction = smoothing;
     if (cal) cal->apply(s.tf);
     s.rtaDb = rta->bandsDb(); s.rtaBands = rta->bands(); s.rtaFraction = rtaFrac;
@@ -94,7 +112,8 @@ void AnalysisEngine::run() {
             engine.analysisEpoch.store(epoch, std::memory_order_release);
         }
         { std::lock_guard<std::mutex> l(calLock);
-          if (calDirty) { cal = pendingCal; calName = pendingCalName.toStdString(); calDirty = false;
+          if (calDirty) { positions = {}; positionMask = 0; positionAverage = {}; positionCount = 0;
+                          cal = pendingCal; calName = pendingCalName.toStdString(); calDirty = false;
                           rta->setCalibrationDb(cal ? cal->correctionDb(fftN / 2 + 1, fs / fftN) : std::vector<double>{}); } }
         foh::Command c; while (commands.pop(c)) handle(c);
         const auto revision = leqRevision.load();

@@ -30,6 +30,7 @@ public:
 
     // ---- copied from the latest AnalysisSnapshot (latest() is only valid until the next call)
     foh::SweepResult sweep; bool sweepCapturing = false;
+    foh::TFResult multiPosition; int positionCount = 0; uint8_t positionMask = 0;
     foh::TFResult tf; foh::DelayResult delay; bool delayWasSub = false;
     std::vector<double> rtaDb; std::vector<foh::Band> rtaBands; foh::ConvergenceState conv;
     double refDelaySamples = 0, refDelayMs = 0, sampleRate = 48000; bool calApplied = false; juce::String calName;
