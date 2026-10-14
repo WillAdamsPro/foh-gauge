@@ -105,6 +105,15 @@ std::vector<double> smoothPower(const std::vector<double>& power, double binHz, 
 std::vector<cpx> smoothComplex(const std::vector<cpx>& h, double binHz, int fraction);
 
 // ---------- Dual-channel transfer function, Welch averaged ----------
+// ---------- Coherence traffic light ----------
+// Green: coherence >= 0.9. Amber: 0.6 <= coherence < 0.9. Red: < 0.6 (also NaN).
+enum class TrafficLight : uint8_t { Red = 0, Amber = 1, Green = 2 };
+constexpr double kCoherenceGreen = 0.9, kCoherenceAmber = 0.6;
+constexpr TrafficLight classifyCoherence(double c) {
+    return c >= kCoherenceGreen ? TrafficLight::Green : (c >= kCoherenceAmber ? TrafficLight::Amber : TrafficLight::Red);
+}
+inline const char* trafficLightName(TrafficLight t) { return t == TrafficLight::Green ? "green" : t == TrafficLight::Amber ? "amber" : "red"; }
+
 struct TFResult {
     double sampleRate = 48000; int fftSize = 0;
     std::vector<double> freq, magDb, phaseDeg, coherence;
@@ -115,7 +124,18 @@ struct TFResult {
     double blankThreshold = 0.0;
     int averages = 0;
     bool isBlanked(size_t k) const { return k < blanked.size() && blanked[k] != 0; }
+    TrafficLight light(size_t k) const { return k < coherence.size() ? classifyCoherence(coherence[k]) : TrafficLight::Red; }
 };
+// Band summary for the status pill: mean coherence over [lo, hi] Hz and its light.
+struct CoherenceSummary {
+    double meanCoherence = 0; TrafficLight light = TrafficLight::Red; int bins = 0;
+    // QaAdapters.h compatibility: state 0 good (green), 1 fair (amber), 2 poor (red); mean = meanCoherence
+    int state() const { return light == TrafficLight::Green ? 0 : light == TrafficLight::Amber ? 1 : 2; }
+    double mean() const { return meanCoherence; }
+};
+CoherenceSummary coherenceSummary(const TFResult& tf, double lo = 100.0, double hi = 10000.0);
+// Band traffic light (replaces qa::coherenceLight). Default band 200 Hz-10 kHz as in the UI.
+inline CoherenceSummary classifyCoherence(const TFResult& tf, double lo = 200.0, double hi = 10000.0) { return coherenceSummary(tf, lo, hi); }
 
 // "Wait until the average settles": after every Welch frame the TF is summarised on a
 // 1/3-oct grid (fLo..fHi); delta = coherence-weighted mean |change in dB| vs the previous

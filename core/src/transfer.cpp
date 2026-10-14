@@ -96,6 +96,13 @@ PhaseOffset phaseOffset(const TFResult& a, const TFResult& b, double lo, double 
     p.impliedMs = -p.meanDeg / 360.0 / p.centerHz * 1000.0; // positive => b lags a
     return p;
 }
+CoherenceSummary coherenceSummary(const TFResult& tf, double lo, double hi) {
+    CoherenceSummary c; double s = 0;
+    for (size_t k = 1; k < tf.freq.size() && k < tf.coherence.size(); ++k)
+        if (tf.freq[k] >= lo && tf.freq[k] <= hi) { s += tf.coherence[k]; ++c.bins; }
+    if (c.bins) c.meanCoherence = s / c.bins;
+    c.light = classifyCoherence(c.meanCoherence); return c;
+}
 TFResult virtualSum(const TFResult& a, const TFResult& b) {
     TFResult r = a; size_t n = std::min(a.H.size(), b.H.size());
     for (size_t k = 0; k < n; ++k) { r.H[k] = a.H[k] + b.H[k];
