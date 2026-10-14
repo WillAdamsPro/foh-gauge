@@ -19,7 +19,7 @@ jobs:
       - name: Toolchain
         run: xcodebuild -version && xcrun --show-sdk-version
       - name: Configure
-        run: cmake -S . -B build -G Xcode -DCMAKE_OSX_ARCHITECTURES=arm64 -DCMAKE_BUILD_TYPE=Release
+        run: cmake -S . -B build -G Xcode -DCMAKE_OSX_ARCHITECTURES=arm64 -DCMAKE_OSX_DEPLOYMENT_TARGET=26.0 -DCMAKE_BUILD_TYPE=Release
       - name: Build
         run: cmake --build build --config Release --parallel
       - name: Unit tests
