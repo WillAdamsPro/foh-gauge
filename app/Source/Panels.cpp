@@ -16,7 +16,7 @@ static Rectangle<int> controlRow(Rectangle<int>& r, int h = 26) { auto row = r.r
 // ---- helpers shared by the plot panels ----
 static void addStoredTraces(const AppModel& m, PlotComponent& p, bool mag) {
     for (int i = 0; i < m.traces.count(); ++i) { auto& t = m.traces.at(i); if (!t.visible) continue;
-        PlotComponent::Series s; s.c = C::storedTrace(i % 8); s.dash = foh::theme::stroke::dashStored; s.width = D::traceStored(); s.label = String(t.name);
+        PlotComponent::Series s; s.c = m.traceColour(i); s.dash = foh::theme::stroke::dashStored; s.width = D::traceStored(); s.label = String(t.name);
         logDecimate(t.tf, mag ? t.tf.magDb : t.tf.phaseDeg, s.f, s.v); p.series.push_back(s); }
 }
 static std::vector<std::pair<double,double>> blankedRegions(const foh::TFResult& tf) { // from fohcore's TFResult::blanked
@@ -344,15 +344,34 @@ private:
 class ImpulsePanel : public Panel {
 public:
     explicit ImpulsePanel(AppModel& m) : Panel(m, "Impulse", "Impulse") {
-        helpText = "The impulse is the delay finder's correlation around the first arrival. The tallest spike is the direct sound; later spikes are reflections.\n\nJudge polarity from the phase traces, not from the impulse.";
-        addAndMakeVisible(imp);
+        helpText = "Measure a 5-second log sweep with a safety ramp, followed by silence for decay. The impulse is deconvolved against the recorded loopback reference. Start at a low generator level and check your routing. ETC shows envelope energy relative to its peak.";
+        addAndMakeVisible(imp); addAndMakeVisible(measure); addAndMakeVisible(etc); addAndMakeVisible(status);
+        measure.onClick = [this] { foh::Command c; c.type = foh::CommandType::MeasureSweep; model.send(c); };
+        etc.onClick = [this] { imp.showEtc = etc.getToggleState(); imp.repaint(); };
     }
-    Json saveState() const override { Json j = Json::object(); j.set("postMs", imp.postMs); return j; }
-    void loadState(const Json& j) override { imp.postMs = j["postMs"].asNumber(45); }
-    void resized() override { imp.setBounds(getLocalBounds().reduced(pad, 6)); }
-    void modelChanged(int w) override { if (w & (AppModel::Delay | AppModel::Theme)) imp.setResult(model.delay, model.sampleRate); }
+    Json saveState() const override { Json j = Json::object(); j.set("postMs", imp.postMs); j.set("etc", etc.getToggleState()); return j; }
+    void loadState(const Json& j) override { imp.postMs = j["postMs"].asNumber(45); etc.setToggleState(j["etc"].asBool(false), dontSendNotification); imp.showEtc = etc.getToggleState(); }
+    fohws::Size minSize() const override { return { 300, 180 }; }
+    void resized() override {
+        auto r = getLocalBounds().reduced(pad, 6); auto row = r.removeFromTop(26);
+        measure.setBounds(row.removeFromLeft(150)); etc.setBounds(row.removeFromLeft(75));
+        status.setBounds(r.removeFromTop(22)); imp.setBounds(r);
+    }
+    void modelChanged(int w) override {
+        if (!(w & (AppModel::Snapshot | AppModel::Delay | AppModel::Theme))) return;
+        measure.setEnabled(!model.sweepCapturing);
+        String note = "Delay correlation";
+        if (model.sweepCapturing) note = "Measuring sweep...";
+        else if (!model.sweep.response.error.empty()) note = String(model.sweep.response.error);
+        else if (model.sweep.response.ok()) note = "Sweep impulse: " + String(model.sweep.response.arrivals[0].delayMs, 2) + " ms";
+        status.setText(note, dontSendNotification);
+        etc.setEnabled(!model.sweep.etcDb.empty());
+        imp.etcDb = model.sweep.etcDb;
+        imp.setResult(model.sweep.response.impulse.empty() ? model.delay : model.sweep.response, model.sampleRate);
+    }
 private:
     ImpulseComponent imp;
+    TextButton measure {"Measure sweep"}; ToggleButton etc {"ETC"}; Label status;
 };
 
 // ===================== Signal meters =====================
@@ -389,7 +408,7 @@ private:
 class GeneratorPanel : public Panel {
 public:
     explicit GeneratorPanel(AppModel& m) : Panel(m, "Generator", "Generator") {
-        helpText = "Pink noise for the transfer function and RTA; the log sweep loops every 5 s.\n\nOut 1 goes to the console, Out 2 loops back to In 2 as the reference.";
+        helpText = "Pink noise for the transfer function and RTA; the log sweep lasts 5 s followed by a 1 s silence gap.\n\nOut 1 goes to the console, Out 2 loops back to In 2 as the reference.";
         type.addItem("Generator off", 1); type.addItem("Pink noise", 2); type.addItem("Log sweep 20 Hz-20 kHz (5 s, loops)", 3);
         type.onChange = [this] { model.engine.gen = type.getSelectedId() - 1; };
         gain.setRange(-60, 0, 0.5); gain.setTextValueSuffix(" dBFS"); gain.setTextBoxStyle(Slider::TextBoxRight, false, 90, 22);
@@ -454,24 +473,112 @@ private:
 class TraceListPanel : public Panel, private ListBoxModel {
 public:
     explicit TraceListPanel(AppModel& m) : Panel(m, "TraceList", "Traces") {
-        helpText = "Up to 8 stored traces. Click the box to show or hide a trace on the plots. Stored traces are dashed.";
-        list.setModel(this); list.setRowHeight(24); addAndMakeVisible(list); del.onClick = [this] { if (list.getSelectedRow() >= 0) model.removeTrace(list.getSelectedRow()); }; addAndMakeVisible(del);
+        helpText = "Up to 8 stored traces. Select a row to edit its name or colour; click the box to show/hide it. Choose two sources for a complex virtual sum preview, including the same trace twice. The preview does not store or change measurements.";
+        list.setModel(this); list.setRowHeight(24);
+        name.setTextToShowWhenEmpty("Select a trace to rename", C::textAxis());
+        name.onReturnKey = [this] { model.renameTrace(list.getSelectedRow(), name.getText()); };
+        rename.onClick = name.onReturnKey;
+        const char* names[] = {"Red", "Orange", "Yellow", "Green", "Cyan", "Blue", "Purple", "Pink"};
+        for (int i = 0; i < 8; ++i) colour.addItem(names[i], i + 1);
+        colour.setTextWhenNothingSelected("Colour");
+        colour.onChange = [this] { if (colour.getSelectedId() > 0) model.colourTrace(list.getSelectedRow(), palette(colour.getSelectedId() - 1)); };
+        del.onClick = [this] { model.removeTrace(list.getSelectedRow()); };
+        sourceA.setTextWhenNothingSelected("Sum source A"); sourceB.setTextWhenNothingSelected("Sum source B");
+        sourceA.onChange = sourceB.onChange = [this] { model.selectSum(sourceA.getSelectedId() - 1, sourceB.getSelectedId() - 1); };
+        preview.yLabel = "SUM DB"; preview.yMin = -12; preview.yMax = 12; preview.yStep = 6; preview.showLegend = true;
+        for (auto* c : std::initializer_list<Component*>{&list, &name, &rename, &colour, &del, &sourceA, &sourceB, &preview}) addAndMakeVisible(c);
+        modelChanged(AppModel::Traces);
     }
     ~TraceListPanel() override { list.setModel(nullptr); }
+    fohws::Size minSize() const override { return {300, 420}; }
     int priority() const override { return 5; }
-    void resized() override { auto r = getLocalBounds().reduced(pad, 6); del.setBounds(r.removeFromBottom(28).removeFromRight(110)); r.removeFromBottom(6); list.setBounds(r); }
-    void modelChanged(int w) override { if (w & (AppModel::Traces | AppModel::Theme)) { list.updateContent(); list.repaint(); } }
+    void resized() override {
+        auto r = getLocalBounds().reduced(pad, 6);
+        list.setBounds(r.removeFromTop(120)); r.removeFromTop(6);
+        auto row = controlRow(r); rename.setBounds(row.removeFromRight(76)); row.removeFromRight(6); name.setBounds(row);
+        row = controlRow(r); del.setBounds(row.removeFromRight(110)); row.removeFromRight(6); colour.setBounds(row);
+        row = controlRow(r); sourceA.setBounds(row.removeFromLeft(row.getWidth() / 2)); row.removeFromLeft(6); sourceB.setBounds(row);
+        preview.setBounds(r);
+    }
+    void modelChanged(int w) override {
+        if (!(w & (AppModel::Traces | AppModel::Theme))) return;
+        list.updateContent(); list.repaint(); selectedRowsChanged(list.getSelectedRow());
+        sourceA.clear(dontSendNotification); sourceB.clear(dontSendNotification);
+        for (int i = 0; i < model.traces.count(); ++i) {
+            auto title = String(i + 1) + ": " + String(model.traces.at(i).name);
+            sourceA.addItem(title, i + 1); sourceB.addItem(title, i + 1);
+        }
+        sourceA.setSelectedId(model.sumA + 1, dontSendNotification); sourceB.setSelectedId(model.sumB + 1, dontSendNotification);
+        auto sum = model.sumPreview(); preview.series.clear();
+        preview.centreNote = sum.freq.empty() ? (model.validTrace(model.sumA) && model.validTrace(model.sumB)
+            ? "Sources need matching frequency grids and complete TF data" : "Choose two stored traces to preview their sum") : String{};
+        preview.note = {};
+        if (!sum.freq.empty()) {
+            PlotComponent::Series s; s.c = C::accent(); s.label = "Virtual sum";
+            logDecimate(sum, sum.magDb, s.f, s.v, &s.gap); preview.series.push_back(std::move(s));
+            // A numerical readout makes the preview useful even in a small panel.
+            auto bin = std::min_element(sum.freq.begin(), sum.freq.end(), [](double a, double b) { return std::abs(a - 1000) < std::abs(b - 1000); });
+            auto k = (size_t) std::distance(sum.freq.begin(), bin);
+            preview.note = String(*bin, 0) + " Hz: " + (sum.magDb[k] >= 0 ? "+" : "") + String(sum.magDb[k], 2) + " dB";
+        }
+        preview.repaint();
+    }
     int getNumRows() override { return model.traces.count(); }
     void paintListBoxItem(int row, Graphics& g, int w, int h, bool sel) override {
-        if (row >= model.traces.count()) return; auto& t = model.traces.at(row);
+        if (!model.validTrace(row)) return; auto& t = model.traces.at(row);
         if (sel) g.fillAll(C::navItemActiveBg());
-        auto box = Rectangle<float>(6, h / 2.f - 6, 12, 12); g.setColour(C::storedTrace(row % 8)); g.drawRect(box, 1.f); if (t.visible) g.fillRect(box.reduced(3));
+        auto box = Rectangle<float>(6, h / 2.f - 6, 12, 12); g.setColour(model.traceColour(row)); g.drawRect(box, 1.f); if (t.visible) g.fillRect(box.reduced(3));
         g.setColour(t.visible ? C::textPrimary() : C::textAxis()); g.setFont(FohLookAndFeel::font(T::small));
         g.drawText(String(t.name) + "   ref delay " + String(t.refDelayMs, 2) + " ms", 26, 0, w - 30, h, Justification::centredLeft);
     }
-    void listBoxItemClicked(int row, const MouseEvent& e) override { if (row < model.traces.count() && e.x < 24) model.toggleTrace(row); }
+    void selectedRowsChanged(int row) override {
+        bool valid = model.validTrace(row);
+        name.setEnabled(valid); rename.setEnabled(valid); colour.setEnabled(valid); del.setEnabled(valid);
+        name.setText(valid ? String(model.traces.at(row).name) : String{}, false);
+        int id = 0;
+        if (valid) for (int i = 0; i < 8; ++i) if (model.traceColour(row) == palette(i)) id = i + 1;
+        colour.setSelectedId(id, dontSendNotification);
+    }
+    void listBoxItemClicked(int row, const MouseEvent& e) override { if (e.x < 24) model.toggleTrace(row); }
 private:
-    ListBox list; TextButton del {"Delete trace"};
+    static Colour palette(int i) { return Colour::fromHSV((float) i / 8.0f, 0.7f, 0.9f, 1.0f); }
+    ListBox list; TextEditor name; ComboBox colour, sourceA, sourceB; TextButton rename {"Rename"}, del {"Delete trace"}; PlotComponent preview;
+};
+
+// ===================== Indicative SPL / Leq =====================
+class SplLeqPanel : public Panel {
+public:
+    explicit SplLeqPanel(AppModel& m) : Panel(m, "SPLNumbers", "SPL / Leq (indicative)") {
+        addAndMakeVisible(weighting); weighting.addItemList({"A", "C", "Z"}, 1); weighting.setSelectedId(1);
+        addAndMakeVisible(preset); preset.addItemList({"WHO", "NIOSH"}, 1); preset.setSelectedId(1);
+        weighting.onChange = preset.onChange = [this] { repaint(); };
+        helpText = "Indicative calibrated SPL. Leq averages energy, with rolling 1 min and 15 min windows in 100 ms buckets. Before a window fills it uses elapsed measured time. Session starts with the input and resets on input or calibration changes. Paused audio is excluded. Warnings always use A weighting. WHO: 100 dBA LAeq-15. NIOSH: 85 dBA for 8 h, 3 dB exchange. This is not a certified sound level meter.";
+    }
+    fohws::Size minSize() const override { return {230, 240}; }
+    void resized() override { auto r=getLocalBounds().reduced(pad).removeFromTop(26); weighting.setBounds(r.removeFromLeft(70)); r.removeFromLeft(8); preset.setBounds(r); }
+    void modelChanged(int) override { repaint(); }
+    void paint(Graphics& g) override {
+        g.setColour(C::textPrimary()); g.setFont(FohLookAndFeel::font(T::small));
+        auto r=getLocalBounds().reduced(pad); r.removeFromTop(34);
+        auto line=[&](const String& text) { g.drawText(text,r.removeFromTop(24),Justification::centredLeft); };
+        const auto c=model.splCal();
+        if (!c.calibrated) { line("Calibrate SPL in Setup"); return; }
+        if (!model.micLevelReady() || model.leqRevision != model.analysis.leqRevision.load() || model.leq.seconds<=0) { line("-- SPL / Leq (no live signal)"); return; }
+        size_t w=static_cast<size_t>(weighting.getSelectedId()-1);
+        auto level=[&](double db) { return c.level(db-(model.calOn ? model.cal.dbAt(1000) : 0), model.splSensitivity()); };
+        auto value=[&](const char* label, double db) { line(String(label)+String(level(db),1)+" dB"+weighting.getText()); };
+        value("SPL  ",model.leq.level[w]); value("Leq 1 min  ",model.leq.minute[w]);
+        value("Leq 15 min  ",model.leq.fifteenMinutes[w]); value("Leq session  ",model.leq.session[w]);
+        line("Measured " + String(model.leq.seconds,1) + " s" + (model.leq.seconds<900 ? " (partial windows)" : ""));
+        auto selected=preset.getSelectedId()==1 ? foh::ExposurePreset::WHO : foh::ExposurePreset::NIOSH;
+        auto warning=foh::exposureWarning(selected,level(model.leq.fifteenMinutes[0]),level(model.leq.session[0]),model.leq.seconds);
+        if (model.micPeak>=0.99f) line("WARNING: input clipping");
+        else if (warning.exceeded) line("WARNING: " + preset.getText() + " limit reached");
+        else line(preset.getText()+" limit not reached");
+        line(selected==foh::ExposurePreset::WHO ? "100 dBA Leq-15" : "85 dBA / 8 h, 3 dB exchange");
+    }
+private:
+    ComboBox weighting, preset;
 };
 
 // ===================== Inspector =====================
@@ -522,7 +629,7 @@ PanelRegistry& PanelRegistry::standard() {
         ph("LimitPreset", "Limit Preset", "SPL limit preset for exposure monitoring.");
         ph("EQSuggestions", "EQ Suggestions", "Suggested EQ moves from the transfer function, coherence-weighted.");
         ph("SPLHistory", "SPL History", "SPL over time with LAeq / LCeq traces.");
-        ph("SPLNumbers", "SPL Numbers", "LAeq-15 / LCeq-15 / LAeq-1 readouts.");
+        add("SPLNumbers", "SPL / Leq", [](AppModel& m) { return std::make_unique<SplLeqPanel>(m); });
         ph("Dose", "Dose", "Noise dose against the selected limit.");
         ph("Events", "Events", "Log of clipping, limit breaches and captures.");
         return x; }();

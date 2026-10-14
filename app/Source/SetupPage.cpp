@@ -19,6 +19,9 @@ SetupPage::SetupPage(AppModel& m, bool showDone) : model(m) {
     addAndMakeVisible(easySetup);
     easySetup.onClick = [this] { wizard.begin(); refresh(); wizard.setVisible(true); wizard.toFront(false); };
     addChildComponent(wizard);
+    addAndMakeVisible(rigSetup); addChildComponent(questionnaire);
+    rigSetup.onClick = [this] { questionnaire.begin(); questionnaire.setVisible(true); questionnaire.toFront(false); };
+    questionnaire.onClose = [this] { questionnaire.setVisible(false); };
     wizard.onApplied = [this] { model.notify(AppModel::Settings); };
     wizard.onClose = [this] { wizard.setVisible(false); refresh(); };
     addAndMakeVisible(notice);
@@ -98,8 +101,9 @@ void SetupPage::applyDevice() {
     notice.setText(model.dm.setAudioDeviceSetup(setup, true), dontSendNotification); refresh();
 }
 void SetupPage::resized() {
-    wizard.setBounds(getLocalBounds());
+    wizard.setBounds(getLocalBounds()); questionnaire.setBounds(getLocalBounds());
     auto r = getLocalBounds().reduced(16); auto heading = r.removeFromTop(32); easySetup.setBounds(heading.removeFromRight(110)); title.setBounds(heading);
+    rigSetup.setBounds(r.removeFromTop(30));
     auto buttons = r.removeFromBottom(36); done.setBounds(buttons.removeFromRight(90)); chime.setBounds(buttons.removeFromLeft(130));
     notice.setBounds(r.removeFromBottom(32));
     auto spl = r.removeFromBottom(142);

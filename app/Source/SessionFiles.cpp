@@ -66,6 +66,7 @@ bool MainComponent::writeSession(const File& folder) {
     s.inputChannels = setup.inputChannels.toString(2).toStdString(); s.outputChannels = setup.outputChannels.toString(2).toStdString();
     s.mic = model.engine.micCh; s.reference = model.engine.refCh; s.outputA = model.engine.outA; s.outputB = model.engine.outB;
     s.micCalEnabled = model.calOn; s.micCalName = model.calFile.toStdString(); s.micCalText = model.calText;
+    s.rigProfile = model.rigProfile;
     s.splCal = model.splCalJson(); s.targets = sessionTargets;
     for (int i = 0; i < model.traces.count(); ++i) s.captures.push_back(model.traces.at(i));
     view.storePanelStates();
@@ -99,6 +100,8 @@ bool MainComponent::readSession(const File& folder) {
         setup.inputChannels.parseString(String(s.inputChannels), 2); setup.outputChannels.parseString(String(s.outputChannels), 2);
         auto deviceError = model.dm.setAudioDeviceSetup(setup, true); available = deviceError.isEmpty();
     }
+    model.rigProfile = s.rigProfile;
+    model.notify(AppModel::Rig);
     setShowMode(false); leaveWorkspace(); view.setWorkspace(nullptr);
     int index = mgr.indexOf(workspace.id);
     if (index < 0) index = mgr.saveAs(0, String(workspace.name));
@@ -114,7 +117,7 @@ bool MainComponent::readSession(const File& folder) {
     }
     model.engine.micCh = s.mic; model.engine.refCh = s.reference; model.engine.outA = s.outputA; model.engine.outB = s.outputB;
     model.calText = s.micCalText; model.cal = foh::parseMicCal(s.micCalText); model.calFile = String(s.micCalName); model.setCalEnabled(s.micCalEnabled);
-    model.traces.clear();
+    model.clearTraces();
     for (const auto& t : s.captures) { model.traces.store(t.name, t.tf, t.refDelayMs); model.traces.at(model.traces.count() - 1).visible = t.visible; }
     model.loadSplCalJson(s.splCal.value_or(foh::Json::object()));
     if (auto* prefs = model.settings.getUserSettings()) { prefs->setValue("splCalibration", String(model.splCalJson().dump())); prefs->saveIfNeeded(); } sessionTargets = s.targets;

@@ -59,7 +59,10 @@ AppModel::AppModel() {
 AppModel::~AppModel() { stopTimer(); dm.removeAudioCallback(&engine); analysis.stop(); if (auto* pf = settings.getUserSettings()) pf->saveIfNeeded(); }
 
 void AppModel::timerCallback() {
-    int what = Levels; sampleRate = engine.sampleRate.load();
+    int what = Levels;
+    const int generatorMode = engine.gen.load();
+    if (generatorMode != lastGeneratorMode) { lastGeneratorMode = generatorMode; what |= Settings; }
+    sampleRate = engine.sampleRate.load();
     const auto epoch = engine.captureEpoch.load(std::memory_order_acquire);
     const bool deviceFailed = engine.deviceFailed.load(std::memory_order_acquire);
     if (epoch != lastInputEpoch || deviceFailed != lastDeviceFailed) {
@@ -67,6 +70,7 @@ void AppModel::timerCallback() {
         lastInputEpoch = epoch;
         auto then = std::move(capture.then);
         cancelSessionOperations();
+        sweep = {}; sweepCapturing = false;
         multiPosition = {}; positionCount = 0; positionMask = 0;
         tf = {}; rtaDb.clear(); rtaBands.clear(); conv = {}; micLevelValid = false;
         lockedDelayMs = 0; refDelaySamples = 0; refDelayMs = 0;
@@ -75,11 +79,13 @@ void AppModel::timerCallback() {
     }
     { const auto& snap = analysis.latest(); // single reader thread (this timer); copy out what we keep
       if (!deviceFailed && snap.seq != lastSeq && snap.inputEpoch == epoch) { lastSeq = snap.seq; what |= Snapshot;
+          leq = snap.leq; leqRevision = snap.leqRevision;
           micLevelDbfs = snap.micLevelDbfs;
           levelInputKey = splInputKey(); levelInputEpoch = snap.inputEpoch;
           levelTimeMs = Time::getMillisecondCounterHiRes();
           micLevelValid = snap.micLevelValid && snap.inputEpoch == engine.captureEpoch.load()
               && snap.micChannel == engine.micCh.load() && engine.micCh.load() >= 0;
+          sweep = snap.sweep; sweepCapturing = snap.sweepCapturing;
           multiPosition = snap.multiPosition; positionCount = snap.positionCount; positionMask = snap.positionMask;
           tf = snap.tf; rtaDb = snap.rtaDb; rtaBands = snap.rtaBands; conv = snap.convergence;
           if (capture.active) {
@@ -130,13 +136,15 @@ void AppModel::loadCalFile(const File& f) {
         if (!parsed.ok()) throw std::runtime_error(parsed.error);
         auto published = std::make_shared<foh::MicCal>(parsed);
         calText = std::move(text); cal = std::move(parsed); calFile = f.getFileName(); calOn = true;
-        analysis.setCal(std::move(published), calFile); notify(Cal);
+        analysis.setCal(std::move(published), calFile); ++analysis.leqRevision;
+        notify(Cal);
     } catch (const std::exception& e) {
         AlertWindow::showMessageBoxAsync(AlertWindow::WarningIcon, "Mic calibration import failed", String(e.what()));
     }
 }
 void AppModel::setCalEnabled(bool on) {
-    calOn = on && cal.ok(); analysis.setCal(calOn ? std::make_shared<foh::MicCal>(cal) : nullptr, calFile); notify(Cal);
+    calOn = on && cal.ok(); analysis.setCal(calOn ? std::make_shared<foh::MicCal>(cal) : nullptr, calFile); ++analysis.leqRevision;
+    notify(Cal);
 }
 
 std::string AppModel::splInputKey() const {
@@ -152,11 +160,13 @@ bool AppModel::calibrateSpl(double known) {
     if (!c.calibrate(micLevelDbfs - (calOn ? cal.dbAt(1000) : 0), known, splSensitivity())) return false;
     splCals[splInputKey()] = c;
     if (auto* p = settings.getUserSettings()) { p->setValue("splCalibration", juce::String(splCalJson().dump())); p->saveIfNeeded(); }
+    ++analysis.leqRevision;
     notify(Cal | Settings); return true;
 }
 void AppModel::clearSpl() {
     splCals.erase(splInputKey());
     if (auto* p = settings.getUserSettings()) { p->setValue("splCalibration", juce::String(splCalJson().dump())); p->saveIfNeeded(); }
+    ++analysis.leqRevision;
     notify(Cal | Settings);
 }
 foh::Json AppModel::splCalJson() const {
@@ -173,6 +183,7 @@ void AppModel::loadSplCalJson(const foh::Json& j) {
         candidate[entry.first] = c;
     }
     splCals = std::move(candidate);
+    ++analysis.leqRevision;
     notify(Cal | Settings);
 }
 

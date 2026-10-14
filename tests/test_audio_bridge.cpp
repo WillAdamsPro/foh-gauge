@@ -268,6 +268,20 @@ TEST_CASE("SPL level snapshots measure the selected input and reset on routing c
     REQUIRE(first.micLevelDbfs == Catch::Approx(-20).margin(0.01));
     foh::SplCal cal; REQUIRE(cal.calibrate(first.micLevelDbfs, 94));
     REQUIRE(cal.level(first.micLevelDbfs) == Catch::Approx(94).margin(0.1));
+    REQUIRE(first.leq.seconds == Catch::Approx(0.1));
+    for (int w : {0, 1, 2}) {
+        REQUIRE(cal.level(first.leq.level[w]) == Catch::Approx(94).margin(0.1));
+        REQUIRE(cal.level(first.leq.session[w]) == Catch::Approx(94).margin(0.1));
+    }
+    analysis.paused = true;
+    capture(engine, mic.data(), ref.data(), int(mic.size()));
+    REQUIRE(waitFor([&] { return engine.micRing.available() == 0; }));
+    REQUIRE(waitFor([&] { return !analysis.latest().micLevelValid; }));
+    REQUIRE(analysis.latest().leq.seconds == Catch::Approx(0.1));
+    ++analysis.leqRevision;
+    REQUIRE(waitFor([&] { return analysis.latest().leqRevision == 1; }));
+    REQUIRE(analysis.latest().leq.seconds == 0);
+    analysis.paused = false;
     engine.micCh = 1;
     capture(engine, mic.data(), ref.data(), int(mic.size())); // Discard while routing restart is acknowledged.
     REQUIRE(waitFor([&] { return engine.analysisEpoch.load() == engine.captureEpoch.load(); }));
@@ -275,6 +289,8 @@ TEST_CASE("SPL level snapshots measure the selected input and reset on routing c
     REQUIRE(waitFor([&] { const auto& s = analysis.latest(); return s.micLevelValid && s.micChannel == 1; }));
     const auto second = analysis.latest();
     REQUIRE(second.inputEpoch != first.inputEpoch);
+    REQUIRE(second.leq.seconds == Catch::Approx(0.1));
+    REQUIRE(second.leq.session[2] == Catch::Approx(-26.0206).margin(0.01));
     REQUIRE(second.micLevelDbfs == Catch::Approx(-26.0206).margin(0.01));
     REQUIRE(waitFor([&] { return !analysis.latest().micLevelValid; })); // Never calibrate a stale snapshot.
     analysis.stop();
@@ -793,4 +809,73 @@ TEST_CASE("Multi-mic TF average overlays the target with controls reachable", "[
     show->setToggleState(true, juce::dontSendNotification);
     model.positionCount = 1; panel->modelChanged(AppModel::Snapshot);
     REQUIRE_FALSE(hasSeries("Multi-mic average"));
+}
+
+TEST_CASE("Sweep measurement captures loopback and publishes impulse and ETC", "[app][audio][sweep]") {
+    AudioEngine engine; AnalysisEngine analysis(engine);
+    foh::Command command; command.type = foh::CommandType::MeasureSweep;
+    // In hardware this preparation occurs in JUCE's serialized about-to-start callback.
+    // The test device supplies 48 kHz, matching the synthetic input stream.
+    SyntheticDevice device; device.block = 512;
+    engine.audioDeviceAboutToStart(&device);
+    analysis.start();
+    REQUIRE(waitFor([&] { return engine.analysisEpoch.load() == engine.captureEpoch.load(); }));
+    REQUIRE(analysis.send(command));
+    REQUIRE(waitFor([&] { return analysis.latest().sweepCapturing; }));
+    constexpr int block = 512;
+    std::vector<float> output(330000), mic(block), ref(block), second(block);
+    for (int offset = 0; offset + block <= int(output.size()); offset += block) {
+        for (int i = 0; i < block; ++i) {
+            const int source = offset + i - block; // common I/O latency cancels
+            ref[i] = source >= 0 ? output[size_t(source)] : 0;
+            mic[i] = source >= 231 ? 0.6f * (0.6f * output[size_t(source-230)] + 0.4f * output[size_t(source-231)]) : 0;
+        }
+        const float* inputs[] { mic.data(), ref.data() };
+        float* outputs[] { output.data() + offset, second.data() };
+        engine.audioDeviceIOCallbackWithContext(inputs, 2, outputs, 2, block, {});
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    REQUIRE(waitFor([&] { return !analysis.latest().sweepCapturing; }));
+    const auto result = analysis.latest().sweep;
+    REQUIRE(result.response.ok());
+    CHECK(result.response.arrivals[0].delayMs == Catch::Approx(4.8).margin(0.02));
+    CHECK(result.etcDb.size() == result.response.impulse.size());
+    CHECK(engine.gen.load() == AudioEngine::Off);
+    CHECK(std::all_of(output.begin() + 240000, output.end(), [](float value) { return value == 0; }));
+    analysis.stop();
+}
+
+TEST_CASE("Sweep playback ramps down on stop and up on restart", "[app][audio][sweep]") {
+    AudioEngine engine; SyntheticDevice device; engine.audioDeviceAboutToStart(&device);
+    std::array<float, 512> a{}, b{};
+    float* outputs[] {a.data(), b.data()};
+    engine.gen.store(AudioEngine::Sweep);
+    for (int block = 0; block < 20; ++block)
+        engine.audioDeviceIOCallbackWithContext(nullptr, 0, outputs, 2, 512, {});
+    engine.gen.store(AudioEngine::Off);
+    engine.audioDeviceIOCallbackWithContext(nullptr, 0, outputs, 2, 512, {});
+    for (int i = 0; i < 512; ++i) {
+        CHECK(std::abs(a[size_t(i)]) <= 0.1 * std::max(0.0, 1 - (i+1)/480.0) + 1e-7);
+        CHECK(a[size_t(i)] == b[size_t(i)]);
+    }
+    engine.gen.store(AudioEngine::Sweep);
+    engine.audioDeviceIOCallbackWithContext(nullptr, 0, outputs, 2, 512, {});
+    CHECK(a.front() == 0);
+    for (int i = 0; i < 480; ++i)
+        CHECK(std::abs(a[size_t(i)]) <= 0.1 * i/480.0 + 1e-7);
+}
+
+TEST_CASE("Pausing cancels a sweep capture and stops playback", "[app][audio][sweep]") {
+    AudioEngine engine; SyntheticDevice device; engine.audioDeviceAboutToStart(&device);
+    AnalysisEngine analysis(engine); analysis.start();
+    REQUIRE(waitFor([&] { return engine.analysisEpoch.load() == engine.captureEpoch.load(); }));
+    foh::Command command; command.type = foh::CommandType::MeasureSweep;
+    REQUIRE(analysis.send(command));
+    REQUIRE(waitFor([&] { return analysis.latest().sweepCapturing; }));
+    analysis.paused.store(true);
+    REQUIRE(waitFor([&] { return !analysis.latest().sweepCapturing; }));
+    CHECK_FALSE(analysis.latest().sweep.response.error.empty());
+    CHECK(analysis.latest().sweep.response.impulse.empty());
+    CHECK(engine.gen.load() == AudioEngine::Off);
+    analysis.stop();
 }
