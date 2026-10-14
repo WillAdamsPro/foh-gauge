@@ -52,7 +52,10 @@ public:
 
     // ---- delay finder
     uint64_t nextGuideSweepId = 0, sweepSeq = 0; // message-thread sweep ownership
-    bool delayLocked() const { return delay.ok(); }
+    bool delayLocked() const {
+        return delay.ok() && !engine.deviceFailed.load(std::memory_order_acquire)
+            && lastInputEpoch == engine.captureEpoch.load(std::memory_order_acquire);
+    }
     void requestDelay(bool sub, std::function<void()> then = {});
     void lockDelayFromLast();
     void cancelSessionOperations() {
@@ -69,7 +72,7 @@ public:
         sweep = {}; sweepCapturing = false;
         refDelaySamples = 0; refDelayMs = 0;
         lockedDelayMs = ms;
-        send(foh::Command::referenceDelay(ms * engine.sampleRate.load() / 1000.0));
+        analysis.send(foh::Command::referenceDelay(ms * engine.sampleRate.load() / 1000.0), lastInputEpoch);
     }
     double lockedDelayMs = 0; bool delayPending = false;
 
@@ -164,6 +167,7 @@ private:
     int savedGenerator = 0; float savedGeneratorGain = -20;
     bool savedPaused = false;
     std::string levelInputKey; uint64_t levelInputEpoch = 0; double levelTimeMs = 0;
+    friend struct AppModelMeasurementTestAccess;
     void timerCallback() override;
     juce::ListenerList<Listener> listeners;
     int lastGeneratorMode = AudioEngine::Off;

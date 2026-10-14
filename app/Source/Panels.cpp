@@ -101,7 +101,14 @@ public:
             if (parsed.ok()) { source = std::move(text); target = std::move(parsed);
                 if (choice.getNumItems() == 3) choice.addItem(String(j["targetName"].asString("Imported target")), 4);
                 choice.setSelectedId(4, dontSendNotification); }
-            else { AlertWindow::showMessageBoxAsync(AlertWindow::WarningIcon, "Saved target", String(parsed.error)); return; }
+            else {
+                source.clear();
+                choice.setSelectedId(1, dontSendNotification); selectBuiltin();
+                shown.setToggleState(false, dontSendNotification);
+                band.setToggleState(false, dontSendNotification);
+                changed();
+                AlertWindow::showMessageBoxAsync(AlertWindow::WarningIcon, "Saved target", String(parsed.error)); return;
+            }
         } else { choice.setSelectedId(jlimit(1, 3, id), dontSendNotification); selectBuiltin(); }
         shown.setToggleState(j["targetShown"].asBool(), dontSendNotification);
         band.setToggleState(j["targetBand"].asBool(target.useTolerance), dontSendNotification);
@@ -281,7 +288,7 @@ public:
         plot.yLabel = spl.unit(); plot.yMin = spl.calibrated ? 0 : -100; plot.yMax = spl.calibrated ? 140 : 0;
         plot.series.clear(); plot.barLo.clear(); plot.barHi.clear(); PlotComponent::Series s; s.c = C::accent(); s.label = "Live";
         for (size_t i = 0; i < model.rtaDb.size() && i < model.rtaBands.size(); ++i) { auto& b = model.rtaBands[i]; plot.barLo.push_back(b.fLo); plot.barHi.push_back(b.fHi); s.f.push_back(b.fCenter); s.v.push_back(spl.level(model.rtaDb[i], model.splSensitivity())); }
-        plot.series.push_back(s); target.appendTo(plot); plot.note = model.calApplied ? "cal applied" : ""; plot.repaint();
+        plot.series.push_back(s); target.appendTo(plot); plot.note = model.rtaDb.empty() ? "No valid spectrum" : (model.calApplied ? "cal applied" : ""); plot.repaint();
     }
 private:
     TargetControls target {-40}; PlotComponent plot; ComboBox frac;
