@@ -1,4 +1,7 @@
 #include "FloatingPanels.h"
+#if JUCE_MAC
+#import <AppKit/AppKit.h>
+#endif
 using namespace juce;
 namespace WS = foh::theme::ws;
 static const foh::theme::Theme& TH() { return foh::theme::ThemeManager::get().current(); }
@@ -40,6 +43,13 @@ FloatingPanelWindow::FloatingPanelWindow(Panel& p, fohws::FloatingPanel& state)
     dock->onClick = [this] { if (onDock) onDock(); };
     restoreToDisplays(currentDisplays());
     setPinned(st.alwaysOnTop); restyle();
+#if JUCE_MAC
+    // These custom-chrome windows can be destroyed immediately by docking or
+    // workspace replacement. AppKit's automatic close animation can outlive
+    // the JUCE peer on macOS 26; keep native visibility changes synchronous.
+    if (auto* peer = getPeer())
+        [(NSView*) peer->getNativeHandle() window].animationBehavior = NSWindowAnimationBehaviorNone;
+#endif
     setVisible(true); ready = true;
 }
 FloatingPanelWindow::~FloatingPanelWindow() { ready = false; clearContentComponent(); }

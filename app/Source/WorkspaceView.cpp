@@ -196,7 +196,7 @@ void WorkspaceView::rebuild() {
 }
 void WorkspaceView::layoutDisplay() {
     for (auto& [id, p] : panels) if (!(isFloating && isFloating(id))) releasePanel(id, p.get());
-    display = showMode ? LayoutNode::leaf("RTA") : maximised.empty() || !ws->root.contains(maximised) ? ws->root : LayoutNode::leaf(maximised);
+    display = showMode ? LayoutNode::leaf("ShowMonitoring") : maximised.empty() || !ws->root.contains(maximised) ? ws->root : LayoutNode::leaf(maximised);
     auto ms = [this](const std::string& id) { auto* p = panel(id); return p ? p->minSize() : fohws::Size { WS::panelMinWidth, WS::panelMinHeight }; };
     auto pr = [this](const std::string& id) { auto* p = panel(id); return p ? p->priority() : 10; };
     LayoutNode before = display; if (getWidth() > 0 && getHeight() > 0) fohws::enforceMinSizes(display, getWidth(), getHeight(), ms, pr); collapsed = !(before == display); // collapse rule on a display copy
@@ -205,7 +205,7 @@ void WorkspaceView::layoutDisplay() {
 void WorkspaceView::resized() {
     if (!ws) return;
     // re-run the collapse rule when the size changes, so a wide window restores the full preset tree
-    LayoutNode check = showMode ? LayoutNode::leaf("RTA") : maximised.empty() ? ws->root : LayoutNode::leaf(maximised);
+    LayoutNode check = showMode ? LayoutNode::leaf("ShowMonitoring") : maximised.empty() ? ws->root : LayoutNode::leaf(maximised);
     auto ms = [this](const std::string& id) { auto* p = panel(id); return p ? p->minSize() : fohws::Size { WS::panelMinWidth, WS::panelMinHeight }; };
     auto pr = [this](const std::string& id) { auto* p = panel(id); return p ? p->priority() : 10; };
     fohws::enforceMinSizes(check, getWidth(), getHeight(), ms, pr);
