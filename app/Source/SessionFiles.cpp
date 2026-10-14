@@ -3,16 +3,19 @@ using namespace juce;
 
 PopupMenu MainComponent::getFileMenu(ApplicationCommandManager& commands) {
     PopupMenu menu;
-    for (auto id : { openSessionCommand, saveSessionCommand, saveSessionAsCommand })
+    for (auto id : { openSessionCommand, saveSessionCommand, saveSessionAsCommand, consoleControlCommand })
         menu.addCommandItem(&commands, id);
     return menu;
 }
 void MainComponent::getAllCommands(Array<CommandID>& commands) {
-    for (auto id : { openSessionCommand, saveSessionCommand, saveSessionAsCommand })
+    for (auto id : { openSessionCommand, saveSessionCommand, saveSessionAsCommand, consoleControlCommand })
         commands.add(id);
 }
 void MainComponent::getCommandInfo(CommandID id, ApplicationCommandInfo& info) {
     switch (id) {
+        case consoleControlCommand:
+            info.setInfo("Console Control...", "Read and review console EQ and delay changes", "File", 0);
+            break;
         case openSessionCommand:
             info.setInfo("Open Session...", "Open a session folder", "File", 0);
             info.addDefaultKeypress('O', ModifierKeys::commandModifier);
@@ -30,6 +33,9 @@ void MainComponent::getCommandInfo(CommandID id, ApplicationCommandInfo& info) {
 }
 bool MainComponent::perform(const InvocationInfo& info) {
     switch (info.commandID) {
+        case consoleControlCommand:
+            if (!consoleWindow) consoleWindow = std::make_unique<foh::console::ConsoleWindow>();
+            consoleWindow->setVisible(true); consoleWindow->toFront(true); return true;
         case openSessionCommand: openSession(); return true;
         case saveSessionCommand: saveSession(false); return true;
         case saveSessionAsCommand: saveSession(true); return true;

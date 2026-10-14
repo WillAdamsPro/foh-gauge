@@ -42,3 +42,7 @@ add_dependencies(golden_tests golden_signals)
 target_link_libraries(golden_tests PRIVATE fohcore foh_sanitizers Catch2::Catch2WithMain)
 target_compile_definitions(golden_tests PRIVATE FOH_GOLDEN_DATA="${golden_dir}")
 add_test(NAME golden_tests COMMAND golden_tests)
+
+add_executable(fohconsole_tests test_console.cpp)
+target_link_libraries(fohconsole_tests PRIVATE fohconsole foh_sanitizers Catch2::Catch2WithMain)
+catch_discover_tests(fohconsole_tests)
