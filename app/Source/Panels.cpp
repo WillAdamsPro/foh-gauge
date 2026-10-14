@@ -383,7 +383,15 @@ public:
     fohws::Size minSize() const override { return { 360, 420 }; }
     void resized() override { setup.setBounds(getLocalBounds()); }
     Json saveState() const override { Json j = Json::object(); j.set("mic", model.engine.micCh.load()); j.set("ref", model.engine.refCh.load()); j.set("outA", model.engine.outA.load()); j.set("outB", model.engine.outB.load()); return j; }
-    void loadState(const Json& j) override { if (!j.isObject()) return; model.engine.micCh = j["mic"].asInt(0); model.engine.refCh = j["ref"].asInt(1); model.engine.outA = j["outA"].asInt(0); model.engine.outB = j["outB"].asInt(1); model.notify(AppModel::Settings); }
+    void loadState(const Json& j) override {
+        if (!j.isObject()) return;
+        model.engine.micCh = j["mic"].asInt(0);
+        model.engine.refCh = j["ref"].asInt(1);
+        model.engine.outA = j["outA"].asInt(0);
+        model.engine.outB = j["outB"].asInt(1);
+        // Refresh every SetupPage only after the complete routing map is restored.
+        model.notify(AppModel::Settings);
+    }
 private:
     SetupPage setup;
 };
