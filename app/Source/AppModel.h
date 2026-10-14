@@ -6,10 +6,11 @@
 #include "AnalysisEngine.h"
 #include <fohcore/json.h>
 #include <map>
+#include <fohcore/rig_profile.h>
 
 class AppModel : private juce::Timer {
 public:
-    enum What { Snapshot = 1, Delay = 2, Traces = 4, Cal = 8, Levels = 16, Capture = 32, Overlay = 64, Settings = 128, Theme = 256 };
+    enum What { Snapshot = 1, Delay = 2, Traces = 4, Cal = 8, Levels = 16, Capture = 32, Overlay = 64, Settings = 128, Theme = 256, Rig = 512 };
     struct Listener { virtual ~Listener() = default; virtual void modelChanged(int what) = 0; };
 
     AppModel();
@@ -78,6 +79,8 @@ public:
     foh::MicCal cal; juce::String calFile; std::string calText; bool calOn = false;
     void loadCalFile(const juce::File& f);
     void setCalEnabled(bool on);
+
+    std::optional<foh::RigProfile> rigProfile; // session-wide, message-thread only
 
     // ---- guide overlay drawn by the TF / Phase panels while a guide step needs it
     struct Overlay { std::vector<PlotComponent::Series> mag, phase; std::vector<std::pair<double,double>> shade; juce::String shadeLabel, phaseNote; bool phaseOnly250 = false; bool active = false; } overlay;
