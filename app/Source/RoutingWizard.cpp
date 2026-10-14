@@ -39,7 +39,9 @@ void RoutingWizard::cancelTest() {
 }
 void RoutingWizard::setDevices(const String& input, const String& output) {
     if (input == inputDevice && output == outputDevice) return;
+    const int interrupted = testingStep;
     cancelTest(); results.fill({});
+    if (interrupted >= 0) results[(size_t)interrupted] = "Fail: audio device changed. Check Audio Setup and test again.";
     inputDevice = input; outputDevice = output;
     suggestion = "Unknown interface: choose channels manually.";
     refresh();
@@ -78,10 +80,16 @@ void RoutingWizard::begin() {
         draft = { preset->micInput, preset->referenceInput, preset->loopbackOutput, preset->consoleOutput };
         suggestion = String(preset->name) + ": suggested channels below; change them if needed.";
     }
-    active = true; step = 0; refresh();
+    active = true; step = 0;
+    if (channelsKnown) setChannels(inputNames, outputNames); else refresh();
 }
 void RoutingWizard::setChannels(const StringArray& inputs, const StringArray& outputs) {
-    if (inputs != inputNames || outputs != outputNames) { cancelTest(); results.fill({}); }
+    channelsKnown = true;
+    if (inputs != inputNames || outputs != outputNames) {
+        const int interrupted = testingStep;
+        cancelTest(); results.fill({});
+        if (interrupted >= 0) results[(size_t)interrupted] = "Fail: audio channels changed. Check Audio Setup and test again.";
+    }
     inputNames = inputs; outputNames = outputs;
     for (size_t i = 0; i < draft.size(); ++i) {
         auto count = i < 2 ? inputNames.size() : outputNames.size();

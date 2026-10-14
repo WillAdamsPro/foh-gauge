@@ -412,6 +412,35 @@ public:
 };
 }
 
+TEST_CASE("Interrupted connection tests fail and fresh tests recover", "[app][audio][routing][edges]") {
+    AudioEngine engine; SyntheticDevice device;
+    constexpr int block = 256;
+    float signal[block], silence[block] {}, a[block] {}, b[block] {};
+    std::fill(std::begin(signal), std::end(signal), 0.1f);
+    const float* inputs[] {signal, silence}; float* outputs[] {a, b};
+    auto feed = [&] { engine.audioDeviceIOCallbackWithContext(inputs, 2, outputs, 2, block, {}); };
+    for (int event = 0; event < 5; ++event) {
+        engine.audioDeviceAboutToStart(&device);
+        engine.testConnection(0, 0); feed();
+        REQUIRE(engine.connectionResult() == foh::ConnectionResult::pending);
+        if (event == 0) engine.audioDeviceStopped();
+        if (event == 1) engine.audioDeviceError("Synthetic unplug");
+        if (event == 2) { device.rate = 96000; engine.audioDeviceAboutToStart(&device); }
+        if (event == 3) engine.audioDeviceAboutToStart(&device); // replacement with same shape/rate
+        if (event == 4) {
+            engine.audioDeviceIOCallbackWithContext(inputs, 1, outputs, 2, block, {});
+            for (int i = 0; i < 400; ++i) feed();
+        }
+        CHECK(engine.connectionResult() == foh::ConnectionResult::invalid);
+        engine.audioDeviceAboutToStart(&device);
+        for (int i = 0; i < 400; ++i) feed();
+        CHECK(engine.connectionResult() == foh::ConnectionResult::invalid); // never resumes the old test
+        engine.testConnection(0, 0);
+        for (int i = 0; i < 400; ++i) feed();
+        CHECK(engine.connectionResult() == foh::ConnectionResult::pass);
+    }
+}
+
 namespace {
 class SyntheticDeviceType : public juce::AudioIODeviceType {
 public:
