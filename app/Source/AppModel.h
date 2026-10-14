@@ -6,6 +6,8 @@
 #include "AnalysisEngine.h"
 #include <fohcore/json.h>
 #include <map>
+#include <array>
+#include <optional>
 #include <fohcore/rig_profile.h>
 
 class AppModel : private juce::Timer {
@@ -53,8 +55,38 @@ public:
     foh::TraceStore traces;
     bool storeTrace(const juce::String& name);
     const foh::Trace* findTrace(const char* n) const;
-    void removeTrace(int i) { traces.remove(i); notify(Traces); }
-    void toggleTrace(int i) { traces.at(i).visible = !traces.at(i).visible; notify(Traces); }
+    // Message-thread only, including the allocating virtual-sum calculation.
+    bool validTrace(int i) const { return i >= 0 && i < traces.count(); }
+    juce::Colour traceColour(int i) const { return traceColours[(size_t) i].value_or(foh::ui::col::storedTrace(i % 8)); }
+    void renameTrace(int i, const juce::String& name) {
+        if (!validTrace(i) || name.trim().isEmpty()) return;
+        traces.at(i).name = name.trim().toStdString(); notify(Traces);
+    }
+    void colourTrace(int i, juce::Colour colour) {
+        if (!validTrace(i)) return;
+        traceColours[(size_t) i] = colour; notify(Traces);
+    }
+    void removeTrace(int i) {
+        if (!traces.remove(i)) return;
+        for (size_t j = (size_t) i; j + 1 < traceColours.size(); ++j) traceColours[j] = traceColours[j + 1];
+        traceColours.back().reset();
+        for (auto* source : {&sumA, &sumB}) { if (*source == i) *source = -1; else if (*source > i) --*source; }
+        notify(Traces);
+    }
+    void clearTraces() { traces.clear(); traceColours = {}; sumA = sumB = -1; notify(Traces); }
+    void toggleTrace(int i) { if (validTrace(i)) { traces.at(i).visible = !traces.at(i).visible; notify(Traces); } }
+    int sumA = -1, sumB = -1;
+    void selectSum(int a, int b) { sumA = validTrace(a) ? a : -1; sumB = validTrace(b) ? b : -1; notify(Traces); }
+    foh::TFResult sumPreview() const {
+        if (!validTrace(sumA) || !validTrace(sumB)) return {};
+        const auto& a = traces.at(sumA).tf; const auto& b = traces.at(sumB).tf;
+        auto complete = [](const foh::TFResult& t) {
+            auto n = t.freq.size(); return n > 0 && t.H.size() == n && t.magDb.size() == n
+                && t.phaseDeg.size() == n && t.coherence.size() == n;
+        };
+        if (!complete(a) || !complete(b) || a.freq != b.freq) return {};
+        return foh::virtualSum(a, b);
+    }
 
     // ---- capture: fresh core settle result, or warn and proceed after 10 s
     struct { bool active = false, unsettled = false; juce::String name; double startMs = 0; uint64_t resetId = 0; bool resetAcknowledged = false; std::function<void(bool)> then; } capture;
@@ -93,6 +125,7 @@ public:
     void setInspector(const juce::String& title, const juce::String& text) { inspectorTitle = title; inspectorText = text; notify(Overlay); }
 
 private:
+    std::array<std::optional<juce::Colour>, foh::TraceStore::kMax> traceColours;
     std::string levelInputKey; uint64_t levelInputEpoch = 0; double levelTimeMs = 0;
     void timerCallback() override;
     juce::ListenerList<Listener> listeners;
