@@ -103,9 +103,6 @@ void AppModel::setCalEnabled(bool on) {
     notify(Cal);
 }
 
-foh::SplCal AppModel::splCal() const {
-    auto it = splCals.find(splInputKey()); return it == splCals.end() ? foh::SplCal{} : it->second;
-}
 bool AppModel::calibrateSpl(double known) {
     if (!micLevelReady() || micPeak >= 0.99f || micLevelDbfs <= -100 || micLevelDbfs >= 0) return false;
     foh::SplCal c;
@@ -126,19 +123,6 @@ foh::Json AppModel::splCalJson() const {
     for (const auto& entry : splCals) j.set(entry.first, entry.second.toJson());
     return j;
 }
-void AppModel::loadSplCalJson(const foh::Json& j) {
-    if (!j.isObject()) return;
-    decltype(splCals) candidate;
-    for (const auto& entry : j.members()) {
-        auto c = foh::SplCal::fromJson(entry.second);
-        if (!c.calibrated) { AlertWindow::showMessageBoxAsync(AlertWindow::WarningIcon, "SPL calibration load failed", "Invalid saved calibration"); return; }
-        candidate[entry.first] = c;
-    }
-    splCals = std::move(candidate);
-    ++analysis.leqRevision;
-    notify(Cal | Settings);
-}
-
 bool AppModel::micLevelReady() const {
     return micLevelValid && !paused && dm.getCurrentAudioDevice() && levelInputKey == splInputKey()
         && levelInputEpoch == engine.captureEpoch.load() && Time::getMillisecondCounterHiRes() - levelTimeMs < 250;

@@ -20,7 +20,6 @@ AppModel::AppModel() {
     settings.getUserSettings()->setValue("setupComplete", true);
 }
 AppModel::~AppModel() = default;
-foh::SplCal AppModel::splCal() const { return {}; }
 bool AppModel::calibrateSpl(double) { throw std::logic_error("Unexpected SPL calibration"); }
 bool AppModel::micLevelReady() const { return false; }
 void AppModel::loadCalFile(const juce::File&) { throw std::logic_error("Unexpected calibration file load"); }
@@ -30,7 +29,6 @@ bool AppModel::beginLoopback() { throw std::logic_error("Unexpected interface me
 void AppModel::clearLoopback() { throw std::logic_error("Unexpected interface calibration"); }
 void AppModel::clearSpl() { throw std::logic_error("Unexpected SPL calibration"); }
 foh::Json AppModel::splCalJson() const { return foh::Json::object(); }
-void AppModel::loadSplCalJson(const foh::Json&) {}
 static std::function<void()> guideDelay;
 void AppModel::requestDelay(bool, std::function<void()> then) { guideDelay = std::move(then); }
 void AppModel::lockDelayFromLast() { throw std::logic_error("Unexpected delay lock"); }

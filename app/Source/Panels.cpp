@@ -646,7 +646,10 @@ public:
         auto line=[&](const String& text) { g.drawText(text,r.removeFromTop(24),Justification::centredLeft); };
         const auto c=model.splCal();
         if (!c.calibrated) { line("Calibrate SPL in Setup"); return; }
-        if (!model.micLevelReady() || model.leqRevision != model.analysis.leqRevision.load() || !model.leq.valid) { line("-- SPL / Leq (invalid or no live signal)"); return; }
+        if (!model.micLevelReady() || model.leqRevision != model.analysis.leqRevision.load() || !model.leq.valid) {
+            if (model.micPeak >= 0.99f) line("WARNING: input clipping");
+            line("-- SPL / Leq (invalid or no live signal)"); return;
+        }
         size_t w=static_cast<size_t>(weighting.getSelectedId()-1);
         auto level=[&](double db) { return c.level(db-(model.calOn ? model.cal.dbAt(1000) : 0), model.splSensitivity()); };
         auto value=[&](const char* label, double db) { line(String(label)+String(level(db),1)+" dB"+weighting.getText()); };

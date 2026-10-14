@@ -72,3 +72,71 @@ TEST_CASE("Leq invalid signal cannot be presented as a safe exposure", "[leq][ed
     meter.process(nullptr, 1); CHECK_FALSE(meter.reading().valid);
     CHECK(std::isfinite(foh::exposureWarning(foh::ExposurePreset::NIOSH, 100, 1e300, 60).dosePercent));
 }
+
+TEST_CASE("Leq retains energy and sample counts over a 25 hour session", "[leq][long]") {
+    // More than 2^32 samples at a normal device rate.
+    constexpr int fs = 48000, halfSeconds = 25 * 3600 / 2;
+    foh::LeqMeter meter(fs);
+    std::vector<float> block(fs);
+    double expectedEnergy = 0;
+    for (double amplitude : {0.1, 0.0001}) {
+        double energy = 0;
+        for (int i = 0; i < fs; ++i) {
+            block[i] = float(amplitude * std::sin(2 * 3.141592653589793 * 1000 * i / fs));
+            energy += 2 * double(block[i]) * block[i];
+        }
+        expectedEnergy += energy * halfSeconds;
+        for (int second = 0; second < halfSeconds; ++second) meter.process(block.data(), fs);
+    }
+    auto r = meter.reading();
+    REQUIRE(r.valid);
+    CHECK(r.seconds == 90000);
+    CHECK(r.session[2] == Approx(10 * std::log10(expectedEnergy / (uint64_t(fs) * 90000))).margin(1e-9));
+    CHECK(r.minute[2] == Approx(-80).margin(1e-6));
+    CHECK(r.fifteenMinutes[2] == Approx(-80).margin(1e-6));
+    for (int w : {0, 1, 2}) {
+        CHECK(std::isfinite(r.session[w])); CHECK(std::isfinite(r.level[w]));
+        CHECK(std::isfinite(r.minute[w])); CHECK(std::isfinite(r.fifteenMinutes[w]));
+    }
+    foh::SplCal cal; REQUIRE(cal.calibrate(-20, 94));
+    CHECK(foh::exposureWarning(foh::ExposurePreset::NIOSH, cal.level(r.fifteenMinutes[0]),
+        cal.level(r.session[0]), r.seconds).exceeded);
+    CHECK_FALSE(foh::exposureWarning(foh::ExposurePreset::WHO, cal.level(r.fifteenMinutes[0]),
+        cal.level(r.session[0]), r.seconds).exceeded);
+    meter.reset();
+    CHECK(meter.reading().seconds == 0);
+    tone(meter, fs, 1);
+    CHECK(meter.reading().session[2] == Approx(-20).margin(1e-6));
+}
+
+TEST_CASE("Leq silence and isolated corrupt samples have finite guarded readings", "[leq][edges]") {
+    for (float bad : {1.f, -1.f, 2.f, -2.f, NAN, INFINITY, -INFINITY}) {
+        foh::LeqMeter meter(8000); tone(meter, 8000, 0.2);
+        REQUIRE(meter.reading().valid);
+        meter.process(&bad, 1); tone(meter, 8000, 0.2);
+        CHECK_FALSE(meter.reading().valid);
+        const auto r = meter.reading();
+        for (const auto& values : {r.level, r.minute, r.fifteenMinutes, r.session})
+            for (double value : values) CHECK(std::isfinite(value));
+        meter.reset(); tone(meter, 8000, 0.2);
+        CHECK(meter.reading().valid);
+    }
+    foh::LeqMeter meter(8000); tone(meter, 8000, 0.2);
+    std::vector<float> silence(8000, 0); meter.process(silence.data(), int(silence.size()));
+    auto r = meter.reading(); CHECK_FALSE(r.valid);
+    CHECK(r.level[2] == -120); CHECK(std::isfinite(r.session[2]));
+    foh::SplCal uncalibrated;
+    CHECK_FALSE(uncalibrated.calibrated);
+    CHECK(uncalibrated.level(r.session[2]) == r.session[2]);
+    // Subnormals mixed into otherwise usable AC input behave exactly like zeros.
+    foh::LeqMeter clean(8000), denormal(8000);
+    std::vector<float> signal(8000), dirty(8000);
+    for (int i = 0; i < 8000; ++i) {
+        signal[i] = i % 2 ? (i % 4 == 1 ? 0.1f : -0.1f) : 0.f;
+        dirty[i] = i % 2 ? signal[i] : std::numeric_limits<float>::denorm_min();
+    }
+    clean.process(signal.data(), 8000); denormal.process(dirty.data(), 8000);
+    REQUIRE(clean.reading().valid); CHECK(denormal.reading().valid);
+    CHECK(clean.reading().session == denormal.reading().session);
+    CHECK(clean.reading().level == denormal.reading().level);
+}
