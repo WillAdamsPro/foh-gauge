@@ -23,11 +23,8 @@ bool AppModel::micLevelReady() const { return false; }
 void AppModel::loadCalFile(const juce::File&) { throw std::logic_error("Unexpected calibration file load"); }
 void AppModel::setCalEnabled(bool) { throw std::logic_error("Unexpected calibration change"); }
 void AppModel::clearSpl() { throw std::logic_error("Unexpected SPL calibration"); }
-bool AppModel::micLevelReady() const { return false; }
 foh::Json AppModel::splCalJson() const { return foh::Json::object(); }
 void AppModel::loadSplCalJson(const foh::Json&) {}
-void AppModel::loadCalFile(const juce::File&) { throw std::logic_error("Unexpected calibration import"); }
-void AppModel::setCalEnabled(bool on) { calOn = on && cal.ok(); notify(Cal); }
 void AppModel::requestDelay(bool, std::function<void()>) { throw std::logic_error("Unexpected delay request"); }
 void AppModel::lockDelayFromLast() { throw std::logic_error("Unexpected delay lock"); }
 void AppModel::beginCapture(const juce::String&, std::function<void(bool)>) { throw std::logic_error("Unexpected capture"); }
