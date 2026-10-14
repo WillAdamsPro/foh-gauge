@@ -1,5 +1,6 @@
 #include <catch2/catch_test_macros.hpp>
 #include "WorkspaceManager.h"
+#include "FloatingPanels.h"
 
 namespace {
 struct TemporaryWorkspaces {
@@ -109,6 +110,28 @@ TEST_CASE("Missing-display recovery persists every floating panel on a smaller m
     }
 }
 
+TEST_CASE("floating panel peers release ownership on repeated open and close", "[app][workspace][stress]") {
+    juce::ScopedJuceInitialiser_GUI initialiser;
+    AppModel model;
+    Panel panel(model, "Synthetic", "Synthetic");
+    fohws::FloatingPanel state {"Synthetic", {40, 65, 500, 300}, "missing-display"};
+    const int peers = juce::Desktop::getInstance().getNumComponents();
+    for (int i = 0; i < 100; ++i) {
+        juce::Component::SafePointer<FloatingPanelWindow> pointer;
+        {
+            FloatingPanelWindow window(panel, state);
+            pointer = &window;
+            CHECK(window.getContentComponent() == &panel);
+            window.setPinned(i % 2 == 0);
+            window.setBounds(40, 65, 550 + i % 10, 350 + i % 10);
+            window.parentSizeChanged();
+            CHECK(state.bounds.w > 0);
+        }
+        CHECK(pointer == nullptr);
+        CHECK(panel.getParentComponent() == nullptr);
+        CHECK(juce::Desktop::getInstance().getNumComponents() == peers);
+    }
+}
 TEST_CASE("Corrupt current workspace falls back to the previous saved layout", "[app][workspace][files]") {
     TemporaryWorkspaces temp;
     fohws::Json saved;
