@@ -1,4 +1,4 @@
-add_executable(fohcore_tests test_rig_profile.cpp test_routing.cpp test_core.cpp test_bad_input.cpp test_dsp_edges.cpp test_format.cpp test_target.cpp test_session.cpp test_splcal.cpp test_room_sim.cpp test_leq.cpp test_sweep.cpp test_room_sim.cpp test_multipos.cpp)
+add_executable(fohcore_tests test_rig_profile.cpp test_routing.cpp test_core.cpp test_bad_input.cpp test_dsp_edges.cpp test_format.cpp test_target.cpp test_session.cpp test_splcal.cpp test_room_sim.cpp test_leq.cpp test_sweep.cpp test_room_sim.cpp test_multipos.cpp test_loopback.cpp)
 find_package(Threads REQUIRED)
 target_link_libraries(fohcore_tests PRIVATE fohcore foh_sanitizers Catch2::Catch2WithMain Threads::Threads)
 target_compile_definitions(fohcore_tests PRIVATE FOH_TARGET_DATA="${CMAKE_SOURCE_DIR}/resources/targets" FOH_TEST_DATA="${CMAKE_CURRENT_SOURCE_DIR}/data")
@@ -42,3 +42,7 @@ add_dependencies(golden_tests golden_signals)
 target_link_libraries(golden_tests PRIVATE fohcore foh_sanitizers Catch2::Catch2WithMain)
 target_compile_definitions(golden_tests PRIVATE FOH_GOLDEN_DATA="${golden_dir}")
 add_test(NAME golden_tests COMMAND golden_tests)
+
+add_executable(fohconsole_tests test_console.cpp)
+target_link_libraries(fohconsole_tests PRIVATE fohconsole foh_sanitizers Catch2::Catch2WithMain)
+catch_discover_tests(fohconsole_tests)

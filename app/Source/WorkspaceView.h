@@ -13,6 +13,7 @@ public:
     void setWorkspace(fohws::Workspace* w);           // not owned. Loads panel state, rebuilds.
     fohws::Workspace* workspace() const { return ws; }
     void setShowMode(bool enabled);
+    void refreshPresentation() { maximised.clear(); rebuild(); } // global presentation preference changed
     void rebuild();                                    // after any change to ws->root
     void storePanelStates();                           // Panel::saveState() -> ws->panelState
     Panel* panel(const std::string& id, bool create = true);
@@ -36,6 +37,7 @@ private:
     friend struct Node; friend struct Slot; friend struct Splitter;
     fohws::LayoutNode* nodeAt(fohws::LayoutNode& root, const std::vector<int>& path);
     void layoutDisplay();
+    fohws::LayoutNode presentationLayout();
     AppModel& model; const PanelRegistry& registry; fohws::Workspace* ws = nullptr;
     std::map<std::string, std::unique_ptr<Panel>> panels;
     fohws::LayoutNode display; bool showMode = false; bool collapsed = false; std::string focused, maximised;

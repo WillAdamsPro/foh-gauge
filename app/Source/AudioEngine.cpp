@@ -1,4 +1,5 @@
 #include "Widgets.h"
+#include <cstring>
 using foh::RingBuffer;
 using namespace juce;
 
@@ -59,7 +60,7 @@ const char* AudioEngine::statusText() const noexcept {
     if (deviceFailed.load(std::memory_order_acquire)) return "Audio device error; reopen Audio Setup";
     switch (state.load(std::memory_order_acquire)) {
         case Stopped: return "Audio device stopped; open Audio Setup";
-        case InvalidInputs: return "Measurement stopped: choose available mic/ref inputs";
+        case InvalidInputs: return "Measurement stopped: open Audio Setup and choose available mic/ref inputs";
         case InvalidOutputs: return "Choose available generator outputs in Audio Setup";
         case Overflow: return "Capture overrun; restarting measurement";
         default: return analysisEpoch.load() == captureEpoch.load()
@@ -80,6 +81,7 @@ void AudioEngine::audioDeviceError(const juce::String&) {
     // allocate/copy the error string, or advance the capture handshake here.
     deviceFailed.store(true, std::memory_order_release);
     gen.store(Off);
+    micPeak.store(0); refPeak.store(0);
 }
 void AudioEngine::audioDeviceStopped() {
     // JUCE serializes lifecycle callbacks with I/O; only atomics cross to UI/analysis.
@@ -94,10 +96,17 @@ void AudioEngine::audioDeviceAboutToStart(AudioIODevice* d) {
     if (!std::isfinite(rate) || rate <= 0) { audioDeviceStopped(); return; }
     sampleRate.store(rate);
     sweep.prepare(rate, 20.0, std::min(20000.0, rate * 0.45), 5.0, 1.0);
-    lastMicChannel = micCh.load(); lastRefChannel = refCh.load(); lastInputCount = -1;
+    lastMicChannel = micCh.load(); lastRefChannel = refCh.load(); lastInputCount = lastOutputCount = -1;
+    const auto inputs = d->getActiveInputChannels(), outputs = d->getActiveOutputChannels();
+    lastInputsValid = lastMicChannel >= 0 && inputs[lastMicChannel]
+        && lastRefChannel >= 0 && inputs[lastRefChannel];
+    // A replacement can have fewer channels even with the generator stopped.
+    // None is intentional for an output; a configured but missing output needs Setup.
+    const int oa = outA.load(), ob = outB.load();
+    lastOutputsValid = (oa < 0 || outputs[oa]) && (ob < 0 || outputs[ob]);
     captureMicChannel.store(lastMicChannel);
     deviceFailed.store(false, std::memory_order_release);
-    state.store(Ready, std::memory_order_release);
+    state.store(!lastInputsValid ? InvalidInputs : !lastOutputsValid ? InvalidOutputs : Ready, std::memory_order_release);
     micPeak.store(0); refPeak.store(0);
     captureEpoch.fetch_add(1, std::memory_order_release);
 }
@@ -139,9 +148,19 @@ void AudioEngine::audioDeviceIOCallbackWithContext(const float* const* in, int n
     if (!std::isfinite(rate) || rate <= 0) return;
     const double chimeStep = 48000.0 / rate;
     const auto outputValid = [out, nOut](int c) { return out && c >= 0 && c < nOut && out[c]; };
-    const bool outputsValid = (mode == Off || (outputValid(oa) && (ob < 0 || outputValid(ob))))
+    const bool outputsValid = ((mode == Off && lastOutputsValid)
+        || (((mode == Off && oa < 0) || outputValid(oa)) && (ob < 0 || outputValid(ob))))
         && (chimePosition >= 28800 || outputValid(chimeOutput));
+    if ((lastOutputCount >= 0 && nOut != lastOutputCount) || outputsValid != lastOutputsValid) {
+        micPeak.store(0); refPeak.store(0);
+        captureEpoch.fetch_add(1, std::memory_order_release);
+    }
+    lastOutputCount = nOut; lastOutputsValid = outputsValid;
     state.store(!inputsValid ? InvalidInputs : !outputsValid ? InvalidOutputs : Ready, std::memory_order_release);
+    if (!outputsValid) {
+        resetPlayback();
+        return; // never publish a partial measurement or play through broken routing
+    }
     const double rampStep = 1.0 / std::max(1.0, rate * 0.01);
     for (int i = 0; !silent && i < n; ++i) {
         const bool wantsSweep = mode == Sweep && gen.load() == Sweep;
@@ -189,6 +208,7 @@ void AudioEngine::audioDeviceIOCallbackWithContext(const float* const* in, int n
             testResult.store((request & 0xffffffff00000000ULL) | uint64_t(result), std::memory_order_release);
         }
     }
+    if (deviceFailed.load(std::memory_order_acquire)) return;
     if (analysisEpoch.load(std::memory_order_acquire) != captureEpoch.load(std::memory_order_acquire))
         return; // generator output continues while the worker resets capture
     if (!inputsValid) return;
@@ -203,15 +223,27 @@ void AudioEngine::audioDeviceIOCallbackWithContext(const float* const* in, int n
         int m = std::min(4096, n - off);
         const float* mp = in[mc] + off;
         const float* rp = in[rc] + off;
-        micRing.push(mp, m); refRing.push(rp, m);
-        auto peakOf = [m](const float* data) {
+        bool faulty = false;
+        auto peakOf = [m, &faulty](const float* data) {
             float peak = 0;
-            for (int i = 0; i < m; ++i)
+            for (int i = 0; i < m; ++i) {
+                uint32_t bits;
+                std::memcpy(&bits, data + i, sizeof(bits));
+                const auto magnitude = bits & 0x7fffffffU;
+                // Inspect bits because the callback flushes subnormals to zero.
+                faulty |= magnitude >= 0x7f800000U || (magnitude > 0 && magnitude < 0x00800000U);
                 if (std::isfinite(data[i])) peak = std::max(peak, std::abs(data[i]));
+            }
+            faulty |= peak <= 1.0e-12f || peak >= 0.99f;
             return peak;
         };
         fetch_max(micPeak, peakOf(mp));
         fetch_max(refPeak, peakOf(rp));
+        if (faulty) signalFaults.fetch_add(1, std::memory_order_release);
+        // Publish quality before samples can produce a settled analysis snapshot.
+        micRing.push(mp, m); refRing.push(rp, m);
     }
+    // An asynchronous error can arrive after the entry check or during a push.
+    if (deviceFailed.load(std::memory_order_acquire)) { micPeak.store(0); refPeak.store(0); }
 }
 

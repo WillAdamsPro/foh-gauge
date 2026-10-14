@@ -11,10 +11,16 @@ void AnalysisEngine::cancelSweep(const char* reason) {
     sweepResult = {}; sweepResult.response.error = reason;
 }
 
+uint64_t AnalysisEngine::setLoopback(std::shared_ptr<const foh::LoopbackCorrection> c, uint64_t epoch) {
+    std::lock_guard<std::mutex> l(calLock);
+    pendingLoopback = std::move(c); pendingLoopbackEpoch = epoch; loopbackDirty = true;
+    return ++pendingLoopbackRevision;
+}
+
 void AnalysisEngine::rebuild(double newFs) {
     leq = std::make_unique<foh::LeqMeter>(newFs);
     positions = {}; positionMask = 0; positionAverage = {}; positionCount = 0;
-    fs = newFs; levelEnergy = 0; levelSamples = 0;
+    fs = newFs; levelEnergy = levelSum = 0; levelSamples = 0; levelInvalid = false; lastLevelUsable = lastTransferUsable = false;
     tf = std::make_unique<foh::TransferFunction>(fftN, fs); rta = std::make_unique<foh::RTA>(fftN, fs, rtaFrac);
     tf->setConvergenceTimeout(10.0);
     tf->setAverages(averages); tf->setCoherenceBlankThreshold(blankThr);
@@ -44,7 +50,7 @@ void AnalysisEngine::handle(const foh::Command& c) {
         }
         case T::StoreMicPosition: {
             if (c.i < 0 || c.i >= 3 || !std::isfinite(c.d) || paused.load()
-                || engine.deviceFailed.load() || tf->convergence().frames == 0) break;
+                || engine.deviceFailed.load() || !lastLevelUsable || !lastTransferUsable || tf->convergence().frames == 0) break;
             auto result = tf->result();
             if (cal) cal->apply(result);
             positions[(size_t)c.i] = {std::move(result), c.d - tf->referenceDelaySamples() / fs * 1000.0};
@@ -61,7 +67,7 @@ void AnalysisEngine::handle(const foh::Command& c) {
         case T::SetRtaFraction: rtaFrac = c.i; rta->setFraction(c.i); break;
         case T::SetBlankThreshold: blankThr = c.d; tf->setCoherenceBlankThreshold(c.d); break;
         case T::SetAverages: averages = c.i; tf->setAverages(c.i); break;
-        case T::ResetAverages: tf->reset(); rta->reset(); resetSeq = c.id; break;
+        case T::ResetAverages: lastTransferUsable = false; tf->reset(); rta->reset(); resetSeq = c.id; break;
         case T::SetReferenceDelay: tf->setReferenceDelaySamples(c.d); tf->reset(); break;
         case T::FindDelay: { // CommandQueue consumer: allocations / FFT stay on this worker.
             int L = std::min((int) histRef.size(), foh::recommendedDelayWindowSamples(fs, c.sub));
@@ -74,9 +80,12 @@ void AnalysisEngine::handle(const foh::Command& c) {
 
 void AnalysisEngine::publish() {
     auto& s = publisher.beginWrite();
+    s.loopbackRevision = loopbackRevision;
+    s.rawTf = tf->result(0);
+    s.tf = tf->result(smoothing, loopbackEpoch == inputEpoch ? loopback.get() : nullptr);
+    s.smoothingFraction = smoothing;
     s.positionMask = positionMask; s.positionCount = positionCount;
     s.multiPosition = positionAverage;
-    s.tf = tf->result(smoothing); s.smoothingFraction = smoothing;
     if (cal) cal->apply(s.tf);
     s.rtaDb = rta->bandsDb(); s.rtaBands = rta->bands(); s.rtaFraction = rtaFrac;
     s.sweep = sweepResult; s.sweepCapturing = sweepCapturing;
@@ -85,67 +94,104 @@ void AnalysisEngine::publish() {
     s.calApplied = cal != nullptr; s.setCalName(cal ? calName.c_str() : "");
     s.leq = leq->reading(); s.leqRevision = meterRevision;
     s.micLevelDbfs = levelSamples > 0 ? 10 * std::log10(2 * levelEnergy / levelSamples + 1e-20) : -120;
-    s.micLevelValid = levelSamples > 0 && !paused.load() && !engine.deviceFailed.load()
+    const double meanSquare = levelSamples > 0 ? std::pow(levelSum / levelSamples, 2) : 0;
+    const double variance = levelSamples > 0 ? levelEnergy / levelSamples - meanSquare : 0;
+    if (levelSamples > 0) lastLevelUsable = !levelInvalid && variance > 1e-20 && meanSquare < variance;
+    s.micLevelValid = lastLevelUsable && levelSamples > 0 && !paused.load() && !engine.deviceFailed.load()
         && engine.state.load() != AudioEngine::Stopped && engine.state.load() != AudioEngine::InvalidInputs;
     s.inputEpoch = inputEpoch; s.micChannel = micChannel;
-    levelEnergy = 0; levelSamples = 0;
+    levelEnergy = levelSum = 0; levelSamples = 0; levelInvalid = false;
     s.resetSeq = resetSeq; s.convergence = tf->convergence();
     publisher.publish();
 }
 
+// One consumer pass, shared by the worker and synchronous synthetic bridge tests.
+// Scratch buffers are allocated by the caller, outside the audio callback.
+bool AnalysisEngine::processPendingAudio(std::vector<float>& m, std::vector<float>& r,
+                                        const std::vector<float>& silence, uint64_t& epoch) {
+    const auto nextEpoch = engine.captureEpoch.load(std::memory_order_acquire);
+    const bool nextFailed = engine.deviceFailed.load(std::memory_order_acquire);
+    if (!tf || nextEpoch != epoch || nextFailed != inputFailed) {
+        // Only the consumer advances the ring read positions. The producer
+        // waits for analysisEpoch, so these drains cannot discard new-rate audio.
+        for (auto* ring : { &engine.micRing, &engine.refRing })
+            while (ring->available() > 0) ring->pop(m.data(), std::min(ring->available(), fftN));
+        if (tf) cancelSweep("Audio changed; measure the sweep again");
+        rebuild(engine.sampleRate.load()); // also clears both delay histories
+        delay = {};
+        inputFailed = nextFailed;
+        epoch = nextEpoch; inputEpoch = epoch; micChannel = engine.captureMicChannel.load();
+        engine.analysisEpoch.store(epoch, std::memory_order_release);
+    }
+    { std::lock_guard<std::mutex> l(calLock);
+      if (loopbackDirty) {
+          loopback = pendingLoopback; loopbackEpoch = pendingLoopbackEpoch;
+          loopbackRevision = pendingLoopbackRevision; loopbackDirty = false;
+      }
+      if (calDirty) { positions = {}; positionMask = 0; positionAverage = {}; positionCount = 0;
+                      cal = pendingCal; calName = pendingCalName.toStdString(); calDirty = false;
+                      rta->setCalibrationDb(cal ? cal->correctionDb(fftN / 2 + 1, fs / fftN) : std::vector<double>{}); } }
+    foh::Command c; while (commands.pop(c)) handle(c);
+    const auto revision = leqRevision.load();
+    if (revision != meterRevision) { leq->reset(); meterRevision = revision; }
+    if (sweepCapturing && (paused.load() || engine.deviceFailed.load()
+        || engine.state.load() != AudioEngine::Ready || engine.gen.load() == AudioEngine::Pink
+        || (engine.gen.load() == AudioEngine::Off && !engine.sweepPlaybackDone.load(std::memory_order_acquire))
+        || juce::Time::getMillisecondCounterHiRes() - sweepStartMs > 10000))
+        cancelSweep("Sweep interrupted; check routing and measure again");
+    bool any = false;
+    while (!engine.deviceFailed.load(std::memory_order_acquire)
+           && engine.captureEpoch.load(std::memory_order_acquire) == epoch
+           && engine.micRing.available() >= 512 && engine.refRing.available() >= 512) {
+        int n = std::min({ engine.micRing.available(), engine.refRing.available(), fftN });
+        engine.micRing.pop(m.data(), n); engine.refRing.pop(r.data(), n); any = true;
+        if (paused.load()) continue;
+        if (sweepCapturing) {
+            const size_t count = std::min(size_t(n), size_t(fs * 6.5) - sweepRef.size());
+            sweepRef.insert(sweepRef.end(), r.begin(), r.begin() + count);
+            sweepMic.insert(sweepMic.end(), m.begin(), m.begin() + count);
+            if (sweepRef.size() == size_t(fs * 6.5)) {
+                sweepCapturing = false;
+                sweepResult = foh::deconvolveSweep(sweepRef, sweepMic, fs);
+                sweepRef.clear(); sweepMic.clear();
+            }
+        }
+        bool transferInvalid = false;
+        double referenceEnergy = 0, measurementEnergy = 0;
+        for (int i = 0; i < n; ++i) {
+            if (!std::isfinite(r[i]) || std::abs(r[i]) >= 1
+                || !std::isfinite(m[i]) || std::abs(m[i]) >= 1) transferInvalid = true;
+            if (std::isfinite(r[i])) referenceEnergy += double(r[i]) * r[i];
+            if (std::isfinite(m[i])) measurementEnergy += double(m[i]) * m[i];
+            if (!std::isfinite(m[i]) || std::abs(m[i]) >= 1) levelInvalid = true;
+            else if (std::abs(m[i]) >= std::numeric_limits<float>::min()) {
+                levelEnergy += double(m[i]) * m[i]; levelSum += m[i];
+            }
+        }
+        levelSamples += n;
+        leq->process(m.data(), n);
+        // Do not retain a coherent live TF across unusable input. W7 and
+        // multi-mic capture must wait for fresh, valid analysis frames.
+        const bool usable = !transferInvalid && referenceEnergy / n > 1e-20 && measurementEnergy / n > 1e-20;
+        if (!usable && lastTransferUsable) tf->reset();
+        lastTransferUsable = usable;
+        if (usable) tf->process(r.data(), m.data(), n);
+        else tf->process(silence.data(), silence.data(), n); // preserve the unsettled timeout
+
+        rta->process(m.data(), n);
+        int H = (int) histRef.size();
+        for (int i = 0; i < n; ++i) { histRef[(size_t) histPos] = r[(size_t) i]; histMic[(size_t) histPos] = m[(size_t) i]; histPos = (histPos + 1) % H; }
+    }
+    return any;
+}
+
 void AnalysisEngine::run() {
     foh::ScopedFlushDenormals ftz;
-    std::vector<float> m((size_t) fftN), r((size_t) fftN);
+    std::vector<float> m((size_t) fftN), r((size_t) fftN), silence((size_t) fftN, 0.f);
     auto lastPub = juce::Time::getMillisecondCounterHiRes();
     uint64_t epoch = 0;
     while (!threadShouldExit()) {
-        const auto nextEpoch = engine.captureEpoch.load(std::memory_order_acquire);
-        if (!tf || nextEpoch != epoch) {
-            // Only the consumer advances the ring read positions. The producer
-            // waits for analysisEpoch, so these drains cannot discard new-rate audio.
-            for (auto* ring : { &engine.micRing, &engine.refRing })
-                while (ring->available() > 0) ring->pop(m.data(), std::min(ring->available(), fftN));
-            if (tf) cancelSweep("Audio changed; measure the sweep again");
-            rebuild(engine.sampleRate.load()); // also clears both delay histories
-            delay = {};
-            epoch = nextEpoch; inputEpoch = epoch; micChannel = engine.captureMicChannel.load();
-            engine.analysisEpoch.store(epoch, std::memory_order_release);
-        }
-        { std::lock_guard<std::mutex> l(calLock);
-          if (calDirty) { positions = {}; positionMask = 0; positionAverage = {}; positionCount = 0;
-                          cal = pendingCal; calName = pendingCalName.toStdString(); calDirty = false;
-                          rta->setCalibrationDb(cal ? cal->correctionDb(fftN / 2 + 1, fs / fftN) : std::vector<double>{}); } }
-        foh::Command c; while (commands.pop(c)) handle(c);
-        const auto revision = leqRevision.load();
-        if (revision != meterRevision) { leq->reset(); meterRevision = revision; }
-        if (sweepCapturing && (paused.load() || engine.deviceFailed.load()
-            || engine.state.load() != AudioEngine::Ready || engine.gen.load() == AudioEngine::Pink
-            || (engine.gen.load() == AudioEngine::Off && !engine.sweepPlaybackDone.load(std::memory_order_acquire))
-            || juce::Time::getMillisecondCounterHiRes() - sweepStartMs > 10000))
-            cancelSweep("Sweep interrupted; check routing and measure again");
-        bool any = false;
-        while (engine.captureEpoch.load(std::memory_order_acquire) == epoch
-               && engine.micRing.available() >= 512 && engine.refRing.available() >= 512) {
-            int n = std::min({ engine.micRing.available(), engine.refRing.available(), fftN });
-            engine.micRing.pop(m.data(), n); engine.refRing.pop(r.data(), n); any = true;
-            if (paused.load()) continue;
-            if (sweepCapturing) {
-                const size_t count = std::min(size_t(n), size_t(fs * 6.5) - sweepRef.size());
-                sweepRef.insert(sweepRef.end(), r.begin(), r.begin() + count);
-                sweepMic.insert(sweepMic.end(), m.begin(), m.begin() + count);
-                if (sweepRef.size() == size_t(fs * 6.5)) {
-                    sweepCapturing = false;
-                    sweepResult = foh::deconvolveSweep(sweepRef, sweepMic, fs);
-                    sweepRef.clear(); sweepMic.clear();
-                }
-            }
-            for (int i = 0; i < n; ++i) levelEnergy += double(m[i]) * m[i];
-            levelSamples += n;
-            leq->process(m.data(), n);
-            tf->process(r.data(), m.data(), n); rta->process(m.data(), n);
-            int H = (int) histRef.size();
-            for (int i = 0; i < n; ++i) { histRef[(size_t) histPos] = r[(size_t) i]; histMic[(size_t) histPos] = m[(size_t) i]; histPos = (histPos + 1) % H; }
-        }
+        const bool any = processPendingAudio(m, r, silence, epoch);
         auto now = juce::Time::getMillisecondCounterHiRes();
         // W7 needs only one snapshot per second; avoid rebuilding smoothed TF/RTA
         // vectors at the normal interactive rate while show monitoring is active.
