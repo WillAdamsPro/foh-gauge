@@ -13,6 +13,9 @@ MainComponent::MainComponent() {
     addAndMakeVisible(toolbarTitle); toolbarTitle.setFont(FohLookAndFeel::font(T::small + 1, true));
     addAndMakeVisible(switcher); switcher.onChange = [this](int i) { selectWorkspace(i); };
     addAndMakeVisible(status);
+    addAndMakeVisible(showModeBtn); showModeBtn.setButtonText("Show mode"); showModeBtn.setClickingTogglesState(true);
+    showModeBtn.setTooltip("Minimal live RTA view; toggle off to restore the workspace layout");
+    showModeBtn.onClick = [this] { setShowMode(showModeBtn.getToggleState()); };
     addAndMakeVisible(pauseBtn); pauseBtn.setClickingTogglesState(true); makePrimary(pauseBtn); pauseBtn.setButtonText(u8("\xe2\x96\xa0 Stop"));
     pauseBtn.onClick = [this] { model.setPaused(pauseBtn.getToggleState()); pauseBtn.setButtonText(model.paused ? u8("\xe2\x96\xb6 Start") : u8("\xe2\x96\xa0 Stop")); };
 
@@ -36,13 +39,15 @@ MainComponent::MainComponent() {
     view.onFloatRequested = [this](const std::string& id) { floatPanel(id); };
     view.isFloating = [this](const std::string& id) { if (auto* w = view.workspace()) for (auto& f : w->floating) if (f.panel == id) return true; return false; };
     setWantsKeyboardFocus(true);
+    addKeyListener(presetCommands.keyMappings());
     setSize(std::getenv("FOH_WINDOW_W") ? std::atoi(std::getenv("FOH_WINDOW_W")) : foh::theme::frame::baseWidth, foh::theme::frame::baseHeight); /* FOH_WINDOW_W: dev aid */
     int start = std::getenv("FOH_WORKSPACE") ? jlimit(0, 3, std::atoi(std::getenv("FOH_WORKSPACE"))) : jmax(0, mgr.indexOf(model.settings.getUserSettings() ? model.settings.getUserSettings()->getValue("workspace", "alignment").toStdString() : "alignment")); // dev/screenshot aid, default Alignment
     selectWorkspace(start);
+    if (auto* pf = model.settings.getUserSettings()) if (pf->getBoolValue("showMode", false)) setShowMode(true);
     if (auto* f = std::getenv("FOH_FLOAT")) { std::string id = f; Timer::callAfterDelay(800, [sp = SafePointer<MainComponent>(this), id] { if (sp) sp->floatPanel(id); }); } // dev/screenshot aid
     startTimerHz(15);
 }
-MainComponent::~MainComponent() { stopTimer(); leaveWorkspace(); view.setWorkspace(nullptr); model.removeListener(this); foh::theme::ThemeManager::get().removeChangeListener(this); floats.clear(); LookAndFeel::setDefaultLookAndFeel(nullptr); setLookAndFeel(nullptr); }
+MainComponent::~MainComponent() { removeKeyListener(presetCommands.keyMappings()); stopTimer(); leaveWorkspace(); view.setWorkspace(nullptr); model.removeListener(this); foh::theme::ThemeManager::get().removeChangeListener(this); floats.clear(); LookAndFeel::setDefaultLookAndFeel(nullptr); setLookAndFeel(nullptr); }
 
 void MainComponent::selectWorkspace(const std::string& id) { int i = mgr.indexOf(id); if (i >= 0) selectWorkspace(i); }
 void MainComponent::leaveWorkspace() {
@@ -51,6 +56,7 @@ void MainComponent::leaveWorkspace() {
 void MainComponent::selectWorkspace(int i) {
     if (i < 0 || i >= mgr.count()) return;
     if (i == current) return;
+    if (showMode) setShowMode(false);
     leaveWorkspace();
     current = i; view.setWorkspace(&mgr.at(i)); openFloatingWindows();
     { std::vector<std::string> ids; mgr.at(i).root.collectPanels(ids); for (auto& id : ids) if (id != "Inspector") { view.focus(id); break; } } // Inspector explains the first panel
@@ -59,6 +65,25 @@ void MainComponent::selectWorkspace(int i) {
     if (auto* pf = model.settings.getUserSettings()) pf->setValue("workspace", String(mgr.at(i).id));
     updateSwitcher(); workspaceSelected(); repaint();
 }
+// Message-thread presentation only: the saved workspace tree is never replaced.
+void MainComponent::setShowMode(bool enabled) {
+    if (enabled == showMode) return;
+    if (enabled) {
+        selectWorkspace("rta-show");
+        closeFloatingWindows();
+    }
+    showMode = enabled;
+    view.setShowMode(enabled);
+    if (!enabled) openFloatingWindows();
+    showModeBtn.setToggleState(enabled, dontSendNotification);
+    if (auto* pf = model.settings.getUserSettings()) {
+        pf->setValue("showMode", enabled);
+        pf->saveIfNeeded();
+    }
+    view.focus("RTA");
+    resized(); repaint();
+}
+
 void MainComponent::updateSwitcher() { // "•" after a modified layout: a shape, not colour alone (spec §4)
     StringArray l; for (int k = 0; k < 4 && k < mgr.count(); ++k) l.add(String(mgr.at(k).name) + (mgr.isModified(k) ? u8(" \xe2\x80\xa2") : ""));
     switcher.setLabels(l);
@@ -70,6 +95,7 @@ void MainComponent::openFloatingWindows() {
     auto* w = view.workspace(); if (!w) return;
     for (auto& f : w->floating) { auto* p = view.panel(f.panel); if (!p) continue; view.releasePanel(f.panel, p);
         auto* win = floats.add(new FloatingPanelWindow(*p, f)); std::string id = f.panel;
+        win->addKeyListener(presetCommands.keyMappings());
         auto window = SafePointer<FloatingPanelWindow>(win);
         // Ignore queued actions if a workspace switch or reset has already destroyed the window.
         win->onDock = [this, id, window] { MessageManager::callAsync([sp = SafePointer<MainComponent>(this), id, window] { if (sp && window) sp->dockPanel(id); }); };
@@ -83,6 +109,7 @@ void MainComponent::openFloatingWindows() {
 }
 void MainComponent::closeFloatingWindows() { floats.clear(); }
 void MainComponent::floatPanel(const std::string& id) {
+    if (showMode) return;
     auto* w = view.workspace(); auto* p = view.panel(id, false); if (!w || !p) return;
     if (std::any_of(w->floating.begin(), w->floating.end(), [&](const auto& f) { return f.panel == id; })) return;
     auto screen = p->getScreenBounds().withHeight(jmax(p->getHeight() + foh::theme::ws::floatTitleBarHeight, foh::theme::ws::floatMinHeight)).translated(24, 24);
@@ -103,18 +130,22 @@ void MainComponent::showWorkspaceMenu() {
     PopupMenu m; auto mod = String(SystemStats::getOperatingSystemType() & SystemStats::MacOSX ? u8("\xe2\x8c\x98") : "Ctrl+");
     for (int k = 0; k < mgr.count(); ++k) m.addItem(item(String(mgr.at(k).name) + (mgr.isModified(k) ? u8(" \xe2\x80\xa2") : ""), 100 + k, true, k == current, k < 4 ? mod + String(k + 1) : String()));
     m.addSeparator();
-    m.addItem(1, "Save Workspace", current >= 0 && mgr.isModified(current));
-    m.addItem(2, u8("Save Workspace As\xe2\x80\xa6"));
-    m.addItem(item("Revert to Saved Layout", 3, current >= 0 && mgr.isModified(current), false, u8("\xe2\x8c\xa5") + mod + "0"));
-    m.addItem(4, "Reset to Default Layout", current >= 0 && mgr.at(current).builtIn);
-    bool custom = current >= 0 && !mgr.at(current).builtIn;
-    m.addItem(5, u8("Rename Custom\xe2\x80\xa6"), custom); m.addItem(6, "Delete Custom", custom);
-    m.addSeparator();
-    m.addItem(item("Show Inspector", 7, true, false, u8("\xe2\x8c\xa5") + mod + "I"));
-    PopupMenu show; int n = 0; std::vector<std::string> hidden;
-    if (auto* w = view.workspace()) for (auto& e : PanelRegistry::standard().all()) { bool fl = false; for (auto& f : w->floating) fl |= f.panel == e.id;
-        if (!w->root.contains(e.id) && !fl) { hidden.push_back(e.id); show.addItem(1000 + n++, e.title); } }
-    m.addSubMenu("Show Panels", show, !hidden.empty());
+    m.addItem(8, "Show mode", true, showMode);
+    std::vector<std::string> hidden;
+    if (!showMode) {
+        m.addItem(1, "Save Workspace", current >= 0 && mgr.isModified(current));
+        m.addItem(2, u8("Save Workspace As\xe2\x80\xa6"));
+        m.addItem(item("Revert to Saved Layout", 3, current >= 0 && mgr.isModified(current), false, u8("\xe2\x8c\xa5") + mod + "0"));
+        m.addItem(4, "Reset to Default Layout", current >= 0 && mgr.at(current).builtIn);
+        bool custom = current >= 0 && !mgr.at(current).builtIn;
+        m.addItem(5, u8("Rename Custom\xe2\x80\xa6"), custom); m.addItem(6, "Delete Custom", custom);
+        m.addSeparator();
+        m.addItem(item("Show Inspector", 7, true, false, u8("\xe2\x8c\xa5") + mod + "I"));
+        PopupMenu show; int n = 0;
+        if (auto* w = view.workspace()) for (auto& e : PanelRegistry::standard().all()) { bool fl = false; for (auto& f : w->floating) fl |= f.panel == e.id;
+            if (!w->root.contains(e.id) && !fl) { hidden.push_back(e.id); show.addItem(1000 + n++, e.title); } }
+        m.addSubMenu("Show Panels", show, !hidden.empty());
+    }
     SafePointer<MainComponent> sp(this);
     m.showMenuAsync(PopupMenu::Options().withTargetComponent(&wsMenuBtn).withStandardItemHeight(foh::theme::ws::menuItemHeight), [sp, hidden](int r) {
         if (!sp || r == 0) return; auto& s = *sp;
@@ -122,6 +153,7 @@ void MainComponent::showWorkspaceMenu() {
         if (r >= 100) { s.selectWorkspace(r - 100); return; }
         auto reload = [&s] { int c = s.current; s.closeFloatingWindows(); s.view.setWorkspace(&s.mgr.at(c)); s.openFloatingWindows(); s.updateSwitcher(); };
         switch (r) {
+            case 8: s.setShowMode(!s.showMode); break;
             case 1: s.view.storePanelStates(); s.mgr.save(s.current); s.updateSwitcher(); break;
             case 3: s.closeFloatingWindows(); s.mgr.revert(s.current); reload(); break;
             case 4: s.closeFloatingWindows(); s.mgr.resetToDefault(s.current); reload(); break;
@@ -146,7 +178,7 @@ bool MainComponent::keyPressed(const KeyPress& k) {
         if (count > 0) selectWorkspace((current + (m.isShiftDown() ? count - 1 : 1)) % count);
         return true;
     }
-    if (m.isCommandDown() && !m.isAltDown() && code >= '1' && code <= '4') { selectWorkspace(code - '1'); return true; }
+    if (showMode) return false; // Layout shortcuts cannot alter the hidden workspace in Show mode.
     if (m.isCommandDown() && m.isAltDown() && code == '0') { if (current >= 0) { closeFloatingWindows(); mgr.revert(current); view.setWorkspace(&mgr.at(current)); openFloatingWindows(); updateSwitcher(); } return true; }
     if (m.isCommandDown() && m.isAltDown() && (code == 'I' || code == 'i')) { if (auto* w = view.workspace()) if (!w->root.contains("Inspector")) { fohws::addAsTab(w->root, "Inspector", view.focusedPanel()); view.rebuild(); updateSwitcher(); } return true; }
     if (m.isCommandDown() && !m.isAltDown() && (code == 'W' || code == 'w')) { if (!view.focusedPanel().empty()) view.closePanel(view.focusedPanel()); return true; }
@@ -167,6 +199,7 @@ void MainComponent::resized() {
     const int top = D::statusBarHeight(), nw = sidebarVisible() ? D::navWidth() : 0;
     auto bar = getLocalBounds().removeFromTop(top).reduced(12, 0); bar.removeFromLeft(130);
     pauseBtn.setBounds(bar.removeFromRight(84).withSizeKeepingCentre(84, 30)); bar.removeFromRight(12);
+    showModeBtn.setBounds(bar.removeFromRight(96).withSizeKeepingCentre(96, 30)); bar.removeFromRight(8);
     toolbarTitle.setBounds(bar.removeFromLeft(110));
     int sw = 380; switcher.setBounds(bar.removeFromLeft(sw).withSizeKeepingCentre(sw, foh::theme::ws::switcherHeight - 6)); bar.removeFromLeft(8);
     wsMenuBtn.setBounds(bar.removeFromLeft(112).withSizeKeepingCentre(112, foh::theme::ws::switcherHeight - 6)); bar.removeFromLeft(16);

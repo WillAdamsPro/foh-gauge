@@ -26,7 +26,7 @@ static std::vector<std::pair<double,double>> blankedRegions(const foh::TFResult&
 class TransferFunctionPanel : public Panel {
 public:
     explicit TransferFunctionPanel(AppModel& m) : Panel(m, "TransferFunction", "Transfer Function") {
-        helpText = "This compares the console (reference) to the mic. Anything that isn't flat is what the speakers + room are doing to your mix.\n\nMagnitude: 0 dB = unchanged.\n\nDimmed regions: coherence below the Dim threshold. Don't EQ there; move the mic or treat the reflection.\n\nStored traces are dashed.";
+        helpText = "Settled: less than 0.5 dB RMS change for 3 consecutive updates, with at least 25% coherent bins (100 Hz-10 kHz). After 10 s, capture proceeds with an unsettled warning.\n\nThis compares the console (reference) to the mic. Anything that isn't flat is what the speakers + room are doing to your mix.\n\nMagnitude: 0 dB = unchanged.\n\nDimmed regions: coherence below the Dim threshold. Don't EQ there; move the mic or treat the reflection.\n\nStored traces are dashed.";
         plot.yLabel = "MAGNITUDE DB"; plot.yMin = -12; plot.yMax = 12; plot.yStep = 6; plot.showLegend = true; plot.showLowCohCallout = true;
         addAndMakeVisible(plot);
         smooth.addItem("Smooth off", 1); smooth.addItem("Smooth 1/3", 4); smooth.addItem("Smooth 1/6", 7); smooth.addItem("Smooth 1/12", 13); smooth.addItem("Smooth 1/24", 25); smooth.addItem("Smooth 1/48", 49);
@@ -54,14 +54,14 @@ public:
                           blank.setSelectedId(roundToInt(model.blankThreshold * 100), dontSendNotification); }
     void modelChanged(int w) override {
         if (w & AppModel::Settings) syncControls();
-        if (!(w & (AppModel::Snapshot | AppModel::Traces | AppModel::Overlay | AppModel::Theme)) || !isShowing()) return;
+        if (!(w & (AppModel::Snapshot | AppModel::Traces | AppModel::Overlay | AppModel::Theme | AppModel::Capture)) || !isShowing()) return;
         plot.series.clear(); plot.shade.clear(); plot.shadeLabel = {};
         auto& ov = model.overlay;
         if (ov.active && !ov.mag.empty()) { plot.series = ov.mag; plot.shade = ov.shade; plot.shadeLabel = ov.shadeLabel; }
         else { addStoredTraces(model, plot, true);
                PlotComponent::Series s; s.c = C::traceLive(); s.label = "Live"; logDecimate(model.tf, model.tf.magDb, s.f, s.v, &s.gap); plot.series.push_back(s); }
         plot.lowCoh = blankedRegions(model.tf);
-        plot.note = "averages " + String(model.tf.averages) + (model.calApplied ? u8(" \xc2\xb7 cal applied") : "") + (qa::unsettled(model.conv) ? u8(" \xc2\xb7 \xe2\x96\xb2 unsettled") : "");
+        plot.note = "averages " + String(model.tf.averages) + (model.calApplied ? u8(" \xc2\xb7 cal applied") : "") + ((model.conv.unsettled || model.capture.unsettled) ? u8(" \xc2\xb7 \xe2\x96\xb2 unsettled") : model.conv.settled ? u8(" \xc2\xb7 settled") : u8(" \xc2\xb7 averaging"));
         plot.repaint();
     }
 private:
@@ -95,13 +95,13 @@ private:
 class CoherencePanel : public Panel {
 public:
     explicit CoherencePanel(AppModel& m) : Panel(m, "Coherence", "Coherence") {
-        helpText = "Coherence: how much to trust the trace (0 to 1).\n\nGood: above 0.9. Fair: 0.6 to 0.9. Poor: below 0.6. Low coherence is usually a reflection or noise: don't EQ it.";
+        helpText = "Coherence: how much to trust the trace (0 to 1).\n\nGood: 0.9 or above. Fair: 0.6 up to 0.9. Poor: below 0.6. Low coherence is usually a reflection or noise: don't EQ it.";
         plot.yLabel = "COHERENCE"; plot.yMin = 0; plot.yMax = 1; plot.yStep = 0.5; addAndMakeVisible(plot);
     }
     fohws::Size minSize() const override { return { foh::theme::ws::panelMinWidth, 90 }; } // Alignment gives it a 0.15 strip: the traffic light alone is useful there
     void resized() override { auto r = getLocalBounds().reduced(pad, 6); light = r.removeFromTop(22); plot.setVisible(r.getHeight() > 60); plot.setBounds(r); }
     void paint(Graphics& g) override { // traffic light: shape + word, never colour only
-        auto cl = qa::coherenceLight(model.tf); double mean = cl.mean; int state = cl.state;
+        auto cl = foh::classifyCoherence(model.tf); double mean = cl.meanCoherence; int state = cl.state();
         const char* words[] = {"Good", "Fair", "Poor"}; Colour cols[] = {C::ok(), C::warning(), C::danger()};
         float x = (float) light.getX(); g.setFont(FohLookAndFeel::font(T::small, true));
         for (int i = 0; i < 3; ++i) { bool on = i == state; auto d = Rectangle<float>(x, light.getCentreY() - 6.f, 12, 12); g.setColour(on ? cols[i] : C::textAxis());
@@ -150,7 +150,7 @@ private:
 class DelayFinderPanel : public Panel {
 public:
     explicit DelayFinderPanel(AppModel& m) : Panel(m, "DelayFinder", "Delay Finder") {
-        helpText = "The delay finder lines up the reference with the mic (cross-correlation in fohcore).\n\nInsert delay applies it to the reference so the transfer function phase flattens.\n\nConfidence 0 means no lock: check signal and that only one speaker is on.";
+        helpText = "The delay finder lines up the reference with the mic (cross-correlation in fohcore).\n\nInsert delay applies it to the reference so the transfer function phase flattens.\n\nTwo similar spikes: arrivals within 3 dB and more than 0.5 ms apart. Check that only one speaker is on.\n\nConfidence 0 means no lock: check signal and that only one speaker is on.";
         value.setFont(FohLookAndFeel::numeric(34)); value.setText("--", dontSendNotification);
         styleLabel(detail, T::small, C::textSecondary()); detail.setJustificationType(Justification::topLeft); detail.setText("Press Find", dontSendNotification);
         makePrimary(insert); find.onClick = [this] { model.requestDelay(sub.getToggleState()); }; insert.onClick = [this] { model.lockDelayFromLast(); };
@@ -169,13 +169,13 @@ public:
         if (!(w & (AppModel::Delay | AppModel::Theme))) return;
         auto& d = model.delay;
         if (model.delayPending) { detail.setText(model.delayWasSub ? "Finding sub delay (3 s window)..." : "Finding delay...", dontSendNotification); return; }
-        if (!model.delayLocked()) { value.setText("--", dontSendNotification); detail.setText(d.arrivals.empty() ? "No signal: is pink noise playing?" : "No lock (confidence 0): check signal and that only one speaker is on", dontSendNotification); return; }
+        if (!model.delayLocked()) { value.setText("--", dontSendNotification); detail.setText(d.arrivals.empty() ? "No signal: is pink noise playing?" : "No valid delay result: check signal and that only one speaker is on", dontSendNotification); return; }
         auto& a0 = d.arrivals[0];
-        value.setText(String(qa::consoleMs(a0.delayMs), 2) + " ms", dontSendNotification);
+        value.setText(String(consoleMs(a0.delayMs), 2) + " ms", dontSendNotification);
         String t = String(d.confidence > 0.7 ? "High" : d.confidence > 0.35 ? "Medium" : "LOW") + u8(" confidence \xc2\xb7 polarity ") + (a0.inverted ? "INVERTED" : "normal")
                  + u8("\n\xe2\x89\x88 ") + String(a0.distanceM, 2) + " m" + (model.delayWasSub ? " (sub, LF-weighted)" : "");
-        for (size_t i = 1; i < d.arrivals.size(); ++i) t << u8("  \xc2\xb7  #") << (int) i + 1 << " " << String(qa::consoleMs(d.arrivals[i].delayMs), 2) << " ms (" << String(d.arrivals[i].relLevelDb, 1) << " dB)";
-        if (qa::twoSimilarArrivals(d)) t << u8("\n\xe2\x96\xb2 Two similar spikes: is only one speaker on?");
+        for (size_t i = 1; i < d.arrivals.size(); ++i) t << u8("  \xc2\xb7  #") << (int) i + 1 << " " << String(consoleMs(d.arrivals[i].delayMs), 2) << " ms (" << String(d.arrivals[i].relLevelDb, 1) << " dB)";
+        if (d.twoSimilarArrivals) t << u8("\n\xe2\x96\xb2 Two similar spikes: is only one speaker on?");
         detail.setText(t, dontSendNotification);
     }
 private:

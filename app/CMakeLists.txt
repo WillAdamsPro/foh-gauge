@@ -13,7 +13,7 @@ target_link_libraries(FOHGauge PRIVATE fohcore FOHGaugeData juce::juce_audio_uti
     PUBLIC juce::juce_recommended_config_flags juce::juce_recommended_warning_flags)
 
 if(FOH_BUILD_TESTS)
-    add_executable(fohapp_tests ../tests/test_audio_bridge.cpp ../tests/test_workspace_restore.cpp
+    add_executable(fohapp_tests ../tests/test_audio_bridge.cpp ../tests/test_workspace_presets.cpp ../tests/test_workspace_restore.cpp
         Source/AudioEngine.cpp Source/AnalysisEngine.cpp Source/LayoutModel.cpp Source/WorkspaceManager.cpp)
     target_include_directories(fohapp_tests PRIVATE Source)
     target_compile_definitions(fohapp_tests PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
