@@ -170,12 +170,12 @@ private:
             case 12: say("Finding the sub/mains delay (LF-weighted, 3 s window)...");
                      model.requestDelay(true, [safe] { if (!safe) return; auto& p = *safe;
                          if (!p.model.delayLocked()) { p.say("No valid delay result. Is pink noise playing, and only the mains on?"); return; }
-                         p.model.lockDelayFromLast(); p.model.send(foh::Command::resetAverages());
+                         p.model.lockDelayFromLast();
                          p.say("Locked delay " + String(consoleMs(p.model.lockedDelayMs), 2) + " ms. Averaging until the trace settles...");
                          p.model.beginCapture("Main", [safe](bool settled) { if (!safe) return; auto& q = *safe;
                              q.say("Stored 'Main' (ref delay " + String(consoleMs(q.model.lockedDelayMs), 2) + " ms)." + String(settled ? "" : u8(" \xe2\x96\xb2 Unsettled: the average did not settle within 10 s."))); q.next(); q.refresh(); }); });
                      return;
-            case 7: model.send(foh::Command::resetAverages()); say("Averaging the sub until the trace settles...");
+            case 7: say("Averaging the sub until the trace settles...");
                     model.beginCapture("Sub", [safe](bool settled) { if (!safe) return; auto& q = *safe;
                         q.say("Stored 'Sub' (same locked delay " + String(consoleMs(q.model.lockedDelayMs), 2) + " ms)." + String(settled ? "" : u8(" \xe2\x96\xb2 Unsettled: the average did not settle within 10 s.")));
                         auto* m = q.model.findTrace("Main"); auto* s = q.model.findTrace("Sub"); if (m && s) q.xover = foh::acousticCrossover(m->tf, s->tf, 10.0);
