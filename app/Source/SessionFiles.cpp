@@ -20,10 +20,10 @@ void MainComponent::getAllCommands(Array<CommandID>& commands) {
 void MainComponent::getCommandInfo(CommandID id, ApplicationCommandInfo& info) {
     switch (id) {
         case consoleControlCommand:
-            info.setInfo("Console Control...", "Read and review console EQ and delay changes", "File", 0);
+            info.setInfo(juce::String::fromUTF8("Console control\xe2\x80\xa6"), "Read and review console EQ and delay changes", "File", 0);
             break;
         case openSessionCommand:
-            info.setInfo("Open Session...", "Open a session folder", "File", 0);
+            info.setInfo(juce::String::fromUTF8("Open session\xe2\x80\xa6"), "Open a session folder", "File", 0);
             info.addDefaultKeypress('O', ModifierKeys::commandModifier);
             break;
         case saveSessionCommand:
@@ -31,7 +31,7 @@ void MainComponent::getCommandInfo(CommandID id, ApplicationCommandInfo& info) {
             info.addDefaultKeypress('S', ModifierKeys::commandModifier);
             break;
         case saveSessionAsCommand:
-            info.setInfo("Save Session As...", "Save the session to a new folder", "File", 0);
+            info.setInfo(juce::String::fromUTF8("Save session as\xe2\x80\xa6"), "Save the session to a new folder", "File", 0);
             info.addDefaultKeypress('S', ModifierKeys::commandModifier | ModifierKeys::shiftModifier);
             break;
         default: break;

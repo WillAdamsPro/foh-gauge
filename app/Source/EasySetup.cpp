@@ -5,7 +5,7 @@ EasySetup::EasySetup(AppModel& m) : model(m) {
     addAndMakeVisible(form);
     title.setText("Easy Setup (optional)", dontSendNotification);
     title.setFont(FohLookAndFeel::font(20, true));
-    instructions.setText("Set each cluster separately. New clusters use the default cabinet count. Skip restores the full guide flow.", dontSendNotification);
+    instructions.setText("Set each cluster separately. New clusters use the default cabinet count. Skip shows all guides.", dontSendNotification);
     instructions.setJustificationType(Justification::topLeft);
     clusterLabel.setText("Main speaker clusters", dontSendNotification);
     cabinetLabel.setText("Default cabinets for new clusters", dontSendNotification);
@@ -22,7 +22,7 @@ EasySetup::EasySetup(AppModel& m) : model(m) {
     clusters.setInputRestrictions(3, "0123456789"); cabinets.setInputRestrictions(3, "0123456789");
     clusters.setName("Clusters"); cabinets.setName("Default cabinets");
     control.addItem("Grouped per cluster", 1); control.addItem("Individual cabinets", 2);
-    arrangement.addItem("Centre", 1); arrangement.addItem("Left / right", 2);
+    arrangement.addItem("Center", 1); arrangement.addItem("Left / right", 2);
     arrangement.addItem("Distributed", 3); arrangement.addItem("Other", 4);
     arrangement.addItem("Cardioid", 5); arrangement.addItem("End-fire", 6);
     placement.addItem("Ground", 1); placement.addItem("Flown", 2);

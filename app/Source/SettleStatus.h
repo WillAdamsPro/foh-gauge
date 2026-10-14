@@ -6,7 +6,7 @@ namespace fohui {
 inline const char* settleStatusText(const foh::ConvergenceState& convergence,
                                     bool captureActive, bool captureUnsettled) {
     if (convergence.timedOut || (!captureActive && captureUnsettled))
-        return "\xe2\x96\xb2 unsettled";
-    return convergence.settled ? "settled" : "averaging...";
+        return "\xe2\x96\xb2 Unsettled";
+    return convergence.settled ? "Settled" : "Averaging\xe2\x80\xa6";
 }
 }

@@ -1,3 +1,4 @@
+#include "Strings.h"
 #include "Panels.h"
 #include <fohcore/input.h>
 #include "BinaryData.h"
@@ -44,7 +45,7 @@ public:
         shown.onClick = band.onClick = [this] { changed(); };
         offset.onValueChange = [this] { changed(); };
         import.onClick = [this] {
-            chooser = std::make_unique<juce::FileChooser>(juce::String("Import Smaart target"),
+            chooser = std::make_unique<juce::FileChooser>(juce::String(juce::String::fromUTF8("Import target curve\xe2\x80\xa6")),
                 juce::File(), juce::String("*.txt;*.asc;*.csv"));
             const juce::Component::SafePointer<TargetControls> safe(this);
             chooser->launchAsync(FileBrowserComponent::openMode | FileBrowserComponent::canSelectFiles,
@@ -145,9 +146,9 @@ private:
 // ===================== Transfer function (magnitude) =====================
 class TransferFunctionPanel : public Panel {
 public:
-    explicit TransferFunctionPanel(AppModel& m) : Panel(m, "TransferFunction", "Transfer Function") {
-        helpText = "Settled: less than 0.5 dB RMS change for 3 consecutive updates, with at least 25% coherent bins (100 Hz-10 kHz). After 10 s, capture proceeds with an unsettled warning.\n\nThis compares the console (reference) to the mic. Anything that isn't flat is what the speakers + room are doing to your mix.\n\nMagnitude: 0 dB = unchanged.\n\nDimmed regions: coherence below the Dim threshold. Don't EQ there; move the mic or treat the reflection.\n\nStored traces are dashed.\n\nMulti-mic: move to each of 2-3 positions, Reset avg and wait for a fresh trace. Enter the total arrival delay (or Use found), then Capture. The aligned average uses coherence weights and can be compared with the target. Capture again to replace a position; Clear starts a new set.";
-        plot.yLabel = "MAGNITUDE DB"; plot.yMin = -12; plot.yMax = 12; plot.yStep = 6; plot.showLegend = true; plot.showLowCohCallout = true;
+    explicit TransferFunctionPanel(AppModel& m) : Panel(m, "TransferFunction", "Transfer function") {
+        helpText = "Settled: less than 0.5 dB RMS change for 3 consecutive updates, with at least 25% coherent bins (100 Hz-10 kHz). After 10 s, capture proceeds with an unsettled warning.\n\nThis compares the console (reference) to the mic. Anything that isn't flat is what the speakers and room are doing to your mix.\n\nMagnitude: 0 dB = unchanged.\n\nDimmed regions: coherence below the Dim threshold. Don't EQ there; move the mic or treat the reflection.\n\nStored traces are dashed.\n\nMulti-mic: move to each of 2-3 positions, Reset averages and wait for a fresh trace. Enter the reference delay or press Lock delay, then Capture position. The aligned average uses coherence weights and can be compared with the target. Capture position again to replace a position; Clear starts a new set.";
+        plot.yLabel = "Magnitude (dB)"; plot.yMin = -12; plot.yMax = 12; plot.yStep = 6; plot.showLegend = true; plot.showLowCohCallout = true;
         addAndMakeVisible(plot);
         smooth.addItem("Smooth off", 1); smooth.addItem("Smooth 1/3", 4); smooth.addItem("Smooth 1/6", 7); smooth.addItem("Smooth 1/12", 13); smooth.addItem("Smooth 1/24", 25); smooth.addItem("Smooth 1/48", 49);
         avg.addItem("Avg 4", 4); avg.addItem("Avg 8", 8); avg.addItem("Avg 16", 16); avg.addItem("Avg 32", 32); avg.addItem(u8("Avg \xe2\x88\x9e"), 1000);
@@ -164,14 +165,14 @@ public:
         positionDelay.setRange(-500, 3000, 0.001); positionDelay.setTextValueSuffix(" ms");
         positionDelay.setSliderStyle(Slider::IncDecButtons);
         positionDelay.setTextBoxStyle(Slider::TextBoxLeft, false, 94, 24);
-        positionDelay.setTooltip("Total arrival delay for this position. Enter it or use the delay finder result. Reference compensation is subtracted automatically.");
+        positionDelay.setTooltip("Reference delay for this position. Enter it or use the delay finder result. Reference compensation is subtracted automatically.");
         position.onChange = [this] { positionDelay.setValue(positionDelays[(size_t)(position.getSelectedId() - 1)], dontSendNotification); };
         positionDelay.onValueChange = [this] { positionDelays[(size_t)(position.getSelectedId() - 1)] = positionDelay.getValue(); };
         useDelay.onClick = [this] { if (model.delayLocked()) positionDelay.setValue(model.delay.arrivals[0].delayMs); };
         capturePosition.onClick = [this] { model.send(foh::Command::micPosition(position.getSelectedId() - 1, positionDelay.getValue())); };
         clearPositions.onClick = [this] { model.send(foh::Command::clearMicPositions()); };
         showPositions.setButtonText("Multi-mic"); showPositions.setToggleState(true, dontSendNotification); showPositions.onClick = [this] { modelChanged(AppModel::Snapshot); };
-        capturePosition.setTooltip("Move the mic, Reset avg, wait for a fresh settled trace, then capture this position. Capture again to replace it.");
+        capturePosition.setTooltip("Move the mic, Reset averages, wait for a fresh settled trace, then capture this position. Capture again to replace it.");
         for (auto* c : std::initializer_list<Component*>{&position, &positionDelay, &useDelay, &capturePosition, &clearPositions, &showPositions}) addAndMakeVisible(c);
         syncControls();
     }
@@ -215,7 +216,7 @@ public:
         for (int i = 1; i <= 3; ++i) position.changeItemText(i, "Position " + String(i) + ((model.positionMask & (1 << (i - 1))) ? " *" : ""));
         target.appendTo(plot);
         plot.lowCoh = blankedRegions(model.tf);
-        plot.note = "averages " + String(model.tf.averages) + (model.calApplied ? u8(" \xc2\xb7 cal applied") : "")
+        plot.note = "Averages " + String(model.tf.averages) + (model.calApplied ? u8(" \xc2\xb7 Mic calibration on") : "")
                     + u8(" \xc2\xb7 ") + u8(fohui::settleStatusText(model.conv, model.capture.active, model.capture.unsettled))
                     + " | Multi-mic: " + String(model.positionCount) + "/3 positions (2 required)";
         if (model.positionCount >= 2 && (model.multiPosition.H.empty()
@@ -226,8 +227,8 @@ public:
     }
 private:
     ComboBox position; Slider positionDelay; std::array<double, 3> positionDelays {};
-    TextButton useDelay {"Use found"}, capturePosition {"Capture"}, clearPositions {"Clear"}; ToggleButton showPositions;
-    TargetControls target; PlotComponent plot; ComboBox smooth, avg, blank; TextButton reset {"Reset avg"}, store {"Store"};
+    TextButton useDelay {foh::str::lockDelay}, capturePosition {foh::str::capturePosition}, clearPositions {"Clear"}; ToggleButton showPositions;
+    TargetControls target; PlotComponent plot; ComboBox smooth, avg, blank; TextButton reset {"Reset averages"}, store {foh::str::storeTrace};
 };
 
 // ===================== Phase =====================
@@ -235,7 +236,7 @@ class PhasePanel : public Panel {
 public:
     explicit PhasePanel(AppModel& m) : Panel(m, "Phase", u8("Phase (\xc2\xb0)")) {
         helpText = "Phase: timing per frequency. A steady slope means leftover delay; flat is ideal.\n\nIn the sub-to-mains guide, phase is shown up to 250 Hz, where it matters for the crossover.";
-        plot.yLabel = u8("PHASE \xc2\xb0"); plot.yMin = -180; plot.yMax = 180; plot.yStep = 90; plot.wrapPhase = true; plot.showLegend = true; addAndMakeVisible(plot);
+        plot.yLabel = u8("Phase \xc2\xb0"); plot.yMin = -180; plot.yMax = 180; plot.yStep = 90; plot.wrapPhase = true; plot.showLegend = true; addAndMakeVisible(plot);
     }
     fohws::Size minSize() const override { return { WS::plotPanelMinWidth, WS::panelMinHeight }; } // secondary plot: generic min height (spec Alignment gives it 0.27)
     int priority() const override { return 80; }
@@ -256,9 +257,9 @@ private:
 // ===================== Coherence (+ traffic light) =====================
 class CoherencePanel : public Panel {
 public:
-    explicit CoherencePanel(AppModel& m) : Panel(m, "Coherence", "Coherence") {
+    explicit CoherencePanel(AppModel& m) : Panel(m, "Coherence", foh::str::coherence) {
         helpText = "Coherence: how much to trust the trace (0 to 1).\n\nGood: 0.9 or above. Fair: 0.6 up to 0.9. Poor: below 0.6. Low coherence is usually a reflection or noise: don't EQ it.";
-        plot.yLabel = "COHERENCE"; plot.yMin = 0; plot.yMax = 1; plot.yStep = 0.5; addAndMakeVisible(plot);
+        plot.yLabel = foh::str::coherence; plot.yMin = 0; plot.yMax = 1; plot.yStep = 0.5; addAndMakeVisible(plot);
     }
     fohws::Size minSize() const override { return { foh::theme::ws::panelMinWidth, 90 }; } // Alignment gives it a 0.15 strip: the traffic light alone is useful there
     void resized() override { auto r = getLocalBounds().reduced(pad, 6); light = r.removeFromTop(22); plot.setVisible(r.getHeight() > 60); plot.setBounds(r); }
@@ -307,7 +308,7 @@ public:
         plot.yLabel = spl.unit(); plot.yMin = spl.calibrated ? 0 : -100; plot.yMax = spl.calibrated ? 140 : 0;
         plot.series.clear(); plot.barLo.clear(); plot.barHi.clear(); PlotComponent::Series s; s.c = C::accent(); s.label = "Live";
         for (size_t i = 0; i < model.rtaDb.size() && i < model.rtaBands.size(); ++i) { auto& b = model.rtaBands[i]; plot.barLo.push_back(b.fLo); plot.barHi.push_back(b.fHi); s.f.push_back(b.fCenter); s.v.push_back(spl.level(model.rtaDb[i], model.splSensitivity())); }
-        plot.series.push_back(s); target.appendTo(plot); plot.note = model.rtaDb.empty() ? "No valid spectrum" : (model.calApplied ? "cal applied" : ""); plot.repaint();
+        plot.series.push_back(s); target.appendTo(plot); plot.note = model.rtaDb.empty() ? "No valid spectrum" : (model.calApplied ? "Mic calibration on" : ""); plot.repaint();
     }
 private:
     TargetControls target {-40}; PlotComponent plot; ComboBox frac;
@@ -316,8 +317,8 @@ private:
 // ===================== W7 show-time monitoring =====================
 class ShowMonitoringPanel : public Panel, private Timer {
 public:
-    explicit ShowMonitoringPanel(AppModel& m) : Panel(m, "ShowMonitoring", "W7 Show Monitoring") {
-        helpText = "Feed the console programme into the reference input and leave the mic in its reference position. Select a stored TF, then Monitor. No generated output is allowed while monitoring. TF drift is RMS over 100 Hz-10 kHz, using coherence >=0.6 and at least 25% coverage. A 3 dB change for three one-second updates raises an alert. RTA shows live programme level; programme changes are not system drift.";
+    explicit ShowMonitoringPanel(AppModel& m) : Panel(m, "ShowMonitoring", foh::str::showMonitor) {
+        helpText = "Feed the console program into the reference input and leave the mic in its reference position. Select a stored TF, then Monitor. No generated output is allowed while monitoring. TF drift is RMS over 100 Hz-10 kHz, using coherence >=0.6 and at least 25% coverage. A 3 dB change for three one-second updates raises an alert. RTA shows live program level; program changes are not system drift.";
         reference.setTextWhenNothingSelected("Select stored reference");
         monitor.setTooltip(helpText);
         reference.onChange = [this] { stopMonitoring(); };
@@ -329,11 +330,11 @@ public:
             active = true; alert = {};
             model.engine.monitoringSilent = true; model.engine.cancelGeneratedPlayback();
             model.notify(AppModel::Settings); monitor.setButtonText("Stop monitoring");
-            reference.setEnabled(false); status.setText("Monitoring: waiting for coherent programme", dontSendNotification);
+            reference.setEnabled(false); status.setText("Monitoring: waiting for coherent program", dontSendNotification);
             startTimerHz(1);
         };
         for (auto* c : std::initializer_list<Component*>{&reference, &monitor, &status, &tfPlot, &rtaPlot}) addAndMakeVisible(c);
-        tfPlot.yLabel = "TF DB"; tfPlot.yMin = -18; tfPlot.yMax = 18; tfPlot.yStep = 6; tfPlot.showLegend = true;
+        tfPlot.yLabel = "TF (dB)"; tfPlot.yMin = -18; tfPlot.yMax = 18; tfPlot.yStep = 6; tfPlot.showLegend = true;
         rtaPlot.yLabel = "RTA dBFS"; rtaPlot.yMin = -100; rtaPlot.yMax = 0; rtaPlot.yStep = 20; rtaPlot.showLegend = true;
         styleLabel(status, T::small, C::textPrimary()); refreshReferences(); stopMonitoring();
     }
@@ -359,7 +360,7 @@ private:
         stopTimer(); if (active) { model.engine.cancelGeneratedPlayback(); model.engine.monitoringSilent = false; }
         active = false; alert = {}; monitor.setButtonText("Monitor"); reference.setEnabled(true); refreshReferences();
         status.setColour(Label::textColourId, C::textPrimary());
-        status.setText("W7: select a stored TF and Monitor. Use console programme as reference.", dontSendNotification);
+        status.setText("Select a stored TF and Monitor. Use console program as reference.", dontSendNotification);
     }
     void timerCallback() override {
         if (!active) return;
@@ -367,8 +368,8 @@ private:
             && !model.engine.deviceFailed.load() && model.engine.state.load() == AudioEngine::Ready;
         const auto drift = signal ? fohui::showDrift(model.tf, baseline.tf) : fohui::ShowDrift{};
         const bool warning = alert.update(drift);
-        status.setText(!drift.valid ? "Waiting: insufficient coherent programme, paused, or input changed"
-            : (warning ? "DRIFT ALERT: " : alert.consecutive > 0 ? "Checking drift: " : "Monitoring: ")
+        status.setText(!drift.valid ? "Waiting: insufficient coherent program, paused, or input changed"
+            : (warning ? "Drift: " : alert.consecutive > 0 ? "Checking drift: " : "Monitoring: ")
               + String(drift.rmsDb, 1) + " dB RMS vs " + String(baseline.name), dontSendNotification);
         status.setColour(Label::textColourId, warning ? Colours::orange : C::textPrimary());
         if (!isShowing()) return; // keep alert state, avoid hidden rendering
@@ -378,7 +379,7 @@ private:
         if (signal) { PlotComponent::Series live; live.c = C::traceLive(); live.label = "Live TF";
             logDecimate(model.tf, model.tf.magDb, live.f, live.v, &live.gap); tfPlot.series.push_back(std::move(live)); }
         tfPlot.repaint(); rtaPlot.series.clear();
-        PlotComponent::Series rta; rta.c = C::accent(); rta.label = "Live programme";
+        PlotComponent::Series rta; rta.c = C::accent(); rta.label = "Live program";
         if (signal) for (size_t i = 0; i < model.rtaDb.size() && i < model.rtaBands.size(); ++i) {
             rta.f.push_back(model.rtaBands[i].fCenter); rta.v.push_back(model.rtaDb[i]);
         }
@@ -391,15 +392,15 @@ private:
 // ===================== Delay finder =====================
 class DelayFinderPanel : public Panel {
 public:
-    explicit DelayFinderPanel(AppModel& m) : Panel(m, "DelayFinder", "Delay Finder") {
-        helpText = "The delay finder lines up the reference with the mic (cross-correlation in fohcore).\n\nInsert delay applies it to the reference so the transfer function phase flattens.\n\nTwo similar spikes: arrivals within 3 dB and more than 0.5 ms apart. Check that only one speaker is on.\n\nConfidence 0 means no lock: check signal and that only one speaker is on.";
+    explicit DelayFinderPanel(AppModel& m) : Panel(m, "DelayFinder", "Delay finder") {
+        helpText = "The delay finder compares the reference signal with the mic signal.\n\nLock delay applies it to the reference so the transfer function phase flattens.\n\nTwo similar spikes: arrivals within 3 dB and more than 0.5 ms apart. Check that only one speaker is on.\n\nConfidence 0 means no lock: check signal and that only one speaker is on.";
         value.setFont(FohLookAndFeel::numeric(34)); value.setText("--", dontSendNotification);
-        styleLabel(detail, T::small, C::textSecondary()); detail.setJustificationType(Justification::topLeft); detail.setText("Press Find", dontSendNotification);
+        styleLabel(detail, T::small, C::textSecondary()); detail.setJustificationType(Justification::topLeft); detail.setText("Start pink noise, then press Find delay.", dontSendNotification);
         styleLabel(twoSpikeBadge, T::small, C::warning(), true);
         twoSpikeBadge.setText(u8("\xe2\x96\xb2 Two similar spikes"), dontSendNotification);
         twoSpikeBadge.setColour(Label::backgroundColourId, C::warning().withAlpha(0.12f));
         twoSpikeBadge.setColour(Label::outlineColourId, C::warning());
-        twoSpikeBadge.setTooltip("Two arrivals within 3 dB and more than 0.5 ms apart: only one speaker on? Confidence is multiplied by 0.75 in the delay finder.");
+        twoSpikeBadge.setTooltip("Two arrivals within 3 dB and more than 0.5 ms apart: only one speaker on? Check the speaker configuration before locking the delay.");
         addChildComponent(twoSpikeBadge);
         makePrimary(insert); find.onClick = [this] { model.requestDelay(sub.getToggleState()); }; insert.onClick = [this] { model.lockDelayFromLast(); };
         sub.setButtonText("Sub (LF)");
@@ -425,20 +426,19 @@ public:
         auto& d = model.delay;
         twoSpikeBadge.setVisible(!model.delayPending && model.delayLocked() && d.twoSimilarArrivals);
         resized();
-        if (model.delayPending) { detail.setText(model.delayWasSub ? "Finding sub delay (3 s window)..." : "Finding delay...", dontSendNotification); return; }
+        if (model.delayPending) { detail.setText(model.delayWasSub ? juce::String::fromUTF8("Finding sub delay (3 s window)\xe2\x80\xa6") : juce::String::fromUTF8("Finding delay\xe2\x80\xa6"), dontSendNotification); return; }
         if (!model.delayLocked()) { value.setText("--", dontSendNotification); detail.setText(d.arrivals.empty() ? "No signal: is pink noise playing?" : "No valid delay result: check signal and that only one speaker is on", dontSendNotification); return; }
         auto& a0 = d.arrivals[0];
         value.setText(String(consoleMs(a0.delayMs), 2) + " ms", dontSendNotification);
-        // The core has already applied the two-spike penalty; display it only once.
-        String t = String(d.confidence > 0.7 ? "High" : d.confidence > 0.35 ? "Medium" : "LOW") + " confidence " + String(roundToInt(d.confidence * 100.0)) + "%"
-                 + (d.twoSimilarArrivals ? u8(" (\xc3\x97" "0.75)") : "")
-                 + "\npolarity " + (a0.inverted ? "INVERTED" : "normal")
+        // Confidence already includes any ambiguity penalty.
+        String t = String(d.confidence > 0.7 ? "High" : d.confidence > 0.35 ? "Medium" : "Low") + " confidence " + String(roundToInt(d.confidence * 100.0)) + "%"
+                 + "\nPolarity " + (a0.inverted ? "inverted" : "normal")
                  + u8("\n\xe2\x89\x88 ") + String(a0.distanceM, 2) + " m" + (model.delayWasSub ? " (sub, LF-weighted)" : "");
-        for (size_t i = 1; i < d.arrivals.size(); ++i) t << u8("  \xc2\xb7  #") << (int) i + 1 << " " << String(consoleMs(d.arrivals[i].delayMs), 2) << " ms (" << String(d.arrivals[i].relLevelDb, 1) << " dB)";
+        for (size_t i = 1; i < d.arrivals.size(); ++i) t << "\nArrival " << (int) i + 1 << " " << String(consoleMs(d.arrivals[i].delayMs), 2) << " ms (" << String(d.arrivals[i].relLevelDb, 1) << " dB)";
         detail.setText(t, dontSendNotification);
     }
 private:
-    Label value, detail, twoSpikeBadge; TextButton find {"Find"}, insert {"Insert delay"}; ToggleButton sub;
+    Label value, detail, twoSpikeBadge; TextButton find {foh::str::findDelay}, insert {foh::str::lockDelay}; ToggleButton sub;
     TooltipWindow tooltip { nullptr, 700 };
 };
 
@@ -469,7 +469,7 @@ public:
         if (!(w & (AppModel::Snapshot | AppModel::Delay | AppModel::Theme))) return;
         measure.setEnabled(!model.sweepCapturing);
         String note = "Delay correlation";
-        if (model.sweepCapturing) note = "Measuring sweep...";
+        if (model.sweepCapturing) note = juce::String::fromUTF8("Measuring sweep\xe2\x80\xa6");
         else if (!model.sweep.response.error.empty()) note = String(model.sweep.response.error);
         else if (model.sweep.response.ok()) note = "Sweep impulse: " + String(model.sweep.response.arrivals[0].delayMs, 2) + " ms";
         status.setText(note, dontSendNotification);
@@ -485,7 +485,7 @@ private:
 // ===================== Signal meters =====================
 class SignalMetersPanel : public Panel {
 public:
-    explicit SignalMetersPanel(AppModel& m) : Panel(m, "SignalMeters", "Signal Meters") {
+    explicit SignalMetersPanel(AppModel& m) : Panel(m, "SignalMeters", "Signal meters") {
         helpText = "Mic = In 1 (ECM8000, +48 V). Reference = In 2, looped back from Out 2.\n\nBoth inputs should sit near -20 dBFS on pink noise, never clipping.";
     }
     fohws::Size minSize() const override { return { 240, 120 }; }
@@ -499,7 +499,7 @@ public:
             Colour c = db > -1 ? C::danger() : db > -12 ? C::warning() : db > -40 ? C::ok() : C::textAxis();
             g.setColour(c); g.fillRoundedRectangle(bar.withWidth(bar.getWidth() * frac), 3.f);
             g.setColour(C::textSecondary()); float x = bar.getX() + bar.getWidth() * (40.f / 60.f); g.fillRect(x, bar.getY() - 3, 1.f, bar.getHeight() + 6); // -20 dBFS target mark
-            String st = db > -1 ? u8("\xe2\x96\xa0 CLIP") : i == 0 && model.splCal().calibrated ? (model.micLevelReady() ? String(model.micLevel(), 1) + " dB SPL" : String("-- dB SPL")) : db > -40 ? u8("\xe2\x97\x8f ") + String(db, 1) + " dBFS" : u8("\xe2\x96\xb2 no signal");
+            String st = db > -1 ? u8("\xe2\x96\xa0 Clipping") : i == 0 && model.splCal().calibrated ? (model.micLevelReady() ? String(model.micLevel(), 1) + " dB SPL" : String("-- dB SPL")) : db > -40 ? u8("\xe2\x97\x8f ") + String(db, 1) + " dBFS" : u8("\xe2\x96\xb2 no signal");
             g.setColour(C::textPrimary()); g.setFont(FohLookAndFeel::numeric(T::small, false)); g.drawText(st, val, Justification::centredRight); }
         g.setColour(C::textSecondary()); g.setFont(FohLookAndFeel::font(T::axisTick)); g.drawText("target -20 dBFS on pink noise", r.removeFromTop(16), Justification::left);
     }
@@ -554,7 +554,7 @@ private:
 // ===================== Inputs & devices (mic / channel list) =====================
 class InputsAndDevicesPanel : public Panel {
 public:
-    explicit InputsAndDevicesPanel(AppModel& m) : Panel(m, "InputsAndDevices", "Inputs & Devices"), setup(m, false) {
+    explicit InputsAndDevicesPanel(AppModel& m) : Panel(m, "InputsAndDevices", "Inputs and devices"), setup(m, false) {
         helpText = "Select your input and output devices, sample rate, microphone and reference inputs, and generator outputs. Play a short chime to check the outputs. Use Audio Setup in the toolbar and Done to save these settings.";
         addAndMakeVisible(setup);
     }
@@ -577,11 +577,11 @@ private:
 // ===================== Calibration =====================
 class CalibrationPanel : public Panel {
 public:
-    explicit CalibrationPanel(AppModel& m) : Panel(m, "Calibration", "Mic Calibration") {
-        helpText = "Load your mic cal file (CSV/TXT/FRD) and turn Cal on. It is applied to the transfer function and RTA by the analysis engine.";
+    explicit CalibrationPanel(AppModel& m) : Panel(m, "Calibration", foh::str::micCalibration) {
+        helpText = "Load your mic calibration file (CSV/TXT/FRD) and enable Mic calibration. It is applied to the transfer function and RTA by the analysis engine.";
         load.onClick = [this] { chooser = std::make_unique<FileChooser>("Mic calibration file", File(), "*.csv;*.txt;*.frd;*.cal");
             chooser->launchAsync(FileBrowserComponent::openMode | FileBrowserComponent::canSelectFiles, [this](const FileChooser& fc) { auto f = fc.getResult(); if (f.existsAsFile()) model.loadCalFile(f); }); };
-        toggle.setButtonText("Cal on"); toggle.onClick = [this] { model.setCalEnabled(toggle.getToggleState()); };
+        toggle.setButtonText(foh::str::micCalibration); toggle.onClick = [this] { model.setCalEnabled(toggle.getToggleState()); };
         styleLabel(info, T::small, C::textSecondary()); info.setJustificationType(Justification::topLeft);
         for (auto* c : std::initializer_list<Component*>{&load, &toggle, &info}) addAndMakeVisible(c); sync();
     }
@@ -589,31 +589,31 @@ public:
     void sync() {
         toggle.setToggleState(model.calOn, dontSendNotification);
         auto& c = model.cal;
-        info.setText(model.calFile.isEmpty() ? String("No mic cal loaded") : c.ok() ? u8("\xe2\x9c\x93 ") + model.calFile + ": " + String((int) c.hz.size()) + " points, " + String(c.hz.front(), 0) + "-" + String(c.hz.back(), 0) + " Hz" + (c.hasPhase ? ", with phase" : "") + u8(" \xc2\xb7 Sens Factor ") + String(c.sensitivityOffsetDb, 2) + " dB"
-                                                                       : u8("\xe2\x96\xb2 Could not read cal: ") + String(c.error), dontSendNotification); }
+        info.setText(model.calFile.isEmpty() ? String("No mic calibration loaded") : c.ok() ? u8("\xe2\x9c\x93 ") + model.calFile + ": " + String((int) c.hz.size()) + " points, " + String(c.hz.front(), 0) + "-" + String(c.hz.back(), 0) + " Hz" + (c.hasPhase ? ", with phase" : "") + u8(" \xc2\xb7 Sensitivity ") + String(c.sensitivityOffsetDb, 2) + " dB"
+                                                                       : u8("\xe2\x96\xb2 Could not read mic calibration: ") + String(c.error), dontSendNotification); }
     void resized() override { auto r = getLocalBounds().reduced(pad, 8); auto row = controlRow(r, 28); load.setBounds(row.removeFromLeft(140)); row.removeFromLeft(10); toggle.setBounds(row.removeFromLeft(90)); info.setBounds(r); }
     void modelChanged(int w) override { if (w & (AppModel::Cal | AppModel::Theme)) { info.setColour(Label::textColourId, C::textSecondary()); sync(); } }
 private:
-    TextButton load {"Load mic cal..."}; ToggleButton toggle; Label info; std::unique_ptr<FileChooser> chooser;
+    TextButton load {juce::String::fromUTF8("Load file\xe2\x80\xa6")}; ToggleButton toggle; Label info; std::unique_ptr<FileChooser> chooser;
 };
 
 // ===================== Trace list =====================
 class TraceListPanel : public Panel, private ListBoxModel {
 public:
     explicit TraceListPanel(AppModel& m) : Panel(m, "TraceList", "Traces") {
-        helpText = "Up to 8 stored traces. Select a row to edit its name or colour; click the box to show/hide it. Choose two sources for a complex virtual sum preview, including the same trace twice. The preview does not store or change measurements.";
+        helpText = "Up to 8 stored traces. Select a row to edit its name or color; click the box to show/hide it. Choose two sources for a complex virtual sum preview, including the same trace twice. The preview does not store or change measurements.";
         list.setModel(this); list.setRowHeight(24);
         name.setTextToShowWhenEmpty("Select a trace to rename", C::textAxis());
         name.onReturnKey = [this] { model.renameTrace(list.getSelectedRow(), name.getText()); };
         rename.onClick = name.onReturnKey;
         const char* names[] = {"Red", "Orange", "Yellow", "Green", "Cyan", "Blue", "Purple", "Pink"};
         for (int i = 0; i < 8; ++i) colour.addItem(names[i], i + 1);
-        colour.setTextWhenNothingSelected("Colour");
+        colour.setTextWhenNothingSelected("Color");
         colour.onChange = [this] { if (colour.getSelectedId() > 0) model.colourTrace(list.getSelectedRow(), palette(colour.getSelectedId() - 1)); };
         del.onClick = [this] { model.removeTrace(list.getSelectedRow()); };
         sourceA.setTextWhenNothingSelected("Sum source A"); sourceB.setTextWhenNothingSelected("Sum source B");
         sourceA.onChange = sourceB.onChange = [this] { model.selectSum(sourceA.getSelectedId() - 1, sourceB.getSelectedId() - 1); };
-        preview.yLabel = "SUM DB"; preview.yMin = -12; preview.yMax = 12; preview.yStep = 6; preview.showLegend = true;
+        preview.yLabel = "Sum (dB)"; preview.yMin = -12; preview.yMax = 12; preview.yStep = 6; preview.showLegend = true;
         for (auto* c : std::initializer_list<Component*>{&list, &name, &rename, &colour, &del, &sourceA, &sourceB, &preview}) addAndMakeVisible(c);
         modelChanged(AppModel::Traces);
     }
@@ -639,7 +639,7 @@ public:
         sourceA.setSelectedId(model.sumA + 1, dontSendNotification); sourceB.setSelectedId(model.sumB + 1, dontSendNotification);
         auto sum = model.sumPreview(); preview.series.clear();
         preview.centreNote = sum.freq.empty() ? (model.validTrace(model.sumA) && model.validTrace(model.sumB)
-            ? "Sources need matching sample rates and frequency grids, and valid TF data" : "Choose two stored traces to preview their sum") : String{};
+            ? "Sources need matching sample rates and frequency grids, and valid TF data" : "Choose two traces for a sum") : String{};
         preview.note = {};
         if (!sum.freq.empty()) {
             PlotComponent::Series s; s.c = C::accent(); s.label = "Virtual sum";
@@ -657,7 +657,7 @@ public:
         if (sel) g.fillAll(C::navItemActiveBg());
         auto box = Rectangle<float>(6, h / 2.f - 6, 12, 12); g.setColour(model.traceColour(row)); g.drawRect(box, 1.f); if (t.visible) g.fillRect(box.reduced(3));
         g.setColour(t.visible ? C::textPrimary() : C::textAxis()); g.setFont(FohLookAndFeel::font(T::small));
-        g.drawText(String(t.name) + "   ref delay " + String(t.refDelayMs, 2) + " ms", 26, 0, w - 30, h, Justification::centredLeft);
+        g.drawText(String(t.name) + "   reference delay " + String(t.refDelayMs, 2) + " ms", 26, 0, w - 30, h, Justification::centredLeft);
     }
     void selectedRowsChanged(int row) override {
         bool valid = model.validTrace(row);
@@ -692,7 +692,7 @@ public:
         const auto c=model.splCal();
         if (!c.calibrated) { line("Calibrate SPL in Setup"); return; }
         if (!model.micLevelReady() || model.leqRevision != model.analysis.leqRevision.load() || !model.leq.valid) {
-            if (model.micPeak >= 0.99f) line("WARNING: input clipping");
+            if (model.micPeak >= 0.99f) line("Warning: input clipping");
             line("-- SPL / Leq (invalid or no live signal)"); return;
         }
         size_t w=static_cast<size_t>(weighting.getSelectedId()-1);
@@ -703,8 +703,8 @@ public:
         line("Measured " + String(model.leq.seconds,1) + " s" + (model.leq.seconds<900 ? " (partial windows)" : ""));
         auto selected=preset.getSelectedId()==1 ? foh::ExposurePreset::WHO : foh::ExposurePreset::NIOSH;
         auto warning=foh::exposureWarning(selected,level(model.leq.fifteenMinutes[0]),level(model.leq.session[0]),model.leq.seconds);
-        if (model.micPeak>=0.99f) line("WARNING: input clipping");
-        else if (warning.exceeded) line("WARNING: " + preset.getText() + " limit reached");
+        if (model.micPeak>=0.99f) line("Warning: input clipping");
+        else if (warning.exceeded) line("Warning: " + preset.getText() + " limit reached");
         else line(preset.getText()+" limit not reached");
         line(selected==foh::ExposurePreset::WHO ? "100 dBA Leq-15" : "85 dBA / 8 h, 3 dB exchange");
     }
@@ -719,19 +719,19 @@ public:
     fohws::Size minSize() const override { return { WS::inspectorMinWidth, 160 }; }
     int priority() const override { return 0; } // first to fold into a tab (spec §7)
     void resized() override { help.setBounds(getLocalBounds()); }
-    void refresh() { help.caption = model.inspectorTitle.isEmpty() ? String("INSPECTOR") : "INSPECTOR " + u8("\xc2\xb7 ") + model.inspectorTitle.toUpperCase(); help.setText(model.inspectorText); }
+    void refresh() { help.caption = model.inspectorTitle.isEmpty() ? String("Inspector") : "Inspector " + u8("\xc2\xb7 ") + model.inspectorTitle; help.setText(model.inspectorText); }
     void modelChanged(int w) override { if (w & (AppModel::Overlay | AppModel::Theme)) refresh(); }
 private:
     HelpPanel help;
 };
 
-// ===================== Placeholder panels (in the preset trees, not in build #1) =====================
+// ===================== Placeholder panels (in the preset trees, unavailable) =====================
 class PlaceholderPanel : public Panel {
 public:
     PlaceholderPanel(AppModel& m, std::string id, String title, String what) : Panel(m, std::move(id), std::move(title)), text(std::move(what)) { helpText = text; }
     bool isPlaceholder() const override { return true; }
     int priority() const override { return panelId() == "Events" ? 5 : 10; } // spec §7: Inspector, then Events/TraceList, then the rest
-    void paint(Graphics& g) override { g.setColour(C::textAxis()); g.setFont(FohLookAndFeel::font(T::small)); g.drawFittedText(text + "\n\nNot in build #1.", getLocalBounds().reduced(16), Justification::centred, 6); }
+    void paint(Graphics& g) override { g.setColour(C::textAxis()); g.setFont(FohLookAndFeel::font(T::small)); g.drawFittedText(text + "\n\nNot available yet.", getLocalBounds().reduced(16), Justification::centred, 6); }
 private:
     String text;
 };
@@ -743,24 +743,24 @@ PanelRegistry& PanelRegistry::standard() {
     static PanelRegistry r = [] {
         PanelRegistry x;
         auto add = [&x](std::string id, String title, std::function<std::unique_ptr<Panel>(AppModel&)> f) { x.add({ std::move(id), std::move(title), std::move(f) }); };
-        add("TransferFunction", "Transfer Function", [](AppModel& m) { return std::make_unique<TransferFunctionPanel>(m); });
+        add("TransferFunction", "Transfer function", [](AppModel& m) { return std::make_unique<TransferFunctionPanel>(m); });
         add("Phase", "Phase", [](AppModel& m) { return std::make_unique<PhasePanel>(m); });
-        add("Coherence", "Coherence", [](AppModel& m) { return std::make_unique<CoherencePanel>(m); });
-        add("ShowMonitoring", "W7 Show Monitoring", [](AppModel& m) { return std::make_unique<ShowMonitoringPanel>(m); });
+        add("Coherence", foh::str::coherence, [](AppModel& m) { return std::make_unique<CoherencePanel>(m); });
+        add("ShowMonitoring", foh::str::showMonitor, [](AppModel& m) { return std::make_unique<ShowMonitoringPanel>(m); });
         add("RTA", "RTA", [](AppModel& m) { return std::make_unique<RtaPanel>(m); });
-        add("DelayFinder", "Delay Finder", [](AppModel& m) { return std::make_unique<DelayFinderPanel>(m); });
+        add("DelayFinder", "Delay finder", [](AppModel& m) { return std::make_unique<DelayFinderPanel>(m); });
         add("Impulse", "Impulse", [](AppModel& m) { return std::make_unique<ImpulsePanel>(m); });
-        add("SignalMeters", "Signal Meters", [](AppModel& m) { return std::make_unique<SignalMetersPanel>(m); });
+        add("SignalMeters", "Signal meters", [](AppModel& m) { return std::make_unique<SignalMetersPanel>(m); });
         add("Generator", "Generator", [](AppModel& m) { return std::make_unique<GeneratorPanel>(m); });
-        add("InputsAndDevices", "Inputs & Devices", [](AppModel& m) { return std::make_unique<InputsAndDevicesPanel>(m); });
-        add("Calibration", "Mic Calibration", [](AppModel& m) { return std::make_unique<CalibrationPanel>(m); });
+        add("InputsAndDevices", "Inputs and devices", [](AppModel& m) { return std::make_unique<InputsAndDevicesPanel>(m); });
+        add("Calibration", foh::str::micCalibration, [](AppModel& m) { return std::make_unique<CalibrationPanel>(m); });
         add("TraceList", "Traces", [](AppModel& m) { return std::make_unique<TraceListPanel>(m); });
         add("Inspector", "Inspector", [](AppModel& m) { return std::make_unique<InspectorPanel>(m); });
         add("GuideInspector", "Guide", [](AppModel& m) { return makeGuidePanel(m); });
         auto ph = [&add](std::string id, String title, String what) { add(id, title, [id, title, what](AppModel& m) { return std::make_unique<PlaceholderPanel>(m, id, title, what); }); };
-        ph("LimitPreset", "Limit Preset", "SPL limit preset for exposure monitoring.");
-        ph("EQSuggestions", "EQ Suggestions", "Suggested EQ moves from the transfer function, coherence-weighted.");
-        ph("SPLHistory", "SPL History", "SPL over time with LAeq / LCeq traces.");
+        ph("LimitPreset", "Limit preset", "SPL limit preset for exposure monitoring.");
+        ph("EQSuggestions", "EQ suggestions", "Suggested EQ moves from the transfer function, coherence-weighted.");
+        ph("SPLHistory", "SPL history", "SPL over time with LAeq / LCeq traces.");
         add("SPLNumbers", "SPL / Leq", [](AppModel& m) { return std::make_unique<SplLeqPanel>(m); });
         ph("Dose", "Dose", "Noise dose against the selected limit.");
         ph("Events", "Events", "Log of clipping, limit breaches and captures.");

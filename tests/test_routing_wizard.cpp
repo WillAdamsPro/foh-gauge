@@ -233,7 +233,7 @@ TEST_CASE("Wizard detection edges report failure and allow retry", "[app][routin
         if (edge == 5) engine.audioDeviceError("Synthetic unplug");
         if (edge == 6) wizard.setDevices("Replacement USB", "Replacement USB");
         if (edge == 7) wizard.setChannels({"Replacement 1", "Replacement 2"}, {"Out 1", "Out 2"});
-        waitFor("Fail:");
+        waitFor("Test failed:");
         engine.deviceFailed = false; engine.state = AudioEngine::Ready;
         button(wizard, "Test connection").onClick();
         const float* good[] {signal.data(), quiet.data()};

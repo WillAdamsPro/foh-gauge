@@ -43,7 +43,7 @@ void RoutingWizard::setDevices(const String& input, const String& output) {
     if (input == inputDevice && output == outputDevice) return;
     const int interrupted = testingStep;
     cancelTest(); results.fill({});
-    if (interrupted >= 0) results[(size_t)interrupted] = "Fail: audio device changed. Check Audio Setup and test again.";
+    if (interrupted >= 0) results[(size_t)interrupted] = "Test failed: audio device changed. Check Audio Setup and test again.";
     inputDevice = input; outputDevice = output;
     suggestion = "Unknown interface: choose channels manually.";
     refresh();
@@ -55,7 +55,7 @@ void RoutingWizard::runTest() {
     const int output = step == 0 || step == 3 ? draft[3] : draft[2];
     engine.testConnection(output, expected);
     testingStep = step; testStartedMs = Time::getMillisecondCounterHiRes();
-    results[(size_t)step] = "Testing connection...";
+    results[(size_t)step] = juce::String::fromUTF8("Testing connection\xe2\x80\xa6");
     refresh(); startTimer(50);
 }
 void RoutingWizard::timerCallback() {
@@ -65,10 +65,10 @@ void RoutingWizard::timerCallback() {
         if (Time::getMillisecondCounterHiRes() - testStartedMs < 2500) return;
         const int failedStep = testingStep;
         cancelTest();
-        results[(size_t)failedStep] = "Fail: audio device did not complete the test. Check Audio Setup.";
+        results[(size_t)failedStep] = "Test failed: audio device did not complete the test. Check Audio Setup.";
         refresh(); return;
     }
-    results[(size_t)testingStep] = foh::connectionHint(result);
+    results[(size_t)testingStep] = String(foh::connectionHint(result)).replace("Fail:", "Test failed:");
     stopTimer(); testingStep = -1; refresh();
 }
 void RoutingWizard::setRigProfile(const std::optional<foh::RigProfile>& profile) {
@@ -94,7 +94,7 @@ void RoutingWizard::setChannels(const StringArray& inputs, const StringArray& ou
     if (inputs != inputNames || outputs != outputNames) {
         const int interrupted = testingStep;
         cancelTest(); results.fill({});
-        if (interrupted >= 0) results[(size_t)interrupted] = "Fail: audio channels changed. Check Audio Setup and test again.";
+        if (interrupted >= 0) results[(size_t)interrupted] = "Test failed: audio channels changed. Check Audio Setup and test again.";
     }
     inputNames = inputs; outputNames = outputs;
     for (size_t i = 0; i < draft.size(); ++i) {

@@ -1,5 +1,6 @@
 // FohThemes.h: switchable visual-direction themes for FOH Gauge (JUCE 8). Values match src/gen.py.
 #pragma once
+#include "Strings.h"
 #include <juce_gui_basics/juce_gui_basics.h>
 
 namespace foh::theme
@@ -75,7 +76,7 @@ namespace foh::theme
     // Alpha label colours are pre-composited over windowBackground for JUCE (labelColor 85%, secondary 55%, tertiary 30%).
     inline Theme appleProDark()
     {
-        Theme t; t.id = "apple-pro-dark"; t.displayName = "Pro Dark";
+        Theme t; t.id = "apple-pro-dark"; t.displayName = foh::str::dark;
         t.surfaces = { juce::Colour (0xff1E1E1E),   // windowBackground (plot area #161616 drawn by plot)
                        juce::Colour (0xb82C2C2E),   // sidebar: rgba(44,44,46,0.72), vibrancy fallback
                        juce::Colour (0xff2B2B2B),   // toolbar / inspector
@@ -93,7 +94,7 @@ namespace foh::theme
 
     inline Theme appleProSunlight()
     {
-        Theme t = appleProDark(); t.id = "apple-pro-sunlight"; t.displayName = "Pro Sunlight"; t.isLight = true;
+        Theme t = appleProDark(); t.id = "apple-pro-sunlight"; t.displayName = foh::str::sunlight; t.isLight = true;
         t.surfaces = { juce::Colour (0xffFFFFFF), juce::Colour (0xffE8E8EA), juce::Colour (0xffF2F2F2), juce::Colour (0xffFFFFFF), juce::Colour (0xff8E8E93), juce::Colour (0xffD1D1D6) };
         t.text = { juce::Colour (0xff000000), juce::Colour (0xff2C2C2E), juce::Colour (0xff48484A), juce::Colour (0xffFFFFFF) };
         t.accent = juce::Colour (0xff0040DD);

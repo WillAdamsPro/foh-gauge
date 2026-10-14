@@ -1,3 +1,4 @@
+#include "Strings.h"
 #include <juce_gui_extra/juce_gui_extra.h>
 #include "MainComponent.h"
 #include "Acknowledgements.h"
@@ -127,7 +128,7 @@ public:
                 return;
             }
             if (id < resetScale || id > sunlightTheme) return;
-            const char* names[] = { "100%", "Increase UI Scale", "Decrease UI Scale", "125%", "150%", "200%", "Dark Theme", "Sunlight Theme" };
+            const char* names[] = { "100%", "Increase UI scale", "Decrease UI scale", "125%", "150%", "200%", foh::str::dark, foh::str::sunlight };
             info.setInfo(names[id - 1], names[id - 1], "View", 0);
             const int percent = id == resetScale ? 100 : id == scale125 ? 125 : id == scale150 ? 150 : id == scale200 ? 200 : 0;
             if (percent) info.setTicked(main->uiScalePercent() == percent);

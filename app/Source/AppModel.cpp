@@ -63,7 +63,7 @@ AppModel::AppModel() {
     }
     if (prefs && prefs->containsKey("interfaceLoopback")) {
         if (!fohapp::loadLoopbackPreferences(prefs->getValue("interfaceLoopback").toStdString(), loopbackCals))
-            AlertWindow::showMessageBoxAsync(AlertWindow::WarningIcon, "Preferences load failed", "Invalid interface calibration preferences. Using no interface correction.");
+            AlertWindow::showMessageBoxAsync(AlertWindow::WarningIcon, "Preferences load failed", "Invalid interface correction preferences. Interface correction is off.");
     }
     dm.addAudioCallback(&engine);
     if (!dm.getCurrentAudioDevice()) engine.audioDeviceStopped();
@@ -83,7 +83,7 @@ void AppModel::lockDelayFromLast() {
 }
 bool AppModel::storeTrace(const String& name) {
     bool ok = traces.store(name.toStdString(), tf, refDelayMs);
-    if (!ok) AlertWindow::showMessageBoxAsync(MessageBoxIconType::WarningIcon, "Trace store full", "Up to 8 traces. Delete one in the Trace List first.");
+    if (!ok) AlertWindow::showMessageBoxAsync(MessageBoxIconType::WarningIcon, "Stored traces full", "You can store up to 8 traces. Delete one in Traces first.");
     notify(Traces); return ok;
 }
 const foh::Trace* AppModel::findTrace(const char* n) const { for (int i = traces.count() - 1; i >= 0; --i) if (traces.at(i).name == n) return &traces.at(i); return nullptr; }
@@ -159,7 +159,7 @@ bool AppModel::beginLoopback() {
     savedGenerator = engine.gen.load(); savedGeneratorGain = engine.genGainDb.load(); savedPaused = paused;
     setPaused(false); engine.genGainDb = -20; engine.gen = AudioEngine::Pink;
     measuringLoopbackKey = loopbackKey(); loopbackStart = Time::getMillisecondCounterHiRes();
-    loopbackMeasuring = true; loopbackStatus = "Measuring interface...";
+    loopbackMeasuring = true; loopbackStatus = juce::String::fromUTF8("Measuring interface\xe2\x80\xa6");
     notify(Settings); return true;
 }
 void AppModel::clearLoopback() {

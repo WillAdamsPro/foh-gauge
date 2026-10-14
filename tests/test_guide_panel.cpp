@@ -116,7 +116,7 @@ TEST_CASE("W2 presents selectable 12.5 ms primary and 2.5/22.5 ms alternatives a
         juce::TextButton* use = nullptr;
         for (int i = 0; i < formCanvas(*panel).getNumChildComponents(); ++i)
             if (auto* button = dynamic_cast<juce::TextButton*>(formCanvas(*panel).getChildComponent(i)))
-                if (button->getButtonText() == "Use this delay") use = button;
+                if (button->getButtonText() == "Lock delay") use = button;
         REQUIRE(use != nullptr);
         use->onClick();
         CHECK(panel->saveState()["step"].asInt() == 3);
@@ -134,7 +134,7 @@ TEST_CASE("W2 disables delay choices without captured traces", "[app][guide]") {
     panel->setSize(260, 660);
     panel->loadState(findDelayStep());
     for (auto* row : choices(*panel)) CHECK_FALSE(row->isEnabled());
-    CHECK(labelContains(*panel, "Capture mains and sub first"));
+    CHECK(labelContains(*panel, "Store mains and sub traces first"));
 }
 
 namespace {
@@ -198,9 +198,9 @@ TEST_CASE("Every W1-W5 frame requires manual Apply and ends in fresh Verify with
         CHECK_FALSE(button(*panel, "Pass").isEnabled());
         noteEditor(*panel).setText("Improved overlap", false); noteEditor(*panel).onTextChange();
         REQUIRE(button(*panel, "Pass").isEnabled());
-        button(*panel, "Pass").onClick(); CHECK(labelContains(*panel, "PASS: Improved overlap"));
-        button(*panel, "Fail").onClick(); CHECK(labelContains(*panel, "FAIL: Improved overlap"));
-        CHECK(panel->saveState()["verificationNote"].asString() == "FAIL: Improved overlap");
+        button(*panel, "Pass").onClick(); CHECK(labelContains(*panel, "Pass: Improved overlap"));
+        button(*panel, "Fail").onClick(); CHECK(labelContains(*panel, "Fail: Improved overlap"));
+        CHECK(panel->saveState()["verificationNote"].asString() == "Fail: Improved overlap");
         CHECK(panel->saveState()["step"].asInt() == beforeStep + 2); // Verify is the final step.
         button(*panel, "Re-measure to verify").onClick();
         CHECK_FALSE(button(*panel, "Pass").isEnabled());
@@ -446,13 +446,13 @@ TEST_CASE("W6 checks each isolated box with fresh sweep impulse direction", "[ap
         model.notify(AppModel::Snapshot);
     };
     measure("Measure box sweep", -1);
-    CHECK(labelContains(*panel, "INVERTED (negative)"));
+    CHECK(labelContains(*panel, "Inverted (negative)"));
     REQUIRE(panel->saveState()["step"].asInt() == 2);
     CHECK(model.engine.gen.load() == AudioEngine::Off);
     button(*panel, "Polarity state confirmed").onClick();
     CHECK_FALSE(button(*panel, "Pass").isEnabled());
     measure("Verify box sweep", 1);
-    CHECK(labelContains(*panel, "Before: INVERTED (negative); now: NORMAL (positive)"));
+    CHECK(labelContains(*panel, "Before: Inverted (negative); now: Normal (positive)"));
     noteEditor(*panel).setText("Matches expected driver direction", false);
     noteEditor(*panel).onTextChange();
     REQUIRE(button(*panel, "Pass").isEnabled());
@@ -466,7 +466,7 @@ TEST_CASE("W6 checks each isolated box with fresh sweep impulse direction", "[ap
     CHECK(labelContains(*panel, "Inconclusive impulse"));
     CHECK(button(*panel, "Measure box sweep").isEnabled());
     measure("Measure box sweep", 1);
-    CHECK(labelContains(*panel, "This box: NORMAL (positive)"));
+    CHECK(labelContains(*panel, "This box: Normal (positive)"));
     button(*panel, "Polarity state confirmed").onClick();
     model.engine.captureEpoch.fetch_add(1);
     button(*panel, "Verify box sweep").onClick(); acceptGeneratorConfirmation();
@@ -620,7 +620,7 @@ void cannotPass(Panel& panel) {
     noteEditor(panel).setText("Synthetic edge case", false); noteEditor(panel).onTextChange();
     CHECK_FALSE(button(panel, "Pass").isEnabled());
     button(panel, "Pass").onClick();
-    CHECK_FALSE(labelContains(panel, "PASS:"));
+    CHECK_FALSE(labelContains(panel, "Pass:"));
 }
 }
 
@@ -696,7 +696,7 @@ TEST_CASE("Guide rejects input lifecycle changes before and during capture", "[a
         prepareVerify(*panel, model, capture);
         button(*panel, "Re-measure to verify").onClick(); capture.finish(model);
         noteEditor(*panel).setText("Synthetic comparison", false); noteEditor(*panel).onTextChange();
-        button(*panel, "Pass").onClick(); REQUIRE(labelContains(*panel, "PASS:"));
+        button(*panel, "Pass").onClick(); REQUIRE(labelContains(*panel, "Pass:"));
         model.engine.captureEpoch.fetch_add(1); model.notify(AppModel::Settings);
         CHECK(panel->saveState()["verificationNote"].asString().empty());
         cannotPass(*panel);
@@ -782,7 +782,7 @@ TEST_CASE("Workspace and Show presentation changes retire pending guide work", "
     SECTION("Delay callback cannot advance a different guide") {
         AppModel model; auto panel = makeGuidePanel(model); panel->setSize(260, 780);
         auto state = fohws::Json::object(); state.set("guide", 0); state.set("step", 2); panel->loadState(state);
-        button(*panel, "Find + lock delay").onClick(); REQUIRE(guideDelay);
+        button(*panel, "Lock delay").onClick(); REQUIRE(guideDelay);
         state.set("guide", 4); state.set("step", 0); panel->loadState(state);
         auto then = std::move(guideDelay); then(); // a live callback would try to lock the delay
         CHECK(panel->saveState()["step"].asInt() == 0);
@@ -791,18 +791,18 @@ TEST_CASE("Workspace and Show presentation changes retire pending guide work", "
     SECTION("Dropped delay completion after device restart releases the guide buttons") {
         AppModel model; auto panel = makeGuidePanel(model); panel->setSize(260, 780);
         auto state = fohws::Json::object(); state.set("guide", 0); state.set("step", 2); panel->loadState(state);
-        button(*panel, "Find + lock delay").onClick(); REQUIRE(guideDelay);
-        CHECK_FALSE(button(*panel, "Find + lock delay").isEnabled());
+        button(*panel, "Lock delay").onClick(); REQUIRE(guideDelay);
+        CHECK_FALSE(button(*panel, "Lock delay").isEnabled());
         model.engine.audioDeviceStopped(); model.notify(AppModel::Settings | AppModel::Capture);
         auto then = std::move(guideDelay); then();
-        CHECK(button(*panel, "Find + lock delay").isEnabled());
+        CHECK(button(*panel, "Lock delay").isEnabled());
         CHECK(panel->saveState()["step"].asInt() == 2);
         CHECK(labelContains(*panel, "interrupted"));
     }
     SECTION("Queued delay completion checks device state before the next model notification") {
         AppModel model; auto panel = makeGuidePanel(model); panel->setSize(260, 780);
         auto state = fohws::Json::object(); state.set("guide", 0); state.set("step", 2); panel->loadState(state);
-        button(*panel, "Find + lock delay").onClick(); REQUIRE(guideDelay);
+        button(*panel, "Lock delay").onClick(); REQUIRE(guideDelay);
         model.engine.audioDeviceError("synthetic disconnect");
         model.delay.confidence = 1; model.delay.arrivals.push_back({48, 1, 0, 0, false});
         auto then = std::move(guideDelay); then(); // must not invoke lockDelayFromLast
@@ -849,7 +849,7 @@ TEST_CASE("W2 failed or absent sub captures cannot reuse a previous run", "[app]
         AppModel model; CaptureStub capture; storeSyntheticPair(model);
         auto panel = makeGuidePanel(model); panel->setSize(260, 780);
         auto state = fohws::Json::object(); state.set("guide", 1); state.set("step", 1); panel->loadState(state);
-        button(*panel, "Capture sub \xe2\x97\x8f").onClick();
+        button(*panel, "Store sub trace").onClick();
         CHECK(model.findTrace("Sub") == nullptr);
         if (missing) { auto then = std::move(capture.pending); then(true); }
         else { capture.settled = false; capture.finish(model); }
@@ -875,7 +875,7 @@ TEST_CASE("W6 Back hiding session reload and rig edits discard in-flight box swe
         model.sweepCapturing = false; model.sweep.response.impulse = {0, 1, 0};
         model.sweep.response.arrivals.push_back({}); model.notify(AppModel::Snapshot);
         CHECK(panel->saveState()["step"].asInt() == step);
-        CHECK_FALSE(labelContains(*panel, "This box: NORMAL"));
+        CHECK_FALSE(labelContains(*panel, "This box: Normal"));
         cannotPass(*panel);
     }
 }
@@ -922,7 +922,7 @@ TEST_CASE("W6 rapid re-entry cannot claim the previous queued sweep", "[app][gui
     model.sweepCapturing = false; model.sweep.response.impulse = {0, 1, 0};
     model.sweep.response.arrivals = {{}}; model.notify(AppModel::Snapshot);
     CHECK(panel->saveState()["step"].asInt() == 1);
-    CHECK_FALSE(labelContains(*panel, "This box: NORMAL"));
+    CHECK_FALSE(labelContains(*panel, "This box: Normal"));
     model.sweepSeq = model.nextGuideSweepId; model.sweepCapturing = true; model.notify(AppModel::Snapshot);
     model.sweepCapturing = false; model.notify(AppModel::Snapshot);
     CHECK(panel->saveState()["step"].asInt() == 2);
@@ -937,9 +937,9 @@ TEST_CASE("W2 rejects incompatible timing and malformed stored captures", "[app]
         if (change == 2) model.traces.at(1).tf.magDb.clear();
         if (change == 3) model.traces.at(1).tf.sampleRate = 96000;
         auto panel = makeGuidePanel(model); panel->setSize(260, 780); panel->loadState(findDelayStep());
-        button(*panel, "Use this delay").onClick();
+        button(*panel, "Lock delay").onClick();
         CHECK(panel->saveState()["step"].asInt() == 2);
-        CHECK(labelContains(*panel, "Capture mains and sub again"));
+        CHECK(labelContains(*panel, "Store mains and sub traces again"));
         for (auto* row : choices(*panel)) CHECK_FALSE(row->isEnabled());
     }
 }
@@ -949,12 +949,12 @@ TEST_CASE("W2 sub completion tolerates a mains capture losing its measurement", 
     AppModel model; CaptureStub capture; storeSyntheticPair(model);
     auto panel = makeGuidePanel(model); panel->setSize(260, 780);
     auto state = fohws::Json::object(); state.set("guide", 1); state.set("step", 1); panel->loadState(state);
-    button(*panel, "Capture sub \xe2\x97\x8f").onClick();
+    button(*panel, "Store sub trace").onClick();
     model.traces.at(0).tf.magDb.clear();
     capture.finish(model);
     CHECK(panel->saveState()["step"].asInt() == 2);
-    CHECK(labelContains(*panel, "Capture mains and sub again"));
-    button(*panel, "Use this delay").onClick(); CHECK(panel->saveState()["step"].asInt() == 2);
+    CHECK(labelContains(*panel, "Store mains and sub traces again"));
+    button(*panel, "Lock delay").onClick(); CHECK(panel->saveState()["step"].asInt() == 2);
 }
 
 TEST_CASE("W6 ambiguous impulse releases pending sweep and permits retry", "[app][guide][edges][polarity]") {
@@ -977,7 +977,7 @@ TEST_CASE("W6 ambiguous impulse releases pending sweep and permits retry", "[app
     std::vector<double> inverted(512, 0.4); inverted[48] -= 0.8;
     complete(inverted);
     CHECK(panel->saveState()["step"].asInt() == 2);
-    CHECK(labelContains(*panel, "This box: INVERTED"));
+    CHECK(labelContains(*panel, "This box: Inverted"));
 }
 
 TEST_CASE("Rig edits and Skip retire measurements even when the selected W guide remains listed", "[app][guide][rig][edges]") {
@@ -1020,7 +1020,7 @@ TEST_CASE("Rig edits retire early delay completions without leaving the guide bu
     auto panel = makeGuidePanel(model); panel->setSize(260, 780);
     auto state = fohws::Json::object(); state.set("guide", 0); state.set("step", 2);
     panel->loadState(state);
-    button(*panel, "Find + lock delay").onClick();
+    button(*panel, "Lock delay").onClick();
     auto stale = std::move(guideDelay); REQUIRE(stale);
     model.rigProfile = foh::RigProfile{}; model.notify(AppModel::Rig);
     stale();

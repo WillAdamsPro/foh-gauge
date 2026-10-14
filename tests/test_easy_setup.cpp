@@ -261,7 +261,7 @@ TEST_CASE("Per-cluster steppers and auxiliary grouping apply restore and guide a
         state.set("guide", 3); panel->loadState(state);
         juce::String tuning;
         for (auto* c : formCanvas(*panel).getChildren()) if (auto* label = dynamic_cast<juce::Label*>(c)) tuning += label->getText();
-        CHECK(tuning.contains("W2 sub-to-mains") == (subs > 0)); CHECK(tuning.contains("W3 fills") == (fills > 0));
+        CHECK(tuning.contains("sub-to-mains alignment") == (subs > 0)); CHECK(tuning.contains("fill alignment") == (fills > 0));
         CHECK(tuning.contains("L=2, C=3, R=3"));
         q.begin(); CHECK(slider(q, "L cabinets").getValue() == 2); CHECK(slider(q, "R cabinets").getValue() == 3);
         CHECK(slider(q, "Front fill count").getValue() == fills); CHECK(slider(q, "Sub count").getValue() == subs);

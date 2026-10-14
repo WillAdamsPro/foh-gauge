@@ -136,13 +136,13 @@ public:
 // collapsed to a 48 px "?" rail that opens it as an overlay (layout-spec section 5).
 class HelpPanel : public juce::Component {
 public:
-    // A2 inspector: "INSPECTOR" caption, then sections (heading + body) separated by hairlines.
-    // setText() splits copy on blank lines; a paragraph starting "Heading: ..." (short heading) becomes its own section,
+    // A2 inspector: "Inspector" caption, then sections (heading + body) separated by hairlines.
+    // setText() splits copy on blank lines; a paragraph starting "Heading: …" (short heading) becomes its own section,
     // the first paragraph goes under "What am I looking at?".
     HelpPanel() { addChildComponent(body); }
     void paint(juce::Graphics&) override;
     void setText(const juce::String& copy);
-    juce::Label body; bool overlay = false; juce::String caption {"INSPECTOR"};
+    juce::Label body; bool overlay = false; juce::String caption {"Inspector"};
     std::vector<std::pair<juce::String, juce::String>> sections;
 };
 
