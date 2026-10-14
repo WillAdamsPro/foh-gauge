@@ -1,5 +1,5 @@
 #include <catch2/catch_test_macros.hpp>
-// W4 tuning and W5 pre-doors are always listed after the rig-tailored W1-W3 guides.
+// W4 tuning, W5 pre-doors and W6 polarity are always listed after the rig-tailored W1-W3 guides.
 #include "EasySetup.h"
 #include "SetupPage.h"
 #include "Panels.h"
@@ -26,12 +26,12 @@ TEST_CASE("Questionnaire is optional in Setup and Skip preserves the default flo
     for (auto* child : page.getChildren()) if (auto* q = dynamic_cast<EasySetup*>(child)) questionnaire = q;
     REQUIRE(questionnaire != nullptr); CHECK_FALSE(questionnaire->isVisible());
     auto panel = makeGuidePanel(model); auto& box = guideBox(*panel);
-    CHECK(box.getNumItems() == 5);
+    CHECK(box.getNumItems() == 6);
     button(page, "Rig questionnaire").onClick(); CHECK(questionnaire->isVisible());
     for (auto* child : questionnaire->getChildren())
         if (auto* e = dynamic_cast<juce::TextEditor*>(child)) e->setText("0");
     button(*questionnaire, "Skip").onClick(); CHECK_FALSE(questionnaire->isVisible());
-    CHECK_FALSE(model.rigProfile); CHECK(box.getNumItems() == 5);
+    CHECK_FALSE(model.rigProfile); CHECK(box.getNumItems() == 6);
 }
 TEST_CASE("Questionnaire applies drafts, filters guides and restores default guides on Skip", "[app][rig]") {
     juce::ScopedJuceInitialiser_GUI initialise;
@@ -41,7 +41,7 @@ TEST_CASE("Questionnaire applies drafts, filters guides and restores default gui
     auto panel = makeGuidePanel(model); auto& box = guideBox(*panel);
     button(questionnaire, "Use these answers").onClick();
     REQUIRE(model.rigProfile); CHECK(closed == 1);
-    CHECK(box.getNumItems() == 3); CHECK(box.getItemId(0) == 1);
+    CHECK(box.getNumItems() == 4); CHECK(box.getItemId(0) == 1);
     CHECK(panel->saveState()["guide"].asInt() == 0);
     auto hidden = foh::Json::object(); hidden.set("guide", 1); hidden.set("step", 2);
     panel->loadState(hidden); CHECK(panel->saveState()["guide"].asInt() == 0); CHECK(panel->saveState()["step"].asInt() == 0);
@@ -51,26 +51,26 @@ TEST_CASE("Questionnaire applies drafts, filters guides and restores default gui
         if (auto* e = dynamic_cast<juce::TextEditor*>(child)) e->setText("3");
         if (auto* c = dynamic_cast<juce::ComboBox*>(child)) c->setSelectedId(2, juce::dontSendNotification);
     }
-    CHECK_FALSE(model.rigProfile->subs); CHECK(box.getNumItems() == 3);
+    CHECK_FALSE(model.rigProfile->subs); CHECK(box.getNumItems() == 4);
     button(questionnaire, "Skip").onClick(); CHECK(closed == 2);
-    CHECK_FALSE(model.rigProfile); CHECK(box.getNumItems() == 5);
+    CHECK_FALSE(model.rigProfile); CHECK(box.getNumItems() == 6);
     button(questionnaire, "Use these answers").onClick(); CHECK(closed == 3);
     CHECK(model.rigProfile->subs); CHECK(model.rigProfile->frontFills);
     CHECK(model.rigProfile->clusters == 3); CHECK(model.rigProfile->cabinetsPerCluster == 3);
     CHECK(model.rigProfile->control == foh::RigProfile::Control::Individual);
     CHECK(model.rigProfile->subArrangement == foh::RigProfile::SubArrangement::LeftRight);
-    CHECK(box.getNumItems() == 5); CHECK(box.getItemId(1) == 2); CHECK(box.getItemId(2) == 3);
+    CHECK(box.getNumItems() == 6); CHECK(box.getItemId(1) == 2); CHECK(box.getItemId(2) == 3);
     // Invalid drafts never change the applied profile or close the questionnaire.
     for (auto* child : formCanvas(questionnaire).getChildren())
         if (auto* e = dynamic_cast<juce::TextEditor*>(child)) e->setText("0");
     button(questionnaire, "Use these answers").onClick(); CHECK(closed == 3); CHECK(model.rigProfile->clusters == 3);
     // Loading an older session reintroduces the default flow.
-    model.rigProfile.reset(); model.notify(AppModel::Rig); CHECK(box.getNumItems() == 5);
+    model.rigProfile.reset(); model.notify(AppModel::Rig); CHECK(box.getNumItems() == 6);
     // A panel created after session restoration uses the profile immediately.
     panel.reset();
     foh::RigProfile fillsOnly; fillsOnly.frontFills = true; model.rigProfile = fillsOnly;
     panel = makeGuidePanel(model);
-    CHECK(guideBox(*panel).getNumItems() == 4);
+    CHECK(guideBox(*panel).getNumItems() == 5);
     CHECK(guideBox(*panel).getItemId(0) == 1); CHECK(guideBox(*panel).getItemId(1) == 3);
 }
 

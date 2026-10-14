@@ -24,6 +24,7 @@ TEST_CASE("Loopback sweep deconvolution recovers 4.80 ms", "[sweep]") {
     REQUIRE(result.response.ok());
     CHECK(result.response.arrivals.front().delayMs == Catch::Approx(4.8).margin(0.02));
     CHECK(result.response.arrivals.front().inverted == inverted);
+    CHECK(polarityFromImpulse(result.response.impulse) == (inverted ? ImpulsePolarity::Inverted : ImpulsePolarity::Normal));
     REQUIRE(result.etcDb.size() == result.response.impulse.size());
     CHECK(*std::max_element(result.etcDb.begin(), result.etcDb.end()) == Catch::Approx(0).margin(1e-10));
     for (auto db : result.etcDb) { REQUIRE(std::isfinite(db)); REQUIRE(db <= 0); }
@@ -64,4 +65,72 @@ TEST_CASE("Sweep ETC preserves synthetic reflection energy", "[sweep]") {
     REQUIRE(result.response.ok());
     CHECK(result.etcDb[direct] == Catch::Approx(0).margin(0.1));
     CHECK(result.etcDb[reflection] == Catch::Approx(-6.0206).margin(0.2));
+}
+
+TEST_CASE("Near-field impulse direction distinguishes normal and inverted boxes", "[polarity]") {
+    const double sign = GENERATE(1.0, -1.0);
+    std::vector<double> impulse(512, 0);
+    impulse[48] = 0.8 * sign; // direct arrival
+    impulse[49] = -0.3 * sign; // opposite ringing lobe
+    impulse[240] = -0.2 * sign; // later reflection
+    CHECK(polarityFromImpulse(impulse) == (sign > 0 ? ImpulsePolarity::Normal : ImpulsePolarity::Inverted));
+}
+
+TEST_CASE("Impulse polarity is inconclusive for unusable measurements", "[polarity]") {
+    CHECK(polarityFromImpulse({}) == ImpulsePolarity::Unknown);
+    CHECK(polarityFromImpulse({0, 0, 0}) == ImpulsePolarity::Unknown);
+    CHECK(polarityFromImpulse({1e-13, -1e-13}) == ImpulsePolarity::Unknown);
+    CHECK(polarityFromImpulse({1, std::numeric_limits<double>::quiet_NaN()}) == ImpulsePolarity::Unknown);
+    CHECK(polarityFromImpulse({std::numeric_limits<double>::infinity(), -1}) == ImpulsePolarity::Unknown);
+    CHECK(polarityFromImpulse({-0.5, 0.5}) == ImpulsePolarity::Inverted);
+}
+
+TEST_CASE("Sweep edge captures cannot report an arrival or polarity", "[sweep][edges]") {
+    for (size_t length : {0u, 1u, 63u, 64u, 65u, 1024u}) {
+        for (float value : {0.f, 0.25f, 1.f, -1.f, std::numeric_limits<float>::denorm_min(),
+                           std::numeric_limits<float>::quiet_NaN(), std::numeric_limits<float>::infinity()}) {
+            std::vector<float> samples(length, value);
+            auto result = deconvolveSweep(samples, samples, 48000);
+            CHECK_FALSE(result.response.ok());
+            CHECK_FALSE(result.response.error.empty());
+            CHECK(result.response.arrivals.empty());
+            CHECK(result.etcDb.empty());
+        }
+    }
+    std::vector<float> ref(1024), mic(1024); ref[10] = 0.5f; mic[20] = 0.25f;
+    for (double rate : {0.0, double(NAN), double(INFINITY)}) CHECK_FALSE(deconvolveSweep(ref, mic, rate).response.ok());
+    CHECK_FALSE(deconvolveSweep(ref, {}, 48000).response.ok());
+    for (float bad : {1.f, -1.f, NAN, INFINITY, -INFINITY}) {
+        auto damaged = mic; damaged[30] = bad;
+        CHECK_FALSE(deconvolveSweep(ref, damaged, 48000).response.ok());
+        CHECK_FALSE(deconvolveSweep(damaged, mic, 48000).response.ok());
+    }
+}
+
+TEST_CASE("Sweep removes DC without changing synthetic arrival or direction", "[sweep][edges]") {
+    std::vector<float> ref(2048), mic(2048); ref[20] = 0.25f; mic[250] = -0.125f;
+    const auto clean = deconvolveSweep(ref, mic, 48000);
+    for (auto& x : ref) x += 0.2f;
+    for (auto& x : mic) x -= 0.1f;
+    const auto offset = deconvolveSweep(ref, mic, 48000);
+    REQUIRE(clean.response.ok()); REQUIRE(offset.response.ok());
+    CHECK(offset.response.arrivals[0].delayMs == Catch::Approx(clean.response.arrivals[0].delayMs).margin(0.001));
+    CHECK(offset.response.arrivals[0].inverted);
+    for (auto x : offset.etcDb) CHECK(std::isfinite(x));
+}
+
+TEST_CASE("Impulse view rejects incomplete or unusable stored spectra", "[sweep][edges]") {
+    TFResult tf; tf.fftSize = 64; tf.H.assign(33, 0.5);
+    REQUIRE(impulseFromTF(tf).size() == 64);
+    for (double rate : {0.0, double(NAN), double(INFINITY)}) {
+        auto bad = tf; bad.sampleRate = rate; CHECK(impulseFromTF(bad).empty());
+    }
+    for (size_t size : {0u, 1u, 32u}) {
+        auto bad = tf; bad.H.resize(size); CHECK(impulseFromTF(bad).empty());
+    }
+    for (double value : {0.0, std::numeric_limits<double>::denorm_min(), double(NAN), double(INFINITY), 1e300}) {
+        auto bad = tf; bad.H.assign(33, value); CHECK(impulseFromTF(bad).empty());
+    }
+    auto bad = tf; bad.blanked.assign(33, 1); CHECK(impulseFromTF(bad).empty());
+    bad = tf; bad.H.assign(33, 0); bad.H[0] = 0.5; CHECK(impulseFromTF(bad).empty());
 }

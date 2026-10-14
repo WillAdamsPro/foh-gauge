@@ -1,4 +1,5 @@
 #include "fohcore/leq.h"
+#include "dsp_safety.h"
 #include <algorithm>
 #include <cmath>
 #include <complex>
@@ -23,17 +24,28 @@ LeqMeter::LeqMeter(double rate) : fs(rate), bucketSamples(1) {
     }
 }
 void LeqMeter::reset() noexcept {
+    invalidInput=false; bucketSum=bucketSquare=recentVariance=recentMeanSquare=0;
     history={}; partial={}; total={}; totalCorrection={}; recent={}; fill=head=count=recentSamples=0; samples=0;
     for (auto& f:filters) for (auto& p:f) p.x=p.y=0;
 }
 void LeqMeter::process(const float* data, int n) noexcept {
-    if (!data || n<=0) return;
+    if (n<=0) return;
+    if (!data) { invalidInput=true; return; }
+    ScopedFlushDenormals ftz;
     for (int i=0; i<n; ++i) {
-        double x=std::isfinite(data[i]) ? std::clamp(double(data[i]), -1.0, 1.0) : 0;
+        if (!std::isfinite(data[i]) || std::abs(data[i]) >= 1) invalidInput=true;
+        double x=std::clamp(double(detail::cleanSample(data[i])), -1.0, 1.0);
+        bucketSum+=x; bucketSquare+=x*x;
         Energy values {{x,x,x}};
         for (int w=0; w<2; ++w) { for (auto& p:filters[w]) values[w]=p.tick(values[w]); values[w]*=gain[w]; }
         for (int w=0; w<3; ++w) { double e=2*values[w]*values[w]; partial[w]+=e; }
-        if (++fill==bucketSamples) finishBucket();
+        if (++fill==bucketSamples) {
+            recentMeanSquare=std::pow(bucketSum/bucketSamples,2);
+            recentVariance=std::max(0.0, bucketSquare/bucketSamples-recentMeanSquare);
+            // DC-dominated energy cannot support calibrated acoustic exposure.
+            if (recentMeanSquare > 1e-20 && recentMeanSquare >= recentVariance) invalidInput=true;
+            bucketSum=bucketSquare=0; finishBucket();
+        }
     }
 }
 void LeqMeter::finishBucket() noexcept {
@@ -63,7 +75,7 @@ LeqMeter::Energy LeqMeter::window(int buckets) const noexcept {
 }
 LeqReading LeqMeter::reading() const noexcept {
     const auto observed = samples + uint64_t(fill);
-    LeqReading r; r.seconds=double(observed)/fs; r.minute=window(600); r.fifteenMinutes=window(9000);
+    LeqReading r; r.valid=!invalidInput && recentSamples>0 && recentVariance>1e-20 && recentMeanSquare<recentVariance; r.seconds=double(observed)/fs; r.minute=window(600); r.fifteenMinutes=window(9000);
     for (int w=0; w<3; ++w) {
         r.session[w]=observed ? 10*std::log10(std::max((total[w]+partial[w])/observed,1e-12)) : -120;
         r.level[w]=recentSamples ? 10*std::log10(std::max(recent[w]/recentSamples,1e-12)) : -120;
@@ -74,6 +86,7 @@ ExposureWarning exposureWarning(ExposurePreset p, double fifteen, double session
     if (!std::isfinite(fifteen) || !std::isfinite(session) || !std::isfinite(seconds) || seconds<=0) return {};
     // NIOSH: 85 dBA / 8 h with a 3 dB exchange rate; WHO: 100 dBA LAeq,15min.
     double dose=100*seconds/(8*3600)*std::pow(2.0,(session-85)/3);
+    if (!std::isfinite(dose)) dose=std::numeric_limits<double>::max();
     return {p==ExposurePreset::WHO ? fifteen>=100 : dose>=100, dose};
 }
 }

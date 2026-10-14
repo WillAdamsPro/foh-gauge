@@ -203,3 +203,26 @@ TEST_CASE("W7 alert counters remain bounded across twelve hours of synthetic upd
     }
     CHECK(correct);
 }
+
+TEST_CASE("W7 rejects malformed clocks grids silent references and overflow", "[app][show][edges]") {
+    const auto ref = syntheticTF();
+    for (int variant = 0; variant < 10; ++variant) {
+        auto bad = ref;
+        switch (variant) {
+            case 0: bad.sampleRate = NAN; break;
+            case 1: bad.sampleRate = 0; break;
+            case 2: bad.fftSize = 1; break;
+            case 3: bad.freq[5] = NAN; break;
+            case 4: std::reverse(bad.freq.begin(), bad.freq.end()); break;
+            case 5: bad.magDb.assign(bad.freq.size(), -400); break;
+            case 6: bad.magDb.assign(bad.freq.size(), 1e300); break;
+            case 7: bad.coherence.assign(bad.freq.size(), 2); break;
+            case 8: bad.H.assign(bad.freq.size(), 0); break;
+            case 9: bad.magDb.clear(); break;
+        }
+        CHECK_FALSE(fohui::showDrift(bad, bad).valid);
+        CHECK_FALSE(fohui::showDrift(ref, bad).valid);
+    }
+    fohui::ShowDriftAlert alert;
+    for (int i = 0; i < 3; ++i) CHECK_FALSE(alert.update({true, INFINITY}));
+}

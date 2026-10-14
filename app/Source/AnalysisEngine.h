@@ -31,6 +31,12 @@ private:
     friend struct AnalysisEngineSoakAccess; // runs worker steps without wall-clock waits
     void processBlock(const float* mic, const float* ref, int n);
     int serviceCommands();
+    // Tests may drive the same consumer pass without starting a worker thread.
+    friend class AnalysisEngineTestAccess;
+    bool inputFailed = false; // worker only: last observed device-failure state
+    bool processPendingAudio(std::vector<float>& mic, std::vector<float>& ref,
+                             const std::vector<float>& silence, uint64_t& epoch);
+    std::vector<float> silenceBlock; // worker only; sized outside the audio callback
     void run() override;
     void rebuild(double fs);
     void handle(const foh::Command& c);
@@ -51,7 +57,7 @@ private:
     std::array<foh::MicPosition, 3> positions;
     uint8_t positionMask = 0;
     foh::TFResult positionAverage; int positionCount = 0;
-    double levelEnergy = 0; int levelSamples = 0;
+    double levelEnergy = 0, levelSum = 0; int levelSamples = 0; bool levelInvalid = false, lastLevelUsable = false, lastTransferUsable = false;
     uint64_t meterRevision = 0;
     uint64_t inputEpoch = 0; int micChannel = -1;
     double fs = 0; int fftN = 16384;

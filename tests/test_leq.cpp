@@ -114,3 +114,27 @@ TEST_CASE("Leq session includes partial buckets after a long accelerated session
     CHECK(r.minute[2] == Approx(10 * std::log10((0.02 * 479999 + 0.5) / 480000)).margin(1e-10));
     CHECK(r.fifteenMinutes[2] == Approx(10 * std::log10((0.02 * 7199999 + 0.5) / 7200000)).margin(1e-9));
 }
+
+TEST_CASE("Leq invalid signal cannot be presented as a safe exposure", "[leq][edges]") {
+    foh::LeqMeter meter(48000);
+    CHECK_FALSE(meter.reading().valid);
+    meter.process(nullptr, 0); CHECK(meter.reading().seconds == 0);
+    float shortTone[] = {0.1f, -0.1f}; meter.process(shortTone, 2);
+    CHECK_FALSE(meter.reading().valid);
+    for (float value : {0.f, 0.25f, 1.f, -1.f, std::numeric_limits<float>::denorm_min(), NAN, INFINITY, -INFINITY}) {
+        meter.reset(); std::vector<float> block(4800, value); meter.process(block.data(), int(block.size()));
+        auto reading = meter.reading(); CHECK_FALSE(reading.valid);
+        for (auto db : reading.session) CHECK(std::isfinite(db));
+        for (auto db : reading.level) CHECK(std::isfinite(db));
+        for (auto db : reading.minute) CHECK(std::isfinite(db));
+    }
+    meter.reset();
+    std::vector<float> dc(4800, 0.25f); meter.process(dc.data(), int(dc.size()));
+    tone(meter, 48000, 0.2); CHECK_FALSE(meter.reading().valid);
+    meter.reset(); tone(meter, 48000, 0.2); REQUIRE(meter.reading().valid);
+    float bad = NAN; meter.process(&bad, 1); tone(meter, 48000, 0.2);
+    CHECK_FALSE(meter.reading().valid); // exposure history was damaged
+    meter.reset(); tone(meter, 48000, 0.2); CHECK(meter.reading().valid);
+    meter.process(nullptr, 1); CHECK_FALSE(meter.reading().valid);
+    CHECK(std::isfinite(foh::exposureWarning(foh::ExposurePreset::NIOSH, 100, 1e300, 60).dosePercent));
+}
