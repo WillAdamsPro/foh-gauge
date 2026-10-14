@@ -148,7 +148,7 @@ void logDecimate(const foh::TFResult& r, const std::vector<double>& v, std::vect
 void ImpulseComponent::paint(Graphics& g) {
     auto r = getLocalBounds().toFloat().reduced(8, 6); auto axis = r.removeFromBottom(14);
     g.setFont(FohLookAndFeel::font(T::axisTick));
-    if (res.arrivals.empty() || res.impulse.empty()) { g.setColour(C::textAxis()); g.drawText("Impulse: press Find to measure the delay", r, Justification::centred); return; }
+    if (res.arrivals.empty() || res.impulse.empty()) { g.setColour(C::textAxis()); g.drawText("Impulse: press Measure sweep or Find delay", r, Justification::centred); return; }
     double t0 = std::max(0.0, res.arrivals[0].delayMs - preMs), t1 = res.arrivals[0].delayMs + postMs;
     for (auto& a : res.arrivals) t1 = std::max(t1, a.delayMs + 2);
     auto xOf = [&](double ms) { return r.getX() + (float) ((ms - t0) / (t1 - t0)) * r.getWidth(); };
@@ -157,6 +157,14 @@ void ImpulseComponent::paint(Graphics& g) {
     double step = (t1 - t0) > 30 ? 10 : 5;
     for (double t = std::ceil(t0 / step) * step; t <= t1; t += step) { float x = xOf(t); g.setColour(C::grid()); g.drawVerticalLine((int) x, r.getY(), r.getBottom());
         g.setColour(C::textAxis()); g.drawText(String((int) t) + " ms", (int) x - 24, (int) axis.getY(), 48, 14, Justification::centred); }
+    const bool etc = showEtc && etcDb.size() == res.impulse.size();
+    if (etc) {
+        for (int db : {0, -20, -40, -60}) {
+            float y = r.getY() + float(-db / 60.0) * r.getHeight();
+            g.setColour(C::grid()); g.drawHorizontalLine(int(y), r.getX(), r.getRight());
+            g.setColour(C::textAxis()); g.drawText(String(db) + " dB", int(r.getX()), int(y), 48, 14, Justification::left);
+        }
+    }
     // min/max per pixel column (display decimation only)
     Path p; int W = (int) r.getWidth(); size_t N = res.impulse.size();
     for (int px = 0; px < W; ++px) {
@@ -164,6 +172,11 @@ void ImpulseComponent::paint(Graphics& g) {
         size_t i0 = (size_t) std::max(0.0, std::floor(a)), i1 = std::min(N, (size_t) std::max(0.0, std::ceil(b)) + 1); if (i0 >= N) break;
         double lo = 0, hi = 0; for (size_t i = i0; i < i1; ++i) { lo = std::min(lo, res.impulse[i]); hi = std::max(hi, res.impulse[i]); }
         float x = r.getX() + px, yh = r.getCentreY() - (float) (hi / peak) * r.getHeight() * 0.48f, yl = r.getCentreY() - (float) (lo / peak) * r.getHeight() * 0.48f;
+        if (etc) {
+            double db = -120;
+            for (size_t i = i0; i < i1; ++i) db = std::max(db, etcDb[i]);
+            yh = yl = r.getY() + float(std::clamp(-db / 60.0, 0.0, 1.0)) * r.getHeight();
+        }
         if (px == 0) p.startNewSubPath(x, yh); else p.lineTo(x, yh); p.lineTo(x, yl); }
     g.setColour(C::traceLive()); g.strokePath(p, PathStrokeType(1.0f));
     for (size_t k = 0; k < res.arrivals.size(); ++k) { auto& a = res.arrivals[k]; float x = xOf(a.delayMs);

@@ -306,6 +306,17 @@ inline int recommendedDelayWindowSamples(double sampleRate, bool sub, double sec
     double samples = s * sampleRate;
     return samples >= (1 << 23) ? (1 << 23) : (int) samples;
 }
+// Offline/analysis-worker sweep deconvolution. Equal-length captures include the
+// whole sweep and its decay; reference is the recorded loopback, not the generator.
+// Regularized Y*conj(X)/|X|^2, zero-padded to avoid circular wrap. Positive lags
+// up to 500 ms are returned; ETC is the analytic-envelope energy, peak = 0 dB.
+struct SweepResult {
+    DelayResult response;
+    std::vector<double> etcDb;
+};
+SweepResult deconvolveSweep(const std::vector<float>& reference,
+                           const std::vector<float>& measurement, double sampleRate);
+
 // Impulse response from an averaged TF (IFFT of H). Empty if fftSize is not a power of two.
 std::vector<double> impulseFromTF(const TFResult& tf);
 
@@ -417,6 +428,7 @@ struct AnalysisSnapshot {
     DelayResult delay;          // last delay-finder run (may be empty)
     uint64_t delaySeq = 0;      // id of the FindDelay command that produced `delay` (0 = none)
     bool delayWasSub = false;
+    SweepResult sweep; bool sweepCapturing = false;
     double refDelaySamples = 0, refDelayMs = 0; // compensation currently applied to the reference
     bool calApplied = false;
     char calName[64] = {};      // NUL-terminated, truncated; empty when no cal
@@ -444,7 +456,7 @@ private:
 };
 
 // ---------- Commands in (UI -> analysis thread), lock-free SPSC, fixed-size POD ----------
-enum class CommandType : uint8_t { SetSmoothing, SetRtaFraction, FindDelay, SetBlankThreshold, SetAverages, ResetAverages, SetReferenceDelay };
+enum class CommandType : uint8_t { SetSmoothing, SetRtaFraction, FindDelay, SetBlankThreshold, SetAverages, ResetAverages, SetReferenceDelay, MeasureSweep };
 struct Command {
     CommandType type = CommandType::ResetAverages;
     bool sub = false;        // FindDelay: true = subs (LF-weighted, 3 s), false = mains

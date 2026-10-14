@@ -59,7 +59,10 @@ AppModel::AppModel() {
 AppModel::~AppModel() { stopTimer(); dm.removeAudioCallback(&engine); analysis.stop(); if (auto* pf = settings.getUserSettings()) pf->saveIfNeeded(); }
 
 void AppModel::timerCallback() {
-    int what = Levels; sampleRate = engine.sampleRate.load();
+    int what = Levels;
+    const int generatorMode = engine.gen.load();
+    if (generatorMode != lastGeneratorMode) { lastGeneratorMode = generatorMode; what |= Settings; }
+    sampleRate = engine.sampleRate.load();
     const auto epoch = engine.captureEpoch.load(std::memory_order_acquire);
     const bool deviceFailed = engine.deviceFailed.load(std::memory_order_acquire);
     if (epoch != lastInputEpoch || deviceFailed != lastDeviceFailed) {
@@ -67,6 +70,7 @@ void AppModel::timerCallback() {
         lastInputEpoch = epoch;
         auto then = std::move(capture.then);
         cancelSessionOperations();
+        sweep = {}; sweepCapturing = false;
         tf = {}; rtaDb.clear(); rtaBands.clear(); conv = {}; micLevelValid = false;
         lockedDelayMs = 0; refDelaySamples = 0; refDelayMs = 0;
         what |= Snapshot | Delay | Capture | Settings;
@@ -79,6 +83,7 @@ void AppModel::timerCallback() {
           levelTimeMs = Time::getMillisecondCounterHiRes();
           micLevelValid = snap.micLevelValid && snap.inputEpoch == engine.captureEpoch.load()
               && snap.micChannel == engine.micCh.load() && engine.micCh.load() >= 0;
+          sweep = snap.sweep; sweepCapturing = snap.sweepCapturing;
           tf = snap.tf; rtaDb = snap.rtaDb; rtaBands = snap.rtaBands; conv = snap.convergence;
           if (capture.active) {
               capture.resetAcknowledged = snap.resetSeq == capture.resetId;

@@ -27,6 +27,7 @@ public:
     bool paused = false;
 
     // ---- copied from the latest AnalysisSnapshot (latest() is only valid until the next call)
+    foh::SweepResult sweep; bool sweepCapturing = false;
     foh::TFResult tf; foh::DelayResult delay; bool delayWasSub = false;
     std::vector<double> rtaDb; std::vector<foh::Band> rtaBands; foh::ConvergenceState conv;
     double refDelaySamples = 0, refDelayMs = 0, sampleRate = 48000; bool calApplied = false; juce::String calName;
@@ -94,6 +95,7 @@ private:
     std::string levelInputKey; uint64_t levelInputEpoch = 0; double levelTimeMs = 0;
     void timerCallback() override;
     juce::ListenerList<Listener> listeners;
+    int lastGeneratorMode = AudioEngine::Off;
     uint64_t lastInputEpoch = 0; bool lastDeviceFailed = false;
     uint64_t lastSeq = 0, lastDelaySeq = 0, nextDelayId = 0, nextCaptureId = 0;
     struct { uint64_t id = 0; std::function<void()> then; } pendingDelay;
