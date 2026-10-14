@@ -153,14 +153,6 @@ std::string AppModel::loopbackKey() const {
     j.push(engine.outA.load()); j.push(engine.outB.load());
     return j.dump(0);
 }
-void AppModel::syncLoopback() {
-    auto key = loopbackKey(); auto epoch = engine.captureEpoch.load();
-    if (key == activeLoopbackKey && epoch == activeLoopbackEpoch) return;
-    if (loopbackMeasuring) finishLoopback();
-    activeLoopbackKey = key; activeLoopbackEpoch = epoch; loopbackStatus.clear();
-    auto it = loopbackCals.find(key);
-    analysis.setLoopback(it == loopbackCals.end() ? nullptr : std::make_shared<foh::LoopbackCorrection>(it->second), epoch);
-}
 bool AppModel::beginLoopback() {
     if (loopbackMeasuring || capture.active || !dm.getCurrentAudioDevice()
         || engine.micCh.load() < 0 || engine.refCh.load() < 0 || engine.micCh.load() == engine.refCh.load()
@@ -177,21 +169,6 @@ bool AppModel::beginLoopback() {
     measuringLoopbackKey = loopbackKey(); loopbackStart = Time::getMillisecondCounterHiRes();
     loopbackMeasuring = true; loopbackStatus = "Measuring interface...";
     notify(Settings); return true;
-}
-void AppModel::finishLoopback(const foh::TFResult* raw) {
-    if (!loopbackMeasuring) return;
-    if (measuringLoopbackKey == loopbackKey() && activeLoopbackEpoch == engine.captureEpoch.load())
-        send(foh::Command::referenceDelay(savedReferenceDelay));
-    loopbackMeasuring = false; engine.gen = savedGenerator; engine.genGainDb = savedGeneratorGain; setPaused(savedPaused);
-    auto c = raw ? foh::LoopbackCorrection::measure(*raw) : foh::LoopbackCorrection{};
-    if (c.valid() && measuringLoopbackKey == loopbackKey()) {
-        loopbackCals[measuringLoopbackKey] = c;
-        analysis.setLoopback(std::make_shared<foh::LoopbackCorrection>(c), engine.captureEpoch.load());
-        auto j = foh::Json::object(); for (const auto& entry : loopbackCals) j.set(entry.first, entry.second.toJson());
-        if (auto* p = settings.getUserSettings()) { p->setValue("interfaceLoopback", juce::String(j.dump())); p->saveIfNeeded(); }
-        loopbackStatus = "Interface correction saved (response + latency).";
-    } else loopbackStatus = "Loopback failed: check cables, gain and broadband signal.";
-    notify(Settings);
 }
 void AppModel::clearLoopback() {
     if (loopbackMeasuring) finishLoopback();

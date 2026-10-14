@@ -1,6 +1,31 @@
 #include "AppModel.h"
 using namespace juce;
 
+// Loopback handoff used by the timer; kept here so app tests link the timer path.
+void AppModel::syncLoopback() {
+    auto key = loopbackKey(); auto epoch = engine.captureEpoch.load();
+    if (key == activeLoopbackKey && epoch == activeLoopbackEpoch) return;
+    if (loopbackMeasuring) finishLoopback();
+    activeLoopbackKey = key; activeLoopbackEpoch = epoch; loopbackStatus.clear();
+    auto it = loopbackCals.find(key);
+    analysis.setLoopback(it == loopbackCals.end() ? nullptr : std::make_shared<foh::LoopbackCorrection>(it->second), epoch);
+}
+void AppModel::finishLoopback(const foh::TFResult* raw) {
+    if (!loopbackMeasuring) return;
+    if (measuringLoopbackKey == loopbackKey() && activeLoopbackEpoch == engine.captureEpoch.load())
+        send(foh::Command::referenceDelay(savedReferenceDelay));
+    loopbackMeasuring = false; engine.gen = savedGenerator; engine.genGainDb = savedGeneratorGain; setPaused(savedPaused);
+    auto c = raw ? foh::LoopbackCorrection::measure(*raw) : foh::LoopbackCorrection{};
+    if (c.valid() && measuringLoopbackKey == loopbackKey()) {
+        loopbackCals[measuringLoopbackKey] = c;
+        analysis.setLoopback(std::make_shared<foh::LoopbackCorrection>(c), engine.captureEpoch.load());
+        auto j = foh::Json::object(); for (const auto& entry : loopbackCals) j.set(entry.first, entry.second.toJson());
+        if (auto* p = settings.getUserSettings()) { p->setValue("interfaceLoopback", juce::String(j.dump())); p->saveIfNeeded(); }
+        loopbackStatus = "Interface correction saved (response + latency).";
+    } else loopbackStatus = "Loopback failed: check cables, gain and broadband signal.";
+    notify(Settings);
+}
+
 void AppModel::timerCallback() {
     int what = Levels;
     const int generatorMode = engine.gen.load();
