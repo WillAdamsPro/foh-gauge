@@ -25,7 +25,7 @@ struct WorkspaceView::Slot : WorkspaceView::Node {
         if (!ids.empty()) if (auto* p = v.panel(ids[(size_t) active])) { shown = p; addAndMakeVisible(p); }
     }
     bool tabbed() const { return ids.size() > 1; }
-    int headerH() const { return tabbed() ? WS::tabHeight : WS::panelHeaderHeight; }
+    int headerH() const { if (v.showMode) return 0; return tabbed() ? WS::tabHeight : WS::panelHeaderHeight; }
     Rectangle<int> header() const { return getLocalBounds().removeFromTop(headerH()); }
     Rectangle<int> btn(int i) const { auto h = header(); int s = WS::headerButtonSize; return { h.getRight() - WS::headerPaddingX - (i + 1) * s - i * WS::headerButtonGap, h.getCentreY() - s / 2, s, s }; } // 0 = close, 1 = float
     Rectangle<int> overflowBtn() const { auto b = btn(1); return { b.getX() - WS::headerButtonGap - WS::overflowButtonWidth, b.getY(), WS::overflowButtonWidth, b.getHeight() }; }
@@ -50,6 +50,7 @@ struct WorkspaceView::Slot : WorkspaceView::Node {
     }
     std::string activeId() const { return ids.empty() ? std::string() : ids[(size_t) active]; }
     void paint(Graphics& g) override {
+        if (v.showMode) return;
         auto& t = TH(); auto h = header(); bool focusedSlot = std::find(ids.begin(), ids.end(), v.focused) != ids.end();
         g.setColour(WS::panelHeaderBg(t)); g.fillRect(h);
         g.setColour(t.surfaces.border); g.fillRect((float) h.getX(), h.getBottom() - t.borderWidth, (float) h.getWidth(), t.borderWidth);
@@ -180,6 +181,7 @@ void WorkspaceView::setWorkspace(fohws::Workspace* w) {
     if (ws) for (auto& [id, p] : panels) if (ws->panelState.has(id)) p->loadState(ws->panelState[id]);
     rebuild();
 }
+void WorkspaceView::setShowMode(bool enabled) { showMode = enabled; maximised.clear(); rebuild(); }
 void WorkspaceView::storePanelStates() { if (!ws) return; for (auto& [id, p] : panels) { auto s = p->saveState(); if (!s.isNull()) ws->panelState.set(id, s); } }
 
 LayoutNode* WorkspaceView::nodeAt(LayoutNode& root, const std::vector<int>& path) {
@@ -194,7 +196,7 @@ void WorkspaceView::rebuild() {
 }
 void WorkspaceView::layoutDisplay() {
     for (auto& [id, p] : panels) if (!(isFloating && isFloating(id))) releasePanel(id, p.get());
-    display = maximised.empty() || !ws->root.contains(maximised) ? ws->root : LayoutNode::leaf(maximised);
+    display = showMode ? LayoutNode::leaf("RTA") : maximised.empty() || !ws->root.contains(maximised) ? ws->root : LayoutNode::leaf(maximised);
     auto ms = [this](const std::string& id) { auto* p = panel(id); return p ? p->minSize() : fohws::Size { WS::panelMinWidth, WS::panelMinHeight }; };
     auto pr = [this](const std::string& id) { auto* p = panel(id); return p ? p->priority() : 10; };
     LayoutNode before = display; if (getWidth() > 0 && getHeight() > 0) fohws::enforceMinSizes(display, getWidth(), getHeight(), ms, pr); collapsed = !(before == display); // collapse rule on a display copy
@@ -203,7 +205,7 @@ void WorkspaceView::layoutDisplay() {
 void WorkspaceView::resized() {
     if (!ws) return;
     // re-run the collapse rule when the size changes, so a wide window restores the full preset tree
-    LayoutNode check = maximised.empty() ? ws->root : LayoutNode::leaf(maximised);
+    LayoutNode check = showMode ? LayoutNode::leaf("RTA") : maximised.empty() ? ws->root : LayoutNode::leaf(maximised);
     auto ms = [this](const std::string& id) { auto* p = panel(id); return p ? p->minSize() : fohws::Size { WS::panelMinWidth, WS::panelMinHeight }; };
     auto pr = [this](const std::string& id) { auto* p = panel(id); return p ? p->priority() : 10; };
     fohws::enforceMinSizes(check, getWidth(), getHeight(), ms, pr);
@@ -220,7 +222,7 @@ void WorkspaceView::focus(const std::string& id) {
     repaint(); if (rootComp) { std::function<void(Component*)> rp = [&](Component* c) { c->repaint(0, 0, c->getWidth(), WS::panelHeaderHeight); for (auto* k : c->getChildren()) if (dynamic_cast<Node*>(k)) rp(k); }; rp(rootComp.get()); }
 }
 void WorkspaceView::closePanel(const std::string& id) {
-    if (!ws) return; if (maximised == id) maximised.clear();
+    if (!ws || showMode) return; if (maximised == id) maximised.clear();
     fohws::removePanel(ws->root, id); if (focused == id) focused.clear();
     rebuild(); if (onLayoutEdited) onLayoutEdited();
 }

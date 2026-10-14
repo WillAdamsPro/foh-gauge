@@ -12,6 +12,7 @@ public:
 
     void setWorkspace(fohws::Workspace* w);           // not owned. Loads panel state, rebuilds.
     fohws::Workspace* workspace() const { return ws; }
+    void setShowMode(bool enabled);
     void rebuild();                                    // after any change to ws->root
     void storePanelStates();                           // Panel::saveState() -> ws->panelState
     Panel* panel(const std::string& id, bool create = true);
@@ -37,6 +38,6 @@ private:
     void layoutDisplay();
     AppModel& model; const PanelRegistry& registry; fohws::Workspace* ws = nullptr;
     std::map<std::string, std::unique_ptr<Panel>> panels;
-    fohws::LayoutNode display; bool collapsed = false; std::string focused, maximised;
+    fohws::LayoutNode display; bool showMode = false; bool collapsed = false; std::string focused, maximised;
     std::unique_ptr<Node> rootComp;
 };
