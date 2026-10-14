@@ -2,6 +2,7 @@
 // (workspace nav, appearance, UI scale) and the WorkspaceView that hosts the panels.
 #pragma once
 #include "FloatingPanels.h"
+#include "SetupPage.h"
 #include "WorkspaceManager.h"
 #include "WorkspacePresetCommands.h"
 
@@ -25,6 +26,9 @@ protected:
     juce::OwnedArray<FloatingPanelWindow> floats;
     bool showMode = false;
     void setShowMode(bool enabled);
+    void openSetup();
+    SetupPage setup { model };
+    juce::TextButton setupBtn { "Audio Setup" };
     juce::TextButton wsMenuBtn, showModeBtn;
     void openFloatingWindows(); void closeFloatingWindows();
     void showWorkspaceMenu(); void updateSwitcher(); void leaveWorkspace();
