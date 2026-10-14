@@ -47,6 +47,9 @@ TEST_CASE("Optional routing walkthrough applies physical channels only on Finish
     // The callback uses these exact indices, rather than a separate wizard map.
     const float a[] {0.1f}, b[] {0.2f}, mic[] {0.3f}, ref[] {0.4f};
     const float* inputs[] {a, b, mic, ref};
+    // A mic-channel change restarts capture (#81); acknowledge it as the analysis worker would.
+    engine.audioDeviceIOCallbackWithContext(inputs, 4, nullptr, 0, 1, {});
+    engine.analysisEpoch.store(engine.captureEpoch.load());
     engine.audioDeviceIOCallbackWithContext(inputs, 4, nullptr, 0, 1, {});
     float capturedMic = 0, capturedRef = 0;
     REQUIRE(engine.micRing.pop(&capturedMic, 1) == 1);
