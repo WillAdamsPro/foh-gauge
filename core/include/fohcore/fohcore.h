@@ -57,8 +57,8 @@ bool isPowerOfTwo(int n);
 class PinkNoise {   // Paul Kellet refined filter on white noise, ~-3 dB/oct
 public:
     explicit PinkNoise(uint32_t seed = 12345) : state(seed ? seed : 1) {}
-    FOH_RT float next() noexcept;
-    FOH_RT void process(float* out, int n) noexcept { for (int i = 0; i < n; ++i) out[i] = next(); }
+    float next() noexcept FOH_RT;
+    void process(float* out, int n) noexcept FOH_RT { for (int i = 0; i < n; ++i) out[i] = next(); }
     void setGainDb(float db) noexcept;
 private:
     float white() noexcept;
@@ -72,8 +72,8 @@ private:
 class LogSweep {    // exponential sine sweep (Farina), loops with silence gap
 public:
     void prepare(double sampleRate, double f1, double f2, double seconds, double gapSeconds = 0.5);
-    FOH_RT float next() noexcept;
-    FOH_RT void process(float* out, int n) noexcept { for (int i = 0; i < n; ++i) out[i] = next(); }
+    float next() noexcept FOH_RT;
+    void process(float* out, int n) noexcept FOH_RT { for (int i = 0; i < n; ++i) out[i] = next(); }
     void reset() noexcept { resetReq.store(true, std::memory_order_release); }
     void setGainDb(float db) noexcept;
     long lengthSamples() const { return sweepLen; }
@@ -88,7 +88,7 @@ private:
 class RingBuffer {
 public:
     explicit RingBuffer(int capacityPow2 = 1 << 18);
-    FOH_RT bool push(const float* data, int n) noexcept;   // audio thread; false = dropped
+    bool push(const float* data, int n) noexcept FOH_RT;   // audio thread; false = dropped
     int available() const noexcept;
     int capacity() const noexcept { return (int) buf.size(); }
     int pop(float* dest, int n) noexcept;             // analysis thread

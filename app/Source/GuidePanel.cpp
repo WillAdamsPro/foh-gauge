@@ -191,7 +191,7 @@ private:
                 auto alt = [&](double ms) { double v = qa::consoleMs(ms); return (v >= 0 ? String("Mains +") : String("Sub +")) + String(std::abs(v), 2) + " ms"; };
                 String alts = alt(po.impliedMs - period) + "  /  " + alt(po.impliedMs + period);
                 String hint; if (model.delayLocked() && model.delayWasSub) hint = "Impulse peak hint: sub arrives " + String(qa::consoleMs(model.delay.arrivals[0].delayMs - model.lockedDelayMs), 2) + " ms vs mains (hint only).";
-                readout.setText("Suggested: " + who + " +" + String(d, 2) + " ms\n" + u8("\xc2\xb11 period: ") + alts, dontSendNotification);
+                readout.setText("Suggested: " + who + " +" + String(d, 2) + " ms\n" + u8("\xc2\xb1" "1 period: ") + alts, dontSendNotification);
                 { double halfMs = 500.0 / po.centerHz; bool flipLess = std::abs(invMs) < std::abs(po.impliedMs);
                   polarity.setText(u8("Or flip sub polarity + ") + (invMs > 0 ? "mains " : "sub ") + String(qa::consoleMs(std::abs(invMs)), 2) + u8(" ms. A flip = 180\xc2\xb0 \xe2\x89\x88 ") + String(halfMs, 2) + " ms at " + String(po.centerHz, 0) + " Hz. "
                       + (flipLess ? "Flipping needs less delay; check the slopes still match." : "Normal polarity needs less delay; prefer it if the slopes match.")
@@ -200,7 +200,7 @@ private:
                 out << "Crossover " << String(xover.lo, 0) << "-" << String(xover.hi, 0) << " Hz (centre ~" << String(po.centerHz, 0) << " Hz). Sub vs main phase " << String(po.meanDeg, 0) << u8("\xc2\xb0 = ") << String(d, 2) << " ms ("
                     << (po.impliedMs > 0 ? "sub LATE" : "sub EARLY") << "). Other answers differ by whole cycles (" << String(period, 2) << u8(" ms). Target: within ~60\xc2\xb0 and parallel across the band.");
                 summaryRows = { {"Crossover", String(xover.lo, 0) + "-" + String(xover.hi, 0) + " Hz"}, {"Suggested", who + " +" + String(d, 2) + " ms"},
-                                {u8("\xc2\xb11 period"), alts},
+                                {u8("\xc2\xb1" "1 period"), alts},
                                 {"Alternative", "Flip sub polarity, " + String(invMs > 0 ? "mains " : "sub ") + String(qa::consoleMs(std::abs(invMs)), 2) + " ms"}, {"Reference delay", String(qa::consoleMs(model.lockedDelayMs), 2) + " ms"} };
                 next(); break; }
             case 9: { if (model.storeTrace("Both")) { auto* m = model.findTrace("Main"); auto* s = model.findTrace("Sub"); auto* b = model.findTrace("Both");
