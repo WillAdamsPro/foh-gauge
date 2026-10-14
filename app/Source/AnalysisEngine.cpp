@@ -147,7 +147,10 @@ void AnalysisEngine::run() {
             for (int i = 0; i < n; ++i) { histRef[(size_t) histPos] = r[(size_t) i]; histMic[(size_t) histPos] = m[(size_t) i]; histPos = (histPos + 1) % H; }
         }
         auto now = juce::Time::getMillisecondCounterHiRes();
-        if (now - lastPub >= 50) { publish(); lastPub = now; }
+        // W7 needs only one snapshot per second; avoid rebuilding smoothed TF/RTA
+        // vectors at the normal interactive rate while show monitoring is active.
+        const double publishMs = engine.monitoringSilent.load() ? 1000.0 : 50.0;
+        if (now - lastPub >= publishMs) { publish(); lastPub = now; }
         if (!any) wait(5);
     }
 }
