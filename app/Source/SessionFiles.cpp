@@ -43,7 +43,7 @@ bool MainComponent::writeSession(const File& folder) {
     s.inputChannels = setup.inputChannels.toString(2).toStdString(); s.outputChannels = setup.outputChannels.toString(2).toStdString();
     s.mic = model.engine.micCh; s.reference = model.engine.refCh; s.outputA = model.engine.outA; s.outputB = model.engine.outB;
     s.micCalEnabled = model.calOn; s.micCalName = model.calFile.toStdString(); s.micCalText = model.calText;
-    s.splCal = sessionSplCal; s.targets = sessionTargets;
+    s.splCal = model.splCalJson(); s.targets = sessionTargets;
     for (int i = 0; i < model.traces.count(); ++i) s.captures.push_back(model.traces.at(i));
     view.storePanelStates();
     if (current >= 0) s.workspace = fohws::toJson(mgr.at(current));
@@ -93,7 +93,8 @@ bool MainComponent::readSession(const File& folder) {
     model.calText = s.micCalText; model.cal = foh::parseMicCal(s.micCalText); model.calFile = String(s.micCalName); model.setCalEnabled(s.micCalEnabled);
     model.traces.clear();
     for (const auto& t : s.captures) { model.traces.store(t.name, t.tf, t.refDelayMs); model.traces.at(model.traces.count() - 1).visible = t.visible; }
-    sessionSplCal = s.splCal; sessionTargets = s.targets;
+    model.loadSplCalJson(s.splCal.value_or(foh::Json{}));
+    if (auto* prefs = model.settings.getUserSettings()) { prefs->setValue("splCalibration", String(model.splCalJson().dump())); prefs->saveIfNeeded(); } sessionTargets = s.targets;
     model.setSmoothing(s.measurement["smoothing"].asInt(12)); model.setAverages(s.measurement["averages"].asInt(16)); model.setRtaFraction(s.measurement["rtaFraction"].asInt(3)); model.setBlankThreshold(s.measurement["blankThreshold"].asNumber(0.5));
     model.lockedDelayMs = s.measurement["refDelayMs"].asNumber(); model.send(foh::Command::referenceDelay(model.lockedDelayMs * model.engine.sampleRate.load() / 1000.0));
     model.send(foh::Command::resetAverages()); model.notify(AppModel::Traces | AppModel::Cal | AppModel::Settings);

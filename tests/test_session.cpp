@@ -14,7 +14,10 @@ foh::Session synthetic() {
     s.sampleRate = 96000; s.bufferSize = 256; s.inputChannels = "11"; s.outputChannels = "101";
     s.mic = 1; s.reference = 0; s.outputA = 2; s.outputB = 0;
     s.micCalName = "synthetic.txt"; s.micCalText = "20 1\n1000 0\n20000 -1\n"; s.micCalEnabled = true;
-    s.splCal = foh::Json::object(); s.splCal->set("offsetDb", 114.0);
+    s.splCal = foh::Json::object();
+    foh::SplCal first, second; first.calibrate(-20, 94, -2.1); second.calibrate(-30, 114, 1.5);
+    s.splCal->set("Synthetic\nTest Input\n1", first.toJson());
+    s.splCal->set("Synthetic\nTest Input\n2", second.toJson());
     s.targets = foh::Json::object(); s.targets->set("futureField", "preserved");
     s.workspace.set("id", "alignment"); s.measurement.set("averages", 16);
     foh::Trace t; t.name = "Synthetic capture / portable"; t.visible = false; t.refDelayMs = 1.2345678901234567;
@@ -38,7 +41,9 @@ TEST_CASE("Session bundle round trips all data and copied assets", "[session]") 
     REQUIRE(loaded.inputChannels == s.inputChannels); REQUIRE(loaded.outputChannels == s.outputChannels);
     REQUIRE(loaded.mic == s.mic); REQUIRE(loaded.reference == s.reference); REQUIRE(loaded.outputA == s.outputA); REQUIRE(loaded.outputB == s.outputB);
     REQUIRE(loaded.micCalName == s.micCalName); REQUIRE(loaded.micCalText == s.micCalText); REQUIRE(loaded.micCalEnabled);
-    REQUIRE(loaded.splCal == s.splCal); REQUIRE(loaded.targets == s.targets); REQUIRE(loaded.workspace == s.workspace); REQUIRE(loaded.measurement == s.measurement);
+    REQUIRE(loaded.splCal == s.splCal);
+    REQUIRE(foh::SplCal::fromJson((*loaded.splCal)["Synthetic\nTest Input\n1"]).level(-20, -2.1) == 94);
+    REQUIRE(foh::SplCal::fromJson((*loaded.splCal)["Synthetic\nTest Input\n2"]).level(-30, 1.5) == 114); REQUIRE(loaded.targets == s.targets); REQUIRE(loaded.workspace == s.workspace); REQUIRE(loaded.measurement == s.measurement);
     REQUIRE(loaded.captures.size() == 1); const auto& t = loaded.captures[0]; const auto& original = s.captures[0];
     REQUIRE(t.name == original.name); REQUIRE(t.visible == original.visible); REQUIRE(t.refDelayMs == original.refDelayMs);
     REQUIRE(t.tf.sampleRate == original.tf.sampleRate); REQUIRE(t.tf.fftSize == original.tf.fftSize); REQUIRE(t.tf.averages == original.tf.averages); REQUIRE(t.tf.blankThreshold == original.tf.blankThreshold);

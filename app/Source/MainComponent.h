@@ -44,7 +44,7 @@ protected:
     int uiScale = 100;
     juce::File sessionFolder;
     std::unique_ptr<juce::FileChooser> sessionChooser;
-    std::optional<foh::Json> sessionSplCal, sessionTargets;
+    std::optional<foh::Json> sessionTargets;
     FohLookAndFeel lnf;
     AppModel model;
     WorkspaceManager mgr; int current = -1;
@@ -54,7 +54,7 @@ protected:
     void setShowMode(bool enabled);
     void openSetup();
     SetupPage setup { model };
-    juce::TextButton setupBtn { "Audio Setup" };
+    juce::TextButton setupBtn { "Audio Setup" }, splBtn { "SPL Cal" };
     juce::TextButton wsMenuBtn, showModeBtn;
     void openFloatingWindows(); void closeFloatingWindows();
     void showWorkspaceMenu(); void updateSwitcher(); void leaveWorkspace();
