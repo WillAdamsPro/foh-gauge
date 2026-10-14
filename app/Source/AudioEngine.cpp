@@ -103,6 +103,7 @@ void AudioEngine::audioDeviceAboutToStart(AudioIODevice* d) {
     // A replacement can have fewer channels even with the generator stopped.
     // None is intentional for an output; a configured but missing output needs Setup.
     const int oa = outA.load(), ob = outB.load();
+    lastOutputA = oa; lastOutputB = ob;
     lastOutputsValid = (oa < 0 || outputs[oa]) && (ob < 0 || outputs[ob]);
     captureMicChannel.store(lastMicChannel);
     deviceFailed.store(false, std::memory_order_release);
@@ -119,19 +120,27 @@ void AudioEngine::audioDeviceIOCallbackWithContext(const float* const* in, int n
     const int mc = micCh.load(), rc = refCh.load();
     const bool inputsValid = in && mc >= 0 && mc < nIn && in[mc]
         && rc >= 0 && rc < nIn && in[rc];
-    if (mc != lastMicChannel || rc != lastRefChannel
-        || (lastInputCount >= 0 && nIn != lastInputCount) || inputsValid != lastInputsValid) {
+    const int oa = outA.load(), ob = outB.load();
+    const bool routingChanged = mc != lastMicChannel || rc != lastRefChannel
+        || oa != lastOutputA || ob != lastOutputB
+        || (lastInputCount >= 0 && nIn != lastInputCount)
+        || (lastOutputCount >= 0 && nOut != lastOutputCount);
+    // Never move an in-flight stimulus to another connection, or keep it playing
+    // after a previously available measurement input disappears.
+    if (routingChanged || (lastInputCount >= 0 && inputsValid != lastInputsValid)) resetPlayback();
+    if (routingChanged || inputsValid != lastInputsValid) {
         captureMicChannel.store(mc);
         micPeak.store(0); refPeak.store(0);
         captureEpoch.fetch_add(1, std::memory_order_release);
     }
     lastMicChannel = mc; lastRefChannel = rc; lastInputCount = nIn; lastInputsValid = inputsValid;
+    lastOutputA = oa; lastOutputB = ob;
     const float g = genGainDb.load(); if (g != lastGain) { pink.setGainDb(g + 20.f); sweep.setGainDb(g + 12.f); lastGain = g; }
     const bool silent = monitoringSilent.load(std::memory_order_acquire);
     if (sweepRequest.exchange(false, std::memory_order_acquire)) {
         sweepRestart = true; sweepOneShot = true;
     }
-    const int mode = silent ? Off : gen.load(), oa = outA.load(), ob = outB.load();
+    const int mode = silent ? Off : gen.load();
     if (mode == Sweep && previousGen != Sweep) sweepRestart = true;
     previousGen = mode;
     const auto request = chimeRequest.load(std::memory_order_acquire);
@@ -148,15 +157,19 @@ void AudioEngine::audioDeviceIOCallbackWithContext(const float* const* in, int n
     if (!std::isfinite(rate) || rate <= 0) return;
     const double chimeStep = 48000.0 / rate;
     const auto outputValid = [out, nOut](int c) { return out && c >= 0 && c < nOut && out[c]; };
-    const bool outputsValid = ((mode == Off && lastOutputsValid)
-        || (((mode == Off && oa < 0) || outputValid(oa)) && (ob < 0 || outputValid(ob))))
+    const bool outputsValid = (oa < 0 || outputValid(oa)) && (ob < 0 || outputValid(ob))
+        && (mode == Off || outputValid(oa))
         && (chimePosition >= 28800 || outputValid(chimeOutput));
-    if ((lastOutputCount >= 0 && nOut != lastOutputCount) || outputsValid != lastOutputsValid) {
+    if (outputsValid != lastOutputsValid && !routingChanged) {
         micPeak.store(0); refPeak.store(0);
         captureEpoch.fetch_add(1, std::memory_order_release);
     }
     lastOutputCount = nOut; lastOutputsValid = outputsValid;
     state.store(!inputsValid ? InvalidInputs : !outputsValid ? InvalidOutputs : Ready, std::memory_order_release);
+    if (testSamplesRemaining > 0) {
+        const int expected = int((request >> 16) & 0xffff) - 1;
+        if (!in || expected < 0 || expected >= nIn || !in[expected]) { resetPlayback(); return; }
+    }
     if (!outputsValid) {
         resetPlayback();
         return; // never publish a partial measurement or play through broken routing
