@@ -62,9 +62,9 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          NOTES="Unsigned build. First launch: right-click the app > Open (or System Settings > Privacy & Security > Open Anyway). Requires macOS 26."
+          NOTES="Unsigned test build. Requires macOS 26."
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload "$TAG" "$OUT.zip" "$OUT.dmg" SHA256SUMS.txt --clobber
           else
-            gh release create "$TAG" "$OUT.zip" "$OUT.dmg" SHA256SUMS.txt --title "FOH Gauge $TAG" --notes "$NOTES" --verify-tag
+            gh release create "$TAG" "$OUT.zip" "$OUT.dmg" SHA256SUMS.txt --title "FOH Gauge $TAG" --notes "$NOTES" --prerelease --verify-tag
           fi
