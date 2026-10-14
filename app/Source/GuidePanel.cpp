@@ -97,6 +97,12 @@ public:
     void modelChanged(int w) override {
         if (w & AppModel::Rig) { updateGuides(); refresh(); }
         if (w & AppModel::Theme) { restyle(); repaint(); }
+        if (baselineValid && (model.engine.deviceFailed.load() || model.engine.captureEpoch.load() != baselineEpoch)) {
+            resetVerification();
+            step = (int) kGuides[(size_t) guide].size() - 3;
+            say("Audio changed. Open Setup, then store a new before trace and repeat Apply and Verify.");
+            refresh();
+        }
         if (w & AppModel::Capture) refresh();
     }
     void visibilityChanged() override { buildOverlay(); model.notify(AppModel::Overlay); }

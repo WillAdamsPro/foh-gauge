@@ -17,7 +17,6 @@ AppModel::AppModel() {
     settings.getUserSettings()->setValue("setupComplete", true);
 }
 AppModel::~AppModel() = default;
-void AppModel::timerCallback() {}
 foh::SplCal AppModel::splCal() const { return {}; }
 bool AppModel::calibrateSpl(double) { throw std::logic_error("Unexpected SPL calibration"); }
 bool AppModel::micLevelReady() const { return false; }
@@ -359,4 +358,24 @@ TEST_CASE("Placement stays fixed through Store Apply and Verify", "[app][guide][
         button(*panel, "I entered the change").onClick(); checkDiagram();
         button(*panel, "Re-measure to verify").onClick(); capture.finish(model); checkDiagram();
     }
+}
+
+TEST_CASE("Hotplug during guided Verify invalidates the baseline and verdict", "[app][guide][hotplug]") {
+    juce::ScopedJuceInitialiser_GUI gui;
+    AppModel model; CaptureStub capture;
+    auto panel = makeGuidePanel(model); panel->setSize(260, 660);
+    auto state = fohws::Json::object(); state.set("guide", 3); state.set("step", 100); panel->loadState(state);
+    const int storeStep = panel->saveState()["step"].asInt();
+    button(*panel, "Measure before change").onClick(); capture.finish(model);
+    button(*panel, "I entered the change").onClick();
+    button(*panel, "Re-measure to verify").onClick();
+    model.engine.audioDeviceStopped();
+    model.notify(AppModel::Capture | AppModel::Settings);
+    CHECK(panel->saveState()["step"].asInt() == storeStep);
+    CHECK(labelContains(*panel, "Open Setup"));
+    // Even a delayed successful completion cannot restore the invalid verdict.
+    capture.finish(model);
+    CHECK(panel->saveState()["step"].asInt() == storeStep);
+    CHECK_FALSE(button(*panel, "Pass").isEnabled());
+    CHECK_FALSE(button(*panel, "Fail").isEnabled());
 }
