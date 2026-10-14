@@ -343,6 +343,14 @@ struct SweepResult {
 SweepResult deconvolveSweep(const std::vector<float>& reference,
                            const std::vector<float>& measurement, double sampleRate);
 
+// Direction of the strongest absolute impulse sample (first on ties).
+// For an isolated box measured near-field against a loopback reference. This is
+// acoustic impulse direction, not proof of wiring polarity through filters/mic.
+// Empty, silent (peak <= 1e-12), or non-finite impulses are inconclusive.
+// No allocations, locks or I/O.
+enum class ImpulsePolarity { Unknown, Normal, Inverted };
+ImpulsePolarity polarityFromImpulse(const std::vector<double>& impulse);
+
 // Impulse response from a complete, finite TF (IFFT of H). Blanked bins are zeroed.
 // Empty for invalid metadata/spectrum or no usable non-DC signal.
 std::vector<double> impulseFromTF(const TFResult& tf);

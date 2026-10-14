@@ -18,8 +18,8 @@ inline double consoleMs(double ms) { return std::round(ms * 100.0) / 100.0; }
 
 // Audio engine: generator out + capture of mic/ref into lock-free rings. RT-safe callback.
 class AudioEngine : public juce::AudioIODeviceCallback {
-    int lastMicChannel = 0, lastRefChannel = 1, lastInputCount = -1;
-    bool lastInputsValid = true;
+    int lastMicChannel = 0, lastRefChannel = 1, lastInputCount = -1, lastOutputCount = -1;
+    bool lastInputsValid = true, lastOutputsValid = true;
 public:
     AudioEngine(); // Synthesizes the immutable chime before the audio callback is registered.
     // Message-thread commands; one atomic packet keeps channel selection and request together.
