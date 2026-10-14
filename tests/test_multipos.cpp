@@ -55,3 +55,27 @@ TEST_CASE("Multi-position invalid and unsupported bins are safe", "[multipos]") 
     REQUIRE(avg.coherence[3] == 0);
     REQUIRE(std::isfinite(avg.magDb[3]));
 }
+
+TEST_CASE("Multi-position silence cancellation and extreme spectra stay unsupported", "[multipos][edges]") {
+    for (double value : {0.0, std::numeric_limits<double>::denorm_min(), 1e300}) {
+        auto a = position(value, 1, 0);
+        auto avg = foh::multiPositionAverage({a, a});
+        REQUIRE(avg.H.size() == a.tf.H.size());
+        for (size_t k = 0; k < avg.H.size(); ++k) {
+            CHECK(avg.isBlanked(k)); CHECK(avg.coherence[k] == 0);
+            CHECK(std::isfinite(avg.magDb[k])); CHECK(std::isfinite(avg.phaseDeg[k]));
+        }
+    }
+    auto a = position(1, 1, 0), b = a;
+    for (auto& h : b.tf.H) h = -h;
+    auto avg = foh::multiPositionAverage({a, b});
+    for (size_t k = 0; k < avg.H.size(); ++k) CHECK(avg.isBlanked(k));
+    for (double rate : {0.0, double(NAN), double(INFINITY)}) {
+        b = a; a.tf.sampleRate = b.tf.sampleRate = rate;
+        CHECK(foh::multiPositionAverage({a, b}).H.empty());
+    }
+    a = position(1, 1, 0); b = a; b.tf.sampleRate = 44100;
+    CHECK(foh::multiPositionAverage({a, b}).H.empty());
+    b = a; a.tf.blankThreshold = NAN;
+    CHECK(foh::multiPositionAverage({a, b}).H.empty());
+}
