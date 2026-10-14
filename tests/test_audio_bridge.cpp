@@ -7,6 +7,7 @@
 #include "SettleStatus.h"
 #include "Panels.h"
 #include "SetupPage.h"
+#include "MainComponent.h"
 #include <fohcore/session.h>
 #include <chrono>
 #include <string_view>
@@ -402,8 +403,14 @@ public:
     juce::String open(const juce::BigInteger&, const juce::BigInteger&, double, int) override { return {}; }
     void close() override {}
     bool isOpen() override { return true; }
-    void start(juce::AudioIODeviceCallback*) override {}
-    void stop() override {}
+    juce::AudioIODeviceCallback* callback = nullptr;
+    void start(juce::AudioIODeviceCallback* c) override {
+        callback = c; if (callback) callback->audioDeviceAboutToStart(this);
+    }
+    void stop() override {
+        if (callback) callback->audioDeviceStopped();
+        callback = nullptr;
+    }
     bool isPlaying() override { return true; }
     juce::String getLastError() override { return {}; }
     int getCurrentBufferSizeSamples() override { return block; }
@@ -1850,6 +1857,112 @@ TEST_CASE("Missing reference completes delay requests with an invalid snapshot",
         REQUIRE(result.arrivals.empty()); REQUIRE(result.confidence == 0);
     }
     analysis.stop();
+}
+
+namespace {
+class SessionTestMain : public MainComponent {
+public:
+    explicit SessionTestMain(const juce::File& folder) : MainComponent(folder) {}
+    AppModel& state() { return model; }
+};
+}
+
+TEST_CASE("Save As preserves live averaging and Open discards old session work", "[app][session][audio][regression]") {
+    juce::ScopedJuceInitialiser_GUI initialise;
+    const bool sweeping = GENERATE(false, true);
+    const int missingName = GENERATE(0, 1, 2); // available, missing input, missing output
+    struct Temporary {
+        juce::File folder = juce::File::getSpecialLocation(juce::File::tempDirectory)
+            .getNonexistentChildFile("foh-synthetic-session", "", false);
+        ~Temporary() { folder.deleteRecursively(); }
+    } temporary;
+    SessionTestMain main(temporary.folder.getChildFile("workspaces"));
+    auto& model = main.state();
+    model.dm.addAudioDeviceType(std::make_unique<SyntheticDeviceType>());
+    model.dm.setCurrentAudioDeviceType("Synthetic", true);
+    auto setup = model.dm.getAudioDeviceSetup();
+    setup.inputDeviceName = setup.outputDeviceName = "Synthetic";
+    setup.useDefaultInputChannels = setup.useDefaultOutputChannels = false;
+    setup.inputChannels = setup.outputChannels = juce::BigInteger(3);
+    REQUIRE(model.dm.setAudioDeviceSetup(setup, true).isEmpty());
+    model.engine.micCh = 0; model.engine.refCh = 1;
+    model.engine.outA = 0; model.engine.outB = 1;
+    model.dm.addAudioCallback(&model.engine);
+    // Match production destruction order even if a REQUIRE aborts the test.
+    struct CallbackGuard {
+        AppModel& model;
+        ~CallbackGuard() { model.dm.removeAudioCallback(&model.engine); }
+    } guard {model};
+    AnalysisEngineTestAccess consumer(model.analysis);
+    consumer.step();
+    std::vector<float> signal(32768);
+    for (size_t i = 0; i < signal.size(); ++i)
+        signal[i] = float(0.1 * std::sin(2 * juce::MathConstants<double>::pi * i / 48));
+    capture(model.engine, signal.data(), signal.data(), (int) signal.size()); consumer.step();
+    REQUIRE(model.analysis.latest().tf.averages > 0);
+    REQUIRE_FALSE(model.analysis.latest().rtaDb.empty());
+    const auto originalTf = model.analysis.latest().tf;
+    REQUIRE(model.traces.store("Synthetic averaged trace", originalTf, 0));
+    model.capture.active = true;
+    bool completed = false;
+    model.capture.then = [&](bool) { completed = true; };
+    model.engine.gen = AudioEngine::Pink;
+    const auto epoch = model.engine.captureEpoch.load();
+    const auto first = temporary.folder.getChildFile("First.fohsession");
+    const auto second = temporary.folder.getChildFile("SaveAs.fohsession");
+    REQUIRE(main.writeSession(first)); REQUIRE(main.writeSession(second));
+    CHECK(model.engine.captureEpoch.load() == epoch);
+    CHECK(model.engine.gen.load() == AudioEngine::Pink);
+    CHECK(model.capture.active); CHECK_FALSE(completed);
+    CHECK(model.analysis.latest().tf.H == originalTf.H);
+    foh::Session saved; std::string error;
+    REQUIRE(foh::loadSession(second.getFullPathName().toStdString(), saved, error));
+    REQUIRE(saved.captures.size() == 1);
+    CHECK(saved.captures[0].tf.H == originalTf.H);
+    if (sweeping) {
+        foh::Command sweep; sweep.type = foh::CommandType::MeasureSweep; sweep.id = 71;
+        REQUIRE(model.analysis.send(sweep)); consumer.step();
+        REQUIRE(model.analysis.latest().sweepCapturing);
+    }
+    // Leave both audio and a delayed sweep request queued across a same-device Open.
+    capture(model.engine, signal.data(), signal.data(), 512);
+    foh::Command stale; stale.type = foh::CommandType::MeasureSweep; stale.id = 72;
+    REQUIRE(model.analysis.send(stale));
+    REQUIRE(model.analysis.send(foh::Command::findDelay(false, 73)));
+    saved.mic = 1; saved.reference = 0; saved.outputA = 1; saved.outputB = 0;
+    saved.measurement.set("refDelayMs", 2.5);
+    if (missingName) {
+        if (missingName == 1) saved.inputDevice.clear();
+        else saved.outputDevice.clear();
+    }
+    REQUIRE(foh::saveSession(second.getFullPathName().toStdString(), saved, error));
+    REQUIRE(main.readSession(second));
+    CHECK(model.engine.captureEpoch.load() > epoch);
+    consumer.step();
+    const auto& fresh = model.analysis.latest();
+    CHECK_FALSE(fresh.sweepCapturing); CHECK(fresh.sweep.response.impulse.empty());
+    CHECK(fresh.tf.averages == 0); CHECK(fresh.convergence.frames == 0);
+    CHECK(fresh.delaySeq == 0); CHECK_FALSE(fresh.delay.ok());
+    CHECK(fresh.refDelaySamples == 120);
+    CHECK(model.engine.micRing.available() == 0); CHECK(model.engine.refRing.available() == 0);
+    CHECK(model.engine.gen.load() == AudioEngine::Off);
+    CHECK_FALSE(model.capture.active); CHECK_FALSE(model.capture.then); CHECK_FALSE(completed);
+    CHECK(model.engine.micCh.load() == (missingName ? -1 : saved.mic));
+    CHECK(model.engine.refCh.load() == (missingName ? -1 : saved.reference));
+    CHECK(model.engine.outA.load() == (missingName ? -1 : saved.outputA));
+    CHECK(model.engine.outB.load() == (missingName ? -1 : saved.outputB));
+    if (missingName) {
+        CHECK(model.dm.getCurrentAudioDevice() == nullptr);
+        main.selectWorkspace("alignment");
+        CHECK(model.engine.micCh.load() == -1); CHECK(model.engine.refCh.load() == -1);
+        CHECK(model.engine.outA.load() == -1); CHECK(model.engine.outB.load() == -1);
+    } else {
+        REQUIRE(model.dm.getCurrentAudioDevice());
+        // A fresh capture can resume with the restored channel map.
+        capture(model.engine, signal.data(), signal.data(), (int) signal.size()); consumer.step();
+        CHECK(model.analysis.latest().tf.averages > 0);
+        CHECK(model.analysis.latest().refDelaySamples == 120);
+    }
 }
 
 TEST_CASE("Damaged signal callbacks keep generator output and peak meters finite without allocations", "[app][audio][rt][edges][generator]") {

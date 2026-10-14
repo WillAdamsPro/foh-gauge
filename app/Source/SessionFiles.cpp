@@ -115,8 +115,48 @@ bool MainComponent::readSession(const File& folder) {
     bool available = type && foh::sessionDevicesAvailable(s, type->getTypeName().toStdString(), inputs, outputs);
     // Opening a session always leaves the generator off, including a device fallback.
     model.engine.gen = AudioEngine::Off;
+    // Even an identical setup must cross JUCE's quiesced stop/start boundary.
+    // This cancels playback and invalidates queued capture/delay work before any
+    // workspace can restore channels. Keep I/O stopped until routing is complete.
+    model.dm.closeAudioDevice();
     model.cancelSessionOperations();
     model.notify(AppModel::Session);
+    if (!available) s.mic = s.reference = s.outputA = s.outputB = -1;
+    model.rigProfile = s.rigProfile;
+    model.notify(AppModel::Rig);
+    setShowMode(false); leaveWorkspace(); view.setWorkspace(nullptr);
+    int index = mgr.indexOf(workspace.id);
+    if (index < 0) index = mgr.saveAs(0, String(workspace.name));
+    workspace.id = mgr.at(index).id; workspace.builtIn = mgr.at(index).builtIn;
+    mgr.at(index) = std::move(workspace); current = -1; selectWorkspace(index);
+    // Routing is session-wide. Prevent a later workspace switch from restoring
+    // stale channel selections from that workspace's saved panel state.
+    auto restoreRouting = [&] {
+        for (int i = 0; i < mgr.count(); ++i) {
+            auto routing = foh::Json::object();
+            routing.set("mic", s.mic); routing.set("ref", s.reference);
+            routing.set("outA", s.outputA); routing.set("outB", s.outputB);
+            mgr.at(i).panelState.set("InputsAndDevices", routing);
+        }
+        model.engine.micCh = s.mic; model.engine.refCh = s.reference;
+        model.engine.outA = s.outputA; model.engine.outB = s.outputB;
+    };
+    restoreRouting();
+    model.calText = s.micCalText; model.cal = foh::parseMicCal(s.micCalText); model.calFile = String(s.micCalName); model.setCalEnabled(s.micCalEnabled);
+    model.clearTraces();
+    for (const auto& t : s.captures) { model.traces.store(t.name, t.tf, t.refDelayMs); model.traces.at(model.traces.count() - 1).visible = t.visible; }
+    if (s.measurement.has("traceColours")) {
+        const auto& colours = s.measurement["traceColours"].items();
+        for (size_t i = 0; i < colours.size(); ++i)
+            model.colourTrace((int) i, Colour::fromString(String(colours[i].asString())));
+    }
+    // Position captures belong to the old measurement/calibration. Clear the
+    // displayed copy immediately, before the worker acknowledges the restart.
+    model.send(foh::Command::clearMicPositions());
+    model.multiPosition = {}; model.positionCount = 0; model.positionMask = 0;
+    model.loadSplCalJson(s.splCal.value_or(foh::Json::object()));
+    if (auto* prefs = model.settings.getUserSettings()) { prefs->setValue("splCalibration", String(model.splCalJson().dump())); prefs->saveIfNeeded(); } sessionTargets = s.targets;
+    model.setSmoothing(s.measurement["smoothing"].asInt(12)); model.setAverages(s.measurement["averages"].asInt(16)); model.setRtaFraction(s.measurement["rtaFraction"].asInt(3)); model.setBlankThreshold(s.measurement["blankThreshold"].asNumber(0.5));
     if (available) {
         model.dm.setCurrentAudioDeviceType(String(s.deviceType), true);
         auto setup = model.dm.getAudioDeviceSetup();
@@ -130,38 +170,8 @@ bool MainComponent::readSession(const File& folder) {
         // live device or JUCE's partially opened replacement.
         model.dm.closeAudioDevice();
         s.mic = s.reference = s.outputA = s.outputB = -1;
+        restoreRouting();
     }
-    model.rigProfile = s.rigProfile;
-    model.notify(AppModel::Rig);
-    setShowMode(false); leaveWorkspace(); view.setWorkspace(nullptr);
-    int index = mgr.indexOf(workspace.id);
-    if (index < 0) index = mgr.saveAs(0, String(workspace.name));
-    workspace.id = mgr.at(index).id; workspace.builtIn = mgr.at(index).builtIn;
-    mgr.at(index) = std::move(workspace); current = -1; selectWorkspace(index);
-    // Routing is session-wide. Prevent a later workspace switch from restoring
-    // stale channel selections from that workspace's saved panel state.
-    for (int i = 0; i < mgr.count(); ++i) {
-        auto routing = foh::Json::object();
-        routing.set("mic", s.mic); routing.set("ref", s.reference);
-        routing.set("outA", s.outputA); routing.set("outB", s.outputB);
-        mgr.at(i).panelState.set("InputsAndDevices", routing);
-    }
-    model.engine.micCh = s.mic; model.engine.refCh = s.reference; model.engine.outA = s.outputA; model.engine.outB = s.outputB;
-    model.calText = s.micCalText; model.cal = foh::parseMicCal(s.micCalText); model.calFile = String(s.micCalName); model.setCalEnabled(s.micCalEnabled);
-    model.clearTraces();
-    for (const auto& t : s.captures) { model.traces.store(t.name, t.tf, t.refDelayMs); model.traces.at(model.traces.count() - 1).visible = t.visible; }
-    if (s.measurement.has("traceColours")) {
-        const auto& colours = s.measurement["traceColours"].items();
-        for (size_t i = 0; i < colours.size(); ++i)
-            model.colourTrace((int) i, Colour::fromString(String(colours[i].asString())));
-    }
-    // Position captures belong to the old measurement/calibration. In particular,
-    // a same-rate open does not rebuild the analysis engine and must clear them.
-    model.send(foh::Command::clearMicPositions());
-    model.multiPosition = {}; model.positionCount = 0; model.positionMask = 0;
-    model.loadSplCalJson(s.splCal.value_or(foh::Json::object()));
-    if (auto* prefs = model.settings.getUserSettings()) { prefs->setValue("splCalibration", String(model.splCalJson().dump())); prefs->saveIfNeeded(); } sessionTargets = s.targets;
-    model.setSmoothing(s.measurement["smoothing"].asInt(12)); model.setAverages(s.measurement["averages"].asInt(16)); model.setRtaFraction(s.measurement["rtaFraction"].asInt(3)); model.setBlankThreshold(s.measurement["blankThreshold"].asNumber(0.5));
     model.restoreSessionDelay(s.measurement["refDelayMs"].asNumber());
     model.send(foh::Command::resetAverages()); model.notify(AppModel::Traces | AppModel::Cal | AppModel::Settings);
     sessionFolder = folder;

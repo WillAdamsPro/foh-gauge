@@ -344,3 +344,55 @@ TEST_CASE("Save refuses to replace a regular file masquerading as a session fold
     CHECK_FALSE(std::filesystem::exists(bundle.path.string() + ".saving"));
     CHECK_FALSE(std::filesystem::exists(bundle.path.string() + ".backup"));
 }
+
+TEST_CASE("Unnamed session devices round trip and require Setup for routed directions", "[session][regression]") {
+    Bundle bundle; auto s = synthetic(); std::string error;
+    SECTION("missing input") { s.inputDevice.clear(); }
+    SECTION("missing output") { s.outputDevice.clear(); }
+    SECTION("both names missing") { s.inputDevice.clear(); s.outputDevice.clear(); }
+    REQUIRE(foh::saveSession(bundle.path, s, error));
+    foh::Session loaded; REQUIRE(foh::loadSession(bundle.path, loaded, error));
+    CHECK(loaded.inputDevice == s.inputDevice); CHECK(loaded.outputDevice == s.outputDevice);
+    CHECK_FALSE(foh::sessionDevicesAvailable(loaded, "Synthetic", {"Test Input"}, {"Test Output"}));
+    s.inputDevice = "Test Input"; s.outputDevice.clear(); s.outputA = s.outputB = -1;
+    CHECK(foh::sessionDevicesAvailable(s, "Synthetic", {"Test Input"}, {}));
+    s.inputDevice.clear(); s.outputDevice = "Test Output"; s.mic = s.reference = -1;
+    CHECK(foh::sessionDevicesAvailable(s, "Synthetic", {}, {"Test Output"}));
+}
+
+TEST_CASE("Maximum synthetic capture set round trips and can be replaced by an empty folder", "[session][stress]") {
+    Bundle bundle; auto s = synthetic(); std::string error;
+    auto trace = s.captures.front(); auto& tf = trace.tf;
+    tf.fftSize = 32768;
+    const size_t bins = size_t(tf.fftSize / 2 + 1);
+    tf.freq.resize(bins); tf.magDb.resize(bins); tf.phaseDeg.resize(bins);
+    tf.coherence.resize(bins); tf.H.resize(bins); tf.blanked.resize(bins);
+    for (size_t i = 0; i < bins; ++i) {
+        tf.freq[i] = i * tf.sampleRate / tf.fftSize;
+        tf.magDb[i] = double(i % 31) / 10; tf.phaseDeg[i] = -double(i % 180);
+        tf.coherence[i] = 0.9; tf.H[i] = {0.5, -0.25}; tf.blanked[i] = uint8_t(i % 2);
+    }
+    s.captures.assign(foh::TraceStore::kMax, trace);
+    for (size_t i = 0; i < s.captures.size(); ++i) {
+        s.captures[i].name = "Synthetic capture " + std::to_string(i);
+        s.captures[i].refDelayMs = double(i); s.captures[i].visible = i % 2 == 0;
+    }
+    REQUIRE(foh::saveSession(bundle.path, s, error));
+    foh::Session loaded; REQUIRE(foh::loadSession(bundle.path, loaded, error));
+    REQUIRE(loaded.captures.size() == s.captures.size());
+    for (size_t i = 0; i < s.captures.size(); ++i) {
+        const auto& t = loaded.captures[i];
+        CHECK(t.name == s.captures[i].name); CHECK(t.visible == s.captures[i].visible);
+        CHECK(t.refDelayMs == s.captures[i].refDelayMs);
+        CHECK(t.tf.freq == tf.freq); CHECK(t.tf.magDb == tf.magDb); CHECK(t.tf.phaseDeg == tf.phaseDeg);
+        CHECK(t.tf.coherence == tf.coherence); CHECK(t.tf.H == tf.H); CHECK(t.tf.blanked == tf.blanked);
+    }
+    // Oversized input must fail without replacing any part of the large bundle.
+    s.captures.push_back(trace);
+    REQUIRE_FALSE(foh::saveSession(bundle.path, s, error));
+    REQUIRE(foh::loadSession(bundle.path, loaded, error));
+    CHECK(loaded.captures.size() == foh::TraceStore::kMax);
+    s.captures.clear(); REQUIRE(foh::saveSession(bundle.path, s, error));
+    REQUIRE(std::filesystem::is_empty(bundle.path / "captures"));
+    REQUIRE(foh::loadSession(bundle.path, loaded, error)); CHECK(loaded.captures.empty());
+}
