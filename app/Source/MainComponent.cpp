@@ -172,6 +172,10 @@ void MainComponent::showWorkspaceMenu() {
 }
 bool MainComponent::keyPressed(const KeyPress& k) {
     auto m = k.getModifiers(); int code = k.getKeyCode();
+    if (m.isCommandDown() && !m.isAltDown()) {
+        if (code == 'S' || code == 's') { saveSession(m.isShiftDown()); return true; }
+        if (code == 'O' || code == 'o') { openSession(); return true; }
+    }
     if (code == KeyPress::tabKey
         && m.withoutFlags(ModifierKeys::shiftModifier).getRawFlags() == ModifierKeys::ctrlModifier) {
         const int count = mgr.count();

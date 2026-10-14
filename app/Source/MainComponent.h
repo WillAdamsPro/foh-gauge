@@ -2,12 +2,20 @@
 // (workspace nav, appearance, UI scale) and the WorkspaceView that hosts the panels.
 #pragma once
 #include "FloatingPanels.h"
+#include <fohcore/session.h>
 #include "WorkspaceManager.h"
 #include "WorkspacePresetCommands.h"
 
-class MainComponent : public juce::Component, private juce::Timer, private juce::ChangeListener, private AppModel::Listener {
+class MainComponent : public juce::Component, public juce::MenuBarModel, private juce::Timer, private juce::ChangeListener, private AppModel::Listener {
 public:
     MainComponent(); ~MainComponent() override;
+    juce::StringArray getMenuBarNames() override { return {"File"}; }
+    juce::PopupMenu getMenuForIndex(int, const juce::String&) override;
+    void menuItemSelected(int, int) override;
+    void saveSession(bool saveAs);
+    void openSession();
+    bool writeSession(const juce::File&);
+    bool readSession(const juce::File&);
     void paint(juce::Graphics&) override; void resized() override;
     void selectWorkspace(int index);
     void selectWorkspace(const std::string& id);
@@ -18,6 +26,9 @@ protected:
     void timerCallback() override; void changeListenerCallback(juce::ChangeBroadcaster*) override; void modelChanged(int what) override;
     virtual void workspaceSelected() {}
     bool sidebarVisible() const { return !showMode && getWidth() >= 1280; } // spec §7: sidebar collapses under 1280 px
+    juce::File sessionFolder;
+    std::unique_ptr<juce::FileChooser> sessionChooser;
+    std::optional<foh::Json> sessionSplCal, sessionTargets;
     FohLookAndFeel lnf;
     AppModel model;
     WorkspaceManager mgr; int current = -1;

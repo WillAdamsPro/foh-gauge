@@ -272,7 +272,7 @@ public:
         for (auto* b : {&mic, &ref, &outA, &outB}) b->setBounds(row.removeFromLeft(w).reduced(3, 0));
         selector.setBounds(r);
     }
-    void modelChanged(int w) override { if (w & AppModel::Theme) routing.setColour(Label::textColourId, C::textSecondary()); }
+    void modelChanged(int w) override { if (w & AppModel::Settings) sync(); if (w & AppModel::Theme) routing.setColour(Label::textColourId, C::textSecondary()); }
 private:
     AudioDeviceSelectorComponent selector; ComboBox mic, ref, outA, outB; Label routing;
 };

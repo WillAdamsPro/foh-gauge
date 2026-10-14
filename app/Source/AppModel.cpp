@@ -59,7 +59,8 @@ void AppModel::beginCapture(const String& name, std::function<void(bool)> then) 
     capture.active = true; capture.unsettled = false; capture.name = name; capture.startMs = Time::getMillisecondCounterHiRes(); capture.then = std::move(then); conv = {}; notify(Capture);
 }
 void AppModel::loadCalFile(const File& f) {
-    cal = foh::loadMicCal(f.getFullPathName().toStdString()); calFile = f.getFileName(); calOn = cal.ok();
+    calText = f.loadFileAsString().toStdString();
+    cal = foh::parseMicCal(calText); calFile = f.getFileName(); calOn = cal.ok();
     analysis.setCal(cal.ok() ? std::make_shared<foh::MicCal>(cal) : nullptr, calFile); notify(Cal);
 }
 void AppModel::setCalEnabled(bool on) {

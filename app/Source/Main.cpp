@@ -8,8 +8,20 @@ public:
     void shutdown() override { window = nullptr; }
     struct Window : juce::DocumentWindow {
         Window() : DocumentWindow("FOH Gauge", foh::ui::col::background(), allButtons) {
-            setUsingNativeTitleBar(true); setContentOwned(new MainComponent(), true);
+            setUsingNativeTitleBar(true);
+            auto* content = new MainComponent(); setContentOwned(content, true);
+           #if JUCE_MAC
+            juce::MenuBarModel::setMacMainMenu(content);
+           #else
+            setMenuBar(content);
+           #endif
             setResizable(true, true); setResizeLimits(1280, 800, 4000, 3000); centreWithSize(getWidth(), getHeight()); setVisible(true); }
+        ~Window() override {
+           #if JUCE_MAC
+            juce::MenuBarModel::setMacMainMenu(nullptr);
+           #endif
+            setMenuBar(nullptr);
+        }
         void closeButtonPressed() override { juce::JUCEApplication::getInstance()->systemRequestedQuit(); }
     };
     std::unique_ptr<Window> window;
