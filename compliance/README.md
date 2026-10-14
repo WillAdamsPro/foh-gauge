@@ -20,7 +20,7 @@ Old MIT variant is recorded in the MIT family; its exact upstream terms are
 reproduced in THIRD_PARTY_NOTICES.md.
 
 Original assets are explicitly marked `ownership: "Will Adams"` and
-`license: "LicenseRef-FOH-proprietary"`, referring to the root LICENSE. This is
+`license: "LicenseRef-FOH-proprietary"`, recorded in THIRD_PARTY_NOTICES.md (the repo has no top-level LICENSE file). This is
 an ownership exception for original work, not another allowed third-party
 license. It cannot approve fetched dependencies or vendored libraries. Do not
 mark third-party work as original, or grant an open-source license to original

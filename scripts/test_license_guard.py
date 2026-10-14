@@ -153,10 +153,10 @@ class LicenseGuardTests(unittest.TestCase):
         path = 'resources/own.txt'
         self.write(path, 'synthetic original work')
         self.approve_file(path, ownership='Will Adams')
-        self.entries[-1].update(license='LicenseRef-FOH-proprietary', source='LICENSE')
+        self.entries[-1].update(license='LicenseRef-FOH-proprietary', source='THIRD_PARTY_NOTICES.md')
         self.save()
         self.assertEqual(check(self.root), [])
-        self.entries[0].update(ownership='Will Adams', license='LicenseRef-FOH-proprietary', source='LICENSE')
+        self.entries[0].update(ownership='Will Adams', license='LicenseRef-FOH-proprietary', source='THIRD_PARTY_NOTICES.md')
         self.save()
         self.assertTrue(any('invalid original-work provenance' in e for e in check(self.root)))
 

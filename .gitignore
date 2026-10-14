@@ -6,3 +6,4 @@ build*/
 *.frd
 *-cal.csv
 !tests/data/synthetic-*
+__pycache__/

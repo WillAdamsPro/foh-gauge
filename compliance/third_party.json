@@ -95,7 +95,7 @@
       "name": "Will's built-in target curves",
       "version": "1",
       "license": "LicenseRef-FOH-proprietary",
-      "source": "LICENSE",
+      "source": "THIRD_PARTY_NOTICES.md",
       "ships": true,
       "ownership": "Will Adams",
       "files": {
@@ -108,7 +108,7 @@
       "name": "Will's tolerance target fixture",
       "version": "1",
       "license": "LicenseRef-FOH-proprietary",
-      "source": "LICENSE",
+      "source": "THIRD_PARTY_NOTICES.md",
       "ships": false,
       "ownership": "Will Adams",
       "files": {
@@ -119,7 +119,7 @@
       "name": "Generated setup chime",
       "version": "1",
       "license": "LicenseRef-FOH-proprietary",
-      "source": "LICENSE",
+      "source": "THIRD_PARTY_NOTICES.md",
       "ships": true,
       "ownership": "Will Adams",
       "files": {
@@ -131,7 +131,7 @@
       "name": "Synthetic golden signals",
       "version": "1",
       "license": "LicenseRef-FOH-proprietary",
-      "source": "LICENSE",
+      "source": "THIRD_PARTY_NOTICES.md",
       "ships": false,
       "ownership": "Will Adams",
       "files": {

@@ -142,10 +142,10 @@ def check(root):
         if not all(isinstance(entry.get(key), str) and entry[key] for key in ('version', 'license', 'source')) or type(entry.get('ships')) is not bool:
             errors.append(f'{name}: requires version, license, source and boolean ships')
         own = entry.get('ownership') == 'Will Adams'
-        # Own work retains the proprietary LICENSE; it must never be mislabeled
+        # Own work is recorded as proprietary in THIRD_PARTY_NOTICES.md (no top-level LICENSE); it must never be mislabeled
         # as an open-source license simply to fit the third-party policy.
         if own:
-            if entry.get('license') != 'LicenseRef-FOH-proprietary' or entry.get('source') != 'LICENSE' or entry.get('dependency') or entry.get('vendored'):
+            if entry.get('license') != 'LicenseRef-FOH-proprietary' or entry.get('source') != 'THIRD_PARTY_NOTICES.md' or entry.get('dependency') or entry.get('vendored'):
                 errors.append(f'{name}: invalid original-work provenance')
         elif entry.get('license') not in ALLOWED:
             errors.append(f'{name}: disallowed license {entry.get("license")}')
