@@ -85,7 +85,7 @@ struct Rect { int x = 0, y = 0, w = 0, h = 0; bool operator==(const Rect& o) con
 struct DisplayInfo { std::string id; Rect area; bool isMain = false; };
 struct FloatingPanel { std::string panel; Rect bounds; std::string displayId; bool alwaysOnTop = false; std::string returnNeighbour; };
 // Restore a floating window onto its display. If that display is missing, move it onto the main
-// display (keeping its offset relative to the old display's origin where possible). Then clamp so the
+// display with a small inset from its work area's origin. Then clamp so the
 // whole window (at least min size) lies inside the display's work area. Updates fp.displayId.
 Rect clampToDisplays(FloatingPanel& fp, const std::vector<DisplayInfo>& displays, int minW = 320, int minH = 200);
 

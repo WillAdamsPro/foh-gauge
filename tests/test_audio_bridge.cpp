@@ -72,3 +72,67 @@ TEST_CASE("Analysis restart clears queued stereo audio and delay history", "[app
     REQUIRE_FALSE(analysis.latest().delay.ok());
     analysis.stop();
 }
+
+TEST_CASE("Capture snapshots acknowledge reset and carry the QA settle decision", "[app][qa]") {
+    AudioEngine engine;
+    AnalysisEngine analysis(engine);
+    analysis.start();
+    REQUIRE(analysis.send(foh::Command::resetAverages(1)));
+    REQUIRE(waitFor([&] { return analysis.latest().resetSeq == 1; }));
+    REQUIRE_FALSE(analysis.latest().convergence.finished);
+
+    // Synthetic identical broadband channels: coherent, stable transfer function.
+    foh::PinkNoise noise(42);
+    std::vector<float> signal(8192);
+    noise.process(signal.data(), (int) signal.size());
+    auto feed = [&] {
+        capture(engine, signal.data(), signal.data(), (int) signal.size());
+        REQUIRE(waitFor([&] { return engine.micRing.available() == 0 && engine.refRing.available() == 0; }));
+    };
+    for (int i = 0; i < 8; ++i) feed();
+    REQUIRE(waitFor([&] { return analysis.latest().convergence.finished; }));
+    const auto settled = analysis.latest();
+    REQUIRE(settled.resetSeq == 1);
+    REQUIRE(settled.convergence.settled);
+    REQUIRE_FALSE(settled.convergence.unsettled);
+    REQUIRE(settled.convergence.stableFrames == 3);
+    REQUIRE(settled.convergence.deltaDb < 0.5);
+    REQUIRE(foh::classifyCoherence(settled.tf).light == foh::TrafficLight::Green);
+
+    // A new capture must not reuse that finished result. Silence cannot settle,
+    // so the worker must publish an unsettled result after 10 s of audio.
+    REQUIRE(analysis.send(foh::Command::resetAverages(2)));
+    REQUIRE(waitFor([&] { return analysis.latest().resetSeq == 2; }));
+    REQUIRE_FALSE(analysis.latest().convergence.finished);
+    std::fill(signal.begin(), signal.end(), 0.0f);
+    for (int i = 0; i < 61; ++i) feed();
+    REQUIRE(waitFor([&] { return analysis.latest().convergence.finished; }));
+    const auto timedOut = analysis.latest();
+    REQUIRE(timedOut.convergence.unsettled);
+    REQUIRE(timedOut.convergence.timedOut);
+    REQUIRE_FALSE(timedOut.convergence.settled);
+    REQUIRE(timedOut.convergence.elapsedSeconds >= 10.0);
+    REQUIRE(timedOut.convergence.coherentBins == 0);
+    REQUIRE(foh::classifyCoherence(timedOut.tf).light == foh::TrafficLight::Red);
+    analysis.stop();
+}
+
+TEST_CASE("Delay snapshots carry the core two-spike warning", "[app][qa][delay]") {
+    AudioEngine engine;
+    AnalysisEngine analysis(engine);
+    analysis.start();
+    REQUIRE(analysis.send(foh::Command::resetAverages(1)));
+    REQUIRE(waitFor([&] { return analysis.latest().resetSeq == 1; }));
+    std::vector<float> ref(4096), mic(4096);
+    ref[1000] = 1.0f;
+    mic[1120] = 1.0f; mic[1240] = 1.0f; // equal arrivals, 2.5 ms apart
+    capture(engine, mic.data(), ref.data(), (int) ref.size());
+    REQUIRE(waitFor([&] { return engine.micRing.available() == 0 && engine.refRing.available() == 0; }));
+    REQUIRE(analysis.send(foh::Command::findDelay(false, 1)));
+    REQUIRE(waitFor([&] { return analysis.latest().delaySeq == 1; }));
+    const auto result = analysis.latest().delay;
+    REQUIRE(result.ok());
+    REQUIRE(result.twoSimilarArrivals);
+    REQUIRE(result.twoSimilarArrivals == foh::twoSpikeFlag(result.arrivals));
+    analysis.stop();
+}
