@@ -122,6 +122,7 @@ void PlotComponent::paint(Graphics& g) {
         if (bars && !s.dash) continue;
         Path p; bool started = false; double prev = 0;
         for (size_t i = 0; i < s.f.size(); ++i) { double f = s.f[i]; if (f < fMin || f > fMax || f > s.maxF) continue;
+            if (i < s.gap.size() && s.gap[i]) { started = false; continue; } // blanked bin: gap in the trace
             float x = xOf(f), y = yOf(s.v[i]);
             bool jump = started && wrapPhase && std::abs(s.v[i] - prev) > 180;
             if (!started || jump) { p.startNewSubPath(x, y); started = true; } else p.lineTo(x, y); prev = s.v[i]; }
@@ -130,9 +131,10 @@ void PlotComponent::paint(Graphics& g) {
         if (s.dash) { Path d; st.createDashedStroke(d, p, s.dash, 2); g.fillPath(d); } else g.strokePath(p, st);
     }
 }
-static void logDecimate(const foh::TFResult& r, const std::vector<double>& v, std::vector<double>& fo, std::vector<double>& vo) {
-    fo.clear(); vo.clear(); if (r.fftSize == 0) return; double bin = r.sampleRate / r.fftSize; size_t last = 0;
-    for (double f = 18; f < 22000; f *= std::pow(2.0, 1.0 / 30)) { size_t k = (size_t) std::lround(f / bin); if (k == last || k >= v.size()) continue; last = k; fo.push_back(k * bin); vo.push_back(v[k]); }
+static void logDecimate(const foh::TFResult& r, const std::vector<double>& v, std::vector<double>& fo, std::vector<double>& vo, std::vector<uint8_t>* gap = nullptr) {
+    fo.clear(); vo.clear(); if (gap) gap->clear(); if (r.fftSize == 0) return; double bin = r.sampleRate / r.fftSize; size_t last = 0;
+    for (double f = 18; f < 22000; f *= std::pow(2.0, 1.0 / 30)) { size_t k = (size_t) std::lround(f / bin); if (k == last || k >= v.size()) continue; last = k; fo.push_back(k * bin); vo.push_back(v[k]);
+        if (gap) gap->push_back(r.isBlanked(k) ? 1 : 0); }
 } // ~300 log-spaced points (spec)
 
 // ===================== Guide content =====================
@@ -248,11 +250,9 @@ MainComponent::MainComponent() {
     setLookAndFeel(&lnf);
     dm.initialiseWithDefaultDevices(4, 4);
     { auto s = dm.getAudioDeviceSetup(); s.sampleRate = 48000; dm.setAudioDeviceSetup(s, true); }
-    dm.addAudioCallback(&engine);
+    dm.addAudioCallback(&engine); analysis.start();
     selector = std::make_unique<AudioDeviceSelectorComponent>(dm, 1, 4, 1, 4, false, false, false, false);
     addChildComponent(*selector);
-    tf = std::make_unique<foh::TransferFunction>(16384, 48000.0); rta = std::make_unique<foh::RTA>(16384, 48000.0, 3);
-    micHist.assign(96000, 0.f); refHist.assign(96000, 0.f);
 
     const char* pages[] = {"Home / Setup", "Transfer Function", "RTA / Spectrum", "Guides"};
     for (int i = 0; i < 4; ++i) { auto* b = nav.add(new NavButton(pages[i], (NavButton::Glyph) i)); b->onClick = [this, i] { showPage(i); }; addAndMakeVisible(b); }
@@ -278,7 +278,7 @@ MainComponent::MainComponent() {
     genBox.onChange = [this] { engine.gen = genBox.getSelectedId() - 1; }; addChildComponent(genBox);
     genGain.setRange(-60, 0, 0.5); genGain.setValue(-20); genGain.setTextValueSuffix(" dBFS"); genGain.onValueChange = [this] { engine.genGainDb = (float) genGain.getValue(); }; addChildComponent(genGain);
     calBtn.onClick = [this] { loadCal(); }; addChildComponent(calBtn);
-    calToggle.setClickingTogglesState(true); calToggle.onClick = [this] { calOn = calToggle.getToggleState() && cal.ok(); }; addChildComponent(calToggle);
+    calToggle.setClickingTogglesState(true); calToggle.onClick = [this] { calOn = calToggle.getToggleState() && cal.ok(); analysis.setCal(calOn ? std::make_shared<foh::MicCal>(cal) : nullptr, calLabelName); }; addChildComponent(calToggle);
     for (auto* l : {&setupHelp, &calLabel, &levelLabel}) { l->setFont(FohLookAndFeel::font(T::body)); addChildComponent(*l); }
     setupHelp.setText("ROUTING (UMC404HD defaults)", dontSendNotification); setupHelp.setColour(Label::textColourId, C::textSecondary());
     calLabel.setText("No mic cal loaded", dontSendNotification);
@@ -304,14 +304,18 @@ MainComponent::MainComponent() {
     addChildComponent(tfImpulse); addChildComponent(gImpulse);
     smoothBox.addItem("Smoothing off", 1); smoothBox.addItem("Smoothing 1/3", 4); smoothBox.addItem("Smoothing 1/6", 7); smoothBox.addItem("Smoothing 1/12", 13); smoothBox.addItem("Smoothing 1/24", 25); smoothBox.addItem("Smoothing 1/48", 49); smoothBox.setSelectedId(13);
     avgBox.addItem("Avg 4", 4); avgBox.addItem("Avg 8", 8); avgBox.addItem("Avg 16", 16); avgBox.addItem("Avg 32", 32); avgBox.addItem(u8("Avg \xe2\x88\x9e"), 1000); avgBox.setSelectedId(16);
-    avgBox.onChange = [this] { int a = avgBox.getSelectedId(); tf->setAverages(a == 1000 ? 0 : a); };
-    tf->setAverages(16);
-    for (auto* c : std::initializer_list<Component*>{&smoothBox, &avgBox, &storeBtn, &findBtn, &clearAvgBtn, &delayCaption, &delayValue, &delayDetail, &insertBtn, &traceList, &delTraceBtn}) addChildComponent(c);
+    avgBox.onChange = [this] { int a = avgBox.getSelectedId(); analysis.send(foh::Command::averages(a == 1000 ? 0 : a)); };
+    smoothBox.onChange = [this] { analysis.send(foh::Command::smoothing(smoothBox.getSelectedId() - 1)); };
+    for (int t : {40, 50, 60, 70, 80}) blankBox.addItem("Dim below " + String(t / 100.0, 2), t);
+    blankBox.setSelectedId(60, dontSendNotification); addChildComponent(blankBox);
+    blankBox.onChange = [this] { analysis.send(foh::Command::blankThreshold(blankBox.getSelectedId() / 100.0)); };
+    analysis.send(foh::Command::averages(16)); analysis.send(foh::Command::smoothing(smoothBox.getSelectedId() - 1)); analysis.send(foh::Command::blankThreshold(0.6));
+    for (auto* c : std::initializer_list<Component*>{&smoothBox, &avgBox, &blankBox, &storeBtn, &findBtn, &clearAvgBtn, &delayCaption, &delayValue, &delayDetail, &insertBtn, &traceList, &delTraceBtn}) addChildComponent(c);
     makePrimary(insertBtn);
     storeBtn.onClick = [this] { storeTrace("Trace " + String(traces.count() + 1)); };
-    findBtn.onClick = [this] { findDelay(); };
-    insertBtn.onClick = [this] { if (!lastDelay.arrivals.empty()) { tf->setReferenceDelaySamples((int) std::lround(lastDelay.arrivals[0].delaySamples)); lockedDelayMs = lastDelay.arrivals[0].delayMs; } };
-    clearAvgBtn.onClick = [this] { tf->reset(); rta->reset(); };
+    findBtn.onClick = [this] { requestDelay(false); };
+    insertBtn.onClick = [this] { if (delayLocked()) lockDelayFromLast(); };
+    clearAvgBtn.onClick = [this] { analysis.send(foh::Command::resetAverages()); };
     delayCaption.setText("DELAY FINDER", dontSendNotification); delayCaption.setFont(FohLookAndFeel::font(T::label)); delayCaption.setColour(Label::textColourId, C::textSecondary());
     delayValue.setFont(FohLookAndFeel::numeric(T::valueDelay)); delayValue.setText("--", dontSendNotification);
     delayDetail.setFont(FohLookAndFeel::font(T::body)); delayDetail.setColour(Label::textColourId, C::textSecondary()); delayDetail.setText("press Find again", dontSendNotification);
@@ -320,7 +324,7 @@ MainComponent::MainComponent() {
 
     rtaPlot.yLabel = "dBFS"; rtaPlot.yMin = -100; rtaPlot.yMax = 0; rtaPlot.yStep = 20; rtaPlot.bars = true;
     rtaFracBox.addItem("1/3 octave", 3); rtaFracBox.addItem("1/6 octave", 6); rtaFracBox.setSelectedId(3);
-    rtaFracBox.onChange = [this] { rta->setFraction(rtaFracBox.getSelectedId()); }; addChildComponent(rtaFracBox);
+    rtaFracBox.onChange = [this] { analysis.send(foh::Command::rtaFraction(rtaFracBox.getSelectedId())); }; addChildComponent(rtaFracBox);
 
     for (int i = 0; i < 3; ++i) guideBox.addItem(String("W") + String(i + 1) + ": " + kGuideNames[i], i + 1);
     guideBox.setSelectedId(2, dontSendNotification); guideBox.onChange = [this] { guide = guideBox.getSelectedId() - 1; step = 0; guideResult.setText({}, dontSendNotification); layoutGuide(); };
@@ -345,7 +349,7 @@ MainComponent::MainComponent() {
     if (auto* e = std::getenv("FOH_START_PAGE")) { guide = std::getenv("FOH_GUIDE") ? std::atoi(std::getenv("FOH_GUIDE")) : 1; step = std::getenv("FOH_STEP") ? std::atoi(std::getenv("FOH_STEP")) : 0;
         guideBox.setSelectedId(guide + 1, dontSendNotification); showPage(jlimit(0, 3, std::atoi(e))); }
 }
-MainComponent::~MainComponent() { if (auto* pf = settings.getUserSettings()) pf->saveIfNeeded(); foh::theme::ThemeManager::get().removeChangeListener(this); stopTimer(); dm.removeAudioCallback(&engine); traceList.setModel(nullptr); setLookAndFeel(nullptr); }
+MainComponent::~MainComponent() { analysis.stop(); if (auto* pf = settings.getUserSettings()) pf->saveIfNeeded(); foh::theme::ThemeManager::get().removeChangeListener(this); stopTimer(); dm.removeAudioCallback(&engine); traceList.setModel(nullptr); setLookAndFeel(nullptr); }
 
 Rectangle<int> MainComponent::mainArea() const {
     return getLocalBounds().withTrimmedTop(D::statusBarHeight()).withTrimmedLeft(D::navWidth()).withTrimmedRight(helperW()).reduced(D::mainPadding());
@@ -379,7 +383,13 @@ void MainComponent::paint(Graphics& g) {
             g.setColour(bar); g.fillRoundedRectangle(x, (float) gProgress.getY(), w, 6.f, D::radiusProgress());
             g.setColour(lab); g.setFont(FohLookAndFeel::font(T::small)); g.drawText(String(i < step ? u8("\xe2\x9c\x93 ") : "") + String(i + 1) + ". " + u8(steps[(size_t) i].progress), (int) x, gProgress.getY() + 14, (int) w, 16, Justification::left); }
         if (!gChartCard.isEmpty()) card(g, gChartCard);
-        if (!gActionCard.isEmpty()) card(g, gActionCard, C::cardBorderEmphasis());
+        if (!gActionCard.isEmpty()) { card(g, gActionCard, C::cardBorderEmphasis());
+            if (capture.active) { // convergence progress (fohcore ConvergenceState::progress)
+                auto bar = gActionCard.reduced(16, 0).withHeight(4).withY(gActionCard.getBottom() - 10).toFloat();
+                g.setColour(C::divider()); g.fillRoundedRectangle(bar, 2.f);
+                g.setColour(C::accent()); g.fillRoundedRectangle(bar.withWidth(bar.getWidth() * (float) jlimit(0.0, 1.0, conv.progress)), 2.f);
+                g.setColour(C::textSecondary()); g.setFont(FohLookAndFeel::font(T::axisTick));
+                g.drawText("Averaging: " + String(roundToInt(conv.progress * 100)) + u8("% \xc2\xb7 change ") + (conv.deltaDb < 1e6 ? String(conv.deltaDb, 2) + " dB" : String("--")), bar.translated(0, -16).withHeight(14).toNearestInt(), Justification::right); } }
         if (!gDoneA.isEmpty()) { card(g, gDoneA); card(g, gDoneB);
             auto c = Rectangle<float>((float) gDoneA.getX() + 22, (float) gDoneA.getY() + 22, 56, 56); g.setColour(C::successBadgeBg()); g.fillEllipse(c);
             g.setColour(C::ok()); g.setFont(FohLookAndFeel::font(T::icon, true)); g.drawText(u8("\xe2\x9c\x93"), c, Justification::centred);
@@ -407,7 +417,7 @@ void MainComponent::resized() {
     auto header = c.removeFromTop(29); c.removeFromTop(12);
     // header pills (TF)
     { auto h = header; storeBtn.setBounds(h.removeFromRight(80)); h.removeFromRight(8); clearAvgBtn.setBounds(h.removeFromRight(100)); h.removeFromRight(8);
-      avgBox.setBounds(h.removeFromRight(110)); h.removeFromRight(8); smoothBox.setBounds(h.removeFromRight(150)); rtaFracBox.setBounds(header.removeFromRight(160)); guideBox.setBounds(Rectangle<int>(header.getRight() - 300, header.getY(), 300, 29)); }
+      avgBox.setBounds(h.removeFromRight(110)); h.removeFromRight(8); smoothBox.setBounds(h.removeFromRight(150)); h.removeFromRight(8); blankBox.setBounds(h.removeFromRight(150)); rtaFracBox.setBounds(header.removeFromRight(160)); guideBox.setBounds(Rectangle<int>(header.getRight() - 300, header.getY(), 300, 29)); }
     // setup
     { auto s = c; selector->setBounds(s.removeFromTop(330)); setupHelp.setBounds(s.removeFromTop(24));
       auto row = s.removeFromTop(30); int w = row.getWidth() / 4; for (auto* b : {&micBox, &refBox, &outABox, &outBBox}) b->setBounds(row.removeFromLeft(w).reduced(4, 0));
@@ -481,7 +491,7 @@ void MainComponent::showPage(int p) {
     for (auto* x : all) x->setVisible(false);
     std::vector<Component*> on;
     if (p == 0) on = {selector.get(), &micBox, &refBox, &outABox, &outBBox, &genBox, &genGain, &calBtn, &calToggle, &setupHelp, &calLabel, &levelLabel, &appearance, &appearanceLabel, &scaleBox};
-    if (p == 1) on = {&magPlot, &phasePlot, &cohPlot, &smoothBox, &avgBox, &storeBtn, &findBtn, &clearAvgBtn, &delayCaption, &delayValue, &delayDetail, &insertBtn, &traceList, &delTraceBtn, &tfImpulse};
+    if (p == 1) on = {&magPlot, &phasePlot, &cohPlot, &smoothBox, &avgBox, &blankBox, &storeBtn, &findBtn, &clearAvgBtn, &delayCaption, &delayValue, &delayDetail, &insertBtn, &traceList, &delTraceBtn, &tfImpulse};
     if (p == 2) on = {&rtaPlot, &rtaFracBox};
     for (auto* x : on) x->setVisible(true);
     const char* titles[] = {"Home / Setup", "Transfer function", "RTA / Spectrum", ""};
@@ -502,25 +512,25 @@ String MainComponent::explain() const {
 }
 
 void MainComponent::timerCallback() {
-    const double fs = engine.sampleRate.load();
-    if (std::abs(fs - analysisRate) > 1) { analysisRate = fs; tf = std::make_unique<foh::TransferFunction>(16384, fs); rta = std::make_unique<foh::RTA>(16384, fs, rtaFracBox.getSelectedId());
-        int a = avgBox.getSelectedId(); tf->setAverages(a == 1000 ? 0 : a); }
-    static std::vector<float> m(16384), rr(16384);
-    while (engine.micRing.available() >= 512 && engine.refRing.available() >= 512) {
-        int n = std::min({engine.micRing.available(), engine.refRing.available(), 16384});
-        engine.micRing.pop(m.data(), n); engine.refRing.pop(rr.data(), n);
-        if (paused) continue;
-        tf->process(rr.data(), m.data(), n); rta->process(m.data(), n);
-        for (int i = 0; i < n; ++i) { micHist[(size_t) histPos] = m[(size_t) i]; refHist[(size_t) histPos] = rr[(size_t) i]; histPos = (histPos + 1) % (int) micHist.size(); }
-    }
+    const double fs = engine.sampleRate.load(); analysisRate = fs;
+    { const auto& snap = analysis.latest(); // single reader (this timer); copy out what we keep
+      if (snap.seq != lastSeq) { lastSeq = snap.seq;
+          lastTF = snap.tf; rtaDb = snap.rtaDb; rtaBands = snap.rtaBands; conv = snap.convergence;
+          refDelaySamples = snap.refDelaySamples; refDelayMs = snap.refDelayMs; calApplied = snap.calApplied; calName = String(snap.calName);
+          if (snap.delaySeq != lastDelaySeq) { lastDelaySeq = snap.delaySeq; lastDelay = snap.delay; lastWasSub = snap.delayWasSub; onDelayResult(); } } }
+    if (capture.active) { // wait for the average to settle instead of a fixed time
+        double el = Time::getMillisecondCounterHiRes() - capture.startMs; bool timeout = el > 20000;
+        if ((conv.settled && el > 300) || timeout) { capture.active = false; auto then = std::move(capture.then); bool ok = storeTrace(capture.name);
+            if (then) then(ok && !timeout); }
+        repaint(gActionCard.expanded(2, 12)); }
     float mp = engine.micPeak.exchange(0), rp = engine.refPeak.exchange(0);
     auto dbs = [](float p) { return p > 1e-6f ? String(20 * std::log10(p), 1) + " dBFS" : String("-inf"); };
     auto* dev = dm.getCurrentAudioDevice();
-    { using P = StatusPills; double rdMs = tf->referenceDelaySamples() / fs * 1000; bool clip = mp > 0.99f || rp > 0.99f;
+    { using P = StatusPills; double rdMs = refDelayMs; bool clip = mp > 0.99f || rp > 0.99f;
       auto lvl = [&](const char* n, float p) { return P::Pill{ String(n) + " " + dbs(p), p > 0.99f ? P::Poor : p > 0.01f ? P::Good : P::Caution }; };
       std::vector<P::Pill> v { { paused ? "Paused" : "Measuring", paused ? P::Caution : P::Good },
                                { dev ? dev->getName() + u8(" \xc2\xb7 ") + String((int) fs / 1000) + " kHz" : String("No device"), dev ? P::None : P::Poor },
-                               lvl("Mic", mp), lvl("Ref", rp), { calOn ? "Cal on" : "Cal off", calOn ? P::Good : P::None }, { "Ref delay " + String(rdMs, 2) + " ms", P::None } };
+                               lvl("Mic", mp), lvl("Ref", rp), { calApplied ? "Cal on" : "Cal off", calApplied ? P::Good : P::None }, { "Ref delay " + String(rdMs, 2) + " ms", P::None } };
       if (clip) v.push_back({ "CLIPPING", P::Poor });
       status.setPills(std::move(v)); }
     if (page == 0) levelLabel.setText(String(mp > 0.01f ? u8("\xe2\x9c\x93 Mic signal     ") : u8("\xe2\x96\xa0 No mic signal     ")) + String(rp > 0.01f ? u8("\xe2\x9c\x93 Reference signal") : u8("\xe2\x96\xa0 No reference signal (check Out 2 -> In 2 loopback)")), dontSendNotification);
@@ -530,8 +540,6 @@ void MainComponent::timerCallback() {
 }
 
 void MainComponent::updateTF() {
-    int sm = smoothBox.getSelectedId() - 1;
-    lastTF = tf->result(sm); if (calOn) cal.apply(lastTF);
     if (page != 1) return;
     for (auto* p : {&magPlot, &phasePlot, &cohPlot}) p->series.clear();
     for (int i = 0; i < traces.count(); ++i) { auto& t = traces.at(i); if (!t.visible) continue;
@@ -539,14 +547,15 @@ void MainComponent::updateTF() {
         logDecimate(t.tf, t.tf.magDb, s.f, s.v); magPlot.series.push_back(s);
         logDecimate(t.tf, t.tf.phaseDeg, s.f, s.v); phasePlot.series.push_back(s); }
     PlotComponent::Series s; s.c = C::accent(); s.label = "Live";
-    logDecimate(lastTF, lastTF.magDb, s.f, s.v); magPlot.series.push_back(s);
-    logDecimate(lastTF, lastTF.phaseDeg, s.f, s.v); phasePlot.series.push_back(s);
-    s.label = {}; s.c = C::traceCoherence(); s.width = D::traceSecondary(); logDecimate(lastTF, lastTF.coherence, s.f, s.v); cohPlot.series.push_back(s);
-    { std::vector<std::pair<double,double>> lc; // display-only: hatch where coherence < 0.6 (red in the traffic-light scheme)
-      for (size_t i = 0; i < s.v.size(); ++i) if (s.v[i] < 0.6) { double lo = i ? std::sqrt(s.f[i - 1] * s.f[i]) : s.f[i], hi = i + 1 < s.f.size() ? std::sqrt(s.f[i] * s.f[i + 1]) : s.f[i];
+    logDecimate(lastTF, lastTF.magDb, s.f, s.v, &s.gap); magPlot.series.push_back(s);
+    logDecimate(lastTF, lastTF.phaseDeg, s.f, s.v, &s.gap); phasePlot.series.push_back(s);
+    s.gap.clear(); s.label = {}; s.c = C::traceCoherence(); s.width = D::traceSecondary(); logDecimate(lastTF, lastTF.coherence, s.f, s.v); cohPlot.series.push_back(s);
+    { std::vector<std::pair<double,double>> lc; // hatch the bins fohcore blanked (coherence < blank threshold)
+      std::vector<double> cf, cv; std::vector<uint8_t> bl; logDecimate(lastTF, lastTF.coherence, cf, cv, &bl);
+      for (size_t i = 0; i < bl.size(); ++i) if (bl[i]) { double lo = i ? std::sqrt(s.f[i - 1] * s.f[i]) : s.f[i], hi = i + 1 < s.f.size() ? std::sqrt(s.f[i] * s.f[i + 1]) : s.f[i];
           if (!lc.empty() && lc.back().second >= lo * 0.999) lc.back().second = hi; else lc.push_back({lo, hi}); }
       magPlot.lowCoh = lc; phasePlot.lowCoh = lc; }
-    magPlot.note = "averages " + String(lastTF.averages) + (calOn ? u8(" \xc2\xb7 cal applied") : "");
+    magPlot.note = "averages " + String(lastTF.averages) + (calApplied ? u8(" \xc2\xb7 cal applied") : "");
     for (auto* p : {&magPlot, &phasePlot, &cohPlot}) p->repaint();
 }
 
@@ -580,22 +589,31 @@ void MainComponent::updateGuidePlots() {
 }
 
 void MainComponent::updateRTA() {
-    if (calOn) rta->setCalibrationDb(cal.correctionDb(8193, analysisRate / 16384)); else rta->setCalibrationDb({});
-    auto b = rta->bandsDb(); rtaPlot.series.clear(); rtaPlot.barLo.clear(); rtaPlot.barHi.clear();
+    rtaPlot.series.clear(); rtaPlot.barLo.clear(); rtaPlot.barHi.clear();
     PlotComponent::Series s; s.c = C::accent();
-    for (size_t i = 0; i < b.size(); ++i) { auto& bd = rta->bands()[i]; rtaPlot.barLo.push_back(bd.fLo); rtaPlot.barHi.push_back(bd.fHi); s.f.push_back(bd.fCenter); s.v.push_back(b[i]); }
-    rtaPlot.series.push_back(s); rtaPlot.note = calOn ? "cal applied" : ""; rtaPlot.repaint();
+    for (size_t i = 0; i < rtaDb.size() && i < rtaBands.size(); ++i) { auto& bd = rtaBands[i]; rtaPlot.barLo.push_back(bd.fLo); rtaPlot.barHi.push_back(bd.fHi); s.f.push_back(bd.fCenter); s.v.push_back(rtaDb[i]); }
+    rtaPlot.series.push_back(s); rtaPlot.note = calApplied ? "cal applied" : ""; rtaPlot.repaint();
 }
 
-void MainComponent::findDelay() {
-    const int L = 48000; std::vector<float> r((size_t) L), m((size_t) L); int H = (int) micHist.size();
-    for (int i = 0; i < L; ++i) { int idx = (histPos - L + i + H) % H; r[(size_t) i] = refHist[(size_t) idx]; m[(size_t) i] = micHist[(size_t) idx]; }
-    lastDelay = foh::findDelay(r, m, analysisRate, true);
+void MainComponent::requestDelay(bool sub, std::function<void()> then) {
+    pendingDelay.id = ++nextDelayId; pendingDelay.then = std::move(then);
+    delayDetail.setText(sub ? "finding sub delay (3 s window)..." : "finding delay...", dontSendNotification);
+    analysis.send(foh::Command::findDelay(sub, pendingDelay.id));
+}
+void MainComponent::beginCapture(const String& name, std::function<void(bool)> then) {
+    capture.active = true; capture.name = name; capture.startMs = Time::getMillisecondCounterHiRes(); capture.then = std::move(then); conv = {};
+}
+void MainComponent::lockDelayFromLast() {
+    analysis.send(foh::Command::referenceDelay(lastDelay.arrivals[0].delaySamples)); lockedDelayMs = lastDelay.arrivals[0].delayMs;
+}
+void MainComponent::onDelayResult() {
+    if (lastDelaySeq == pendingDelay.id && pendingDelay.then) { auto t = std::move(pendingDelay.then); pendingDelay.then = {}; Timer::callAfterDelay(1, [t] { t(); }); }
     tfImpulse.setResult(lastDelay, analysisRate); gImpulse.setResult(lastDelay, analysisRate);
-    if (lastDelay.arrivals.empty()) { delayValue.setText("--", dontSendNotification); delayDetail.setText("no signal: is pink noise playing?", dontSendNotification); return; }
+    if (!delayLocked()) { delayValue.setText("--", dontSendNotification); delayDetail.setText(lastDelay.arrivals.empty() ? "no signal: is pink noise playing?" : "no lock (confidence 0): check signal and that only one speaker is on", dontSendNotification); return; }
     auto& a0 = lastDelay.arrivals[0];
     delayValue.setText(String(a0.delayMs, 2) + " ms", dontSendNotification);
-    String t = u8("\xe2\x89\x88 ") + String(a0.distanceM, 2) + u8(" m \xc2\xb7 confidence ") + String(lastDelay.confidence > 0.7 ? "high" : lastDelay.confidence > 0.35 ? "medium" : "LOW");
+    String t = u8("\xe2\x89\x88 ") + String(a0.distanceM, 2) + u8(" m \xc2\xb7 confidence ") + String(lastDelay.confidence > 0.7 ? "high" : lastDelay.confidence > 0.35 ? "medium" : "LOW")
+             + u8(" \xc2\xb7 polarity ") + (a0.inverted ? "INVERTED" : "normal") + (lastDelayWasSubText());
     for (size_t i = 1; i < lastDelay.arrivals.size(); ++i) t << u8("  \xc2\xb7  #") << (int) i + 1 << " " << String(lastDelay.arrivals[i].delayMs, 2) << " ms (" << String(lastDelay.arrivals[i].relLevelDb, 1) << " dB)";
     if (lastDelay.arrivals.size() > 1 && lastDelay.arrivals[1].relLevelDb > -3) t << u8("\n\xe2\x96\xb2 Two similar spikes: is only one speaker on?");
     delayDetail.setText(t, dontSendNotification);
@@ -603,7 +621,7 @@ void MainComponent::findDelay() {
 
 bool MainComponent::storeTrace(const String& name) {
     updateTF();
-    bool ok = traces.store(name.toStdString(), lastTF, tf->referenceDelaySamples() / analysisRate * 1000);
+    bool ok = traces.store(name.toStdString(), lastTF, refDelayMs);
     if (!ok) AlertWindow::showMessageBoxAsync(MessageBoxIconType::WarningIcon, "Trace store full", "Up to 8 traces. Delete one on the Transfer Function page first.");
     refreshTraceList(); return ok;
 }
@@ -623,7 +641,8 @@ void MainComponent::loadCal() {
     chooser = std::make_unique<FileChooser>("Mic calibration file", File(), "*.csv;*.txt;*.frd;*.cal");
     chooser->launchAsync(FileBrowserComponent::openMode | FileBrowserComponent::canSelectFiles, [this](const FileChooser& fc) {
         auto f = fc.getResult(); if (!f.existsAsFile()) return;
-        cal = foh::loadMicCal(f.getFullPathName().toStdString());
+        cal = foh::loadMicCal(f.getFullPathName().toStdString()); calLabelName = f.getFileName();
+        analysis.setCal(cal.ok() ? std::make_shared<foh::MicCal>(cal) : nullptr, calLabelName);
         if (cal.ok()) { calOn = true; calToggle.setToggleState(true, dontSendNotification);
             calLabel.setText(u8("\xe2\x9c\x93 ") + f.getFileName() + ": " + String((int) cal.hz.size()) + " points, " + String(cal.hz.front(), 0) + "-" + String(cal.hz.back(), 0) + " Hz" + (cal.hasPhase ? ", with phase" : ""), dontSendNotification); }
         else { calOn = false; calLabel.setText(u8("\xe2\x96\xb2 Could not read cal: ") + String(cal.error), dontSendNotification); }
@@ -679,18 +698,26 @@ void MainComponent::guideAction(int a) {
     switch (a) {
         case 1: showPage(0); return;
         case 2: genBox.setSelectedId(2); out = "Pink noise on at " + String(genGain.getValue(), 1) + " dBFS. Watch the meters in the top bar."; next(); break;
-        case 3: findDelay(); if (!lastDelay.arrivals.empty()) { tf->setReferenceDelaySamples((int) std::lround(lastDelay.arrivals[0].delaySamples)); lockedDelayMs = lastDelay.arrivals[0].delayMs;
-                    out = "Locked reference delay " + String(lockedDelayMs, 2) + " ms. " + delayDetail.getText(); next(); }
-                else out = "No signal found. Is pink noise playing and are both inputs showing level?"; break;
+        case 3: guideResult.setText("Finding the delay...", dontSendNotification);
+                requestDelay(false, [this, next] { String o;
+                    if (delayLocked()) { lockDelayFromLast(); o = "Locked reference delay " + String(lockedDelayMs, 2) + " ms. " + delayDetail.getText(); next(); }
+                    else o = "No lock. Is pink noise playing and are both inputs showing level?";
+                    guideResult.setText(o, dontSendNotification); layoutGuide(); });
+                return;
         case 4: showPage(1); return;
         case 5: if (storeTrace("Position 1")) out = "Stored 'Position 1'."; break;
-        case 12: findDelay(); if (lastDelay.arrivals.empty()) { out = "No signal found. Is pink noise playing?"; break; }
-                 tf->setReferenceDelaySamples((int) std::lround(lastDelay.arrivals[0].delaySamples)); lockedDelayMs = lastDelay.arrivals[0].delayMs;
-                 out = "Locked delay " + String(lockedDelayMs, 2) + " ms. Averaging... capturing in 3 s."; guideResult.setText(out, dontSendNotification);
-                 Timer::callAfterDelay(3000, [this] { if (storeTrace("Main")) { guideResult.setText("Stored 'Main' (ref delay " + String(lockedDelayMs, 2) + " ms).", dontSendNotification); ++step; layoutGuide(); } });
+        case 12: guideResult.setText("Finding the sub/mains delay (LF-weighted, 3 s window)...", dontSendNotification);
+                 requestDelay(true, [this] {
+                     if (!delayLocked()) { guideResult.setText("No lock (confidence 0). Is pink noise playing, and only the mains on?", dontSendNotification); return; }
+                     lockDelayFromLast(); analysis.send(foh::Command::resetAverages());
+                     guideResult.setText("Locked delay " + String(lockedDelayMs, 2) + " ms. Averaging until the trace settles...", dontSendNotification);
+                     beginCapture("Main", [this](bool settled) { guideResult.setText("Stored 'Main' (ref delay " + String(lockedDelayMs, 2) + " ms)." + String(settled ? "" : " Note: the average did not settle within 20 s."), dontSendNotification); ++step; layoutGuide(); }); });
                  return;
-        case 7: if (storeTrace("Sub")) { out = "Stored 'Sub' (same locked delay " + String(lockedDelayMs, 2) + " ms).";
-                    auto* m = findTrace("Main"); auto* s = findTrace("Sub"); if (m && s) xover = foh::acousticCrossover(m->tf, s->tf, 10.0); next(); } break;
+        case 7: analysis.send(foh::Command::resetAverages()); guideResult.setText("Averaging the sub until the trace settles...", dontSendNotification);
+                beginCapture("Sub", [this](bool settled) { guideResult.setText("Stored 'Sub' (same locked delay " + String(lockedDelayMs, 2) + " ms)." + String(settled ? "" : " Note: the average did not settle within 20 s."), dontSendNotification);
+                    auto* m = findTrace("Main"); auto* s = findTrace("Sub"); if (m && s) xover = foh::acousticCrossover(m->tf, s->tf, 10.0);
+                    if (step + 1 < (int) kGuides[(size_t) guide].size()) ++step; layoutGuide(); });
+                return;
         case 8: { auto* m = findTrace("Main"); auto* s = findTrace("Sub"); if (!m || !s) { out = "Capture mains and sub first."; break; }
             xover = foh::acousticCrossover(m->tf, s->tf, 10.0); if (!xover.found) { out = "No overlap within 10 dB between 30-300 Hz. Check levels."; break; }
             auto po = foh::phaseOffset(m->tf, s->tf, xover.lo, xover.hi);
@@ -700,7 +727,8 @@ void MainComponent::guideAction(int a) {
             { double halfMs = 500.0 / po.centerHz; bool flipLess = std::abs(invMs) < std::abs(po.impliedMs);
               guidePolarity.setText(u8("Polarity: a flip = 180\xc2\xb0 \xe2\x89\x88 ") + String(halfMs, 1) + " ms at " + String(po.centerHz, 0) + " Hz. "
                   + (flipLess ? "Flipping the sub needs less delay; check the slopes still match across the band." : "Normal polarity needs less delay; prefer it if the slopes match.")
-                  + " Judge from these phase traces, not the impulse.", dontSendNotification); }
+                  + " Judge from these phase traces, not the impulse."
+                  + (delayLocked() && lastDelayWasSub() ? String(lastDelay.arrivals[0].inverted ? u8(" Delay finder: sub correlation is INVERTED (polarity flip likely).") : u8(" Delay finder: polarity normal.")) : String()), dontSendNotification); }
             out << "Crossover " << String(xover.lo, 0) << "-" << String(xover.hi, 0) << " Hz (centre ~" << String(po.centerHz, 0) << " Hz). Sub vs main phase " << String(po.meanDeg, 0) << u8("\xc2\xb0 = ") << String(std::abs(po.impliedMs), 2) << " ms ("
                 << (po.impliedMs > 0 ? "sub LATE" : "sub EARLY") << "). Other answers differ by whole cycles (" << String(period, 1) << u8(" ms). Target: within ~60\xc2\xb0 and parallel across the band.");
             summaryRows = { {"Crossover", String(xover.lo, 0) + "-" + String(xover.hi, 0) + " Hz"}, {"Suggested", who + " +" + String(std::abs(po.impliedMs), 1) + " ms"},
@@ -711,13 +739,16 @@ void MainComponent::guideAction(int a) {
                         for (size_t k = 1; k < b->tf.freq.size(); ++k) if (b->tf.freq[k] >= xover.lo && b->tf.freq[k] <= xover.hi) { gain += b->tf.magDb[k] - std::max(m->tf.magDb[k], s->tf.magDb[k]); ref += vs.magDb[k] - std::max(m->tf.magDb[k], s->tf.magDb[k]); ++n; }
                         if (n) { gain /= n; ref /= n; summaryRows.push_back({"Sum in crossover", (gain >= 0 ? "+" : "") + String(gain, 1) + " dB (predicted " + (ref >= 0 ? "+" : "") + String(ref, 1) + " dB)"}); } }
                     out = "Stored 'Both'."; next(); } break; }
-        case 10: { findDelay(); if (lastDelay.arrivals.empty()) { out = "No signal found."; break; }
+        case 10: { guideResult.setText("Finding the fill arrival...", dontSendNotification);
+            requestDelay(false, [this, next] { if (!delayLocked()) { guideResult.setText("No lock (confidence 0). Is only the fill on?", dontSendNotification); return; }
+            String o2; String& out = o2;
             // findDelay works on the raw (uncompensated) reference, so arrivals are absolute
             double fillMs = lastDelay.arrivals[0].delayMs, diff = lockedDelayMs - fillMs;
             out << "Fill arrives at " << String(fillMs, 2) << " ms; mains at " << String(lockedDelayMs, 2) << " ms. "
                 << (diff > 0 ? "Fill arrives " + String(diff, 2) + " ms BEFORE the mains here. Suggested: delay the fill by ~" + String(diff, 2) + " ms (optionally a few ms more)."
                              : "Fill already arrives after the mains (" + String(-diff, 2) + " ms). Check the seam position and which speaker is on.");
-            next(); break; }
+            next(); guideResult.setText(out, dontSendNotification); layoutGuide(); });
+            return; }
         case 11: if (storeTrace("Main+Fill")) out = "Stored 'Main+Fill'. Compare with 'Main' on the Transfer Function page."; break;
         case 13: step = 0; break;
         default: break;
