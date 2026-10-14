@@ -23,6 +23,9 @@ bool AppModel::calibrateSpl(double) { throw std::logic_error("Unexpected SPL cal
 bool AppModel::micLevelReady() const { return false; }
 void AppModel::loadCalFile(const juce::File&) { throw std::logic_error("Unexpected calibration file load"); }
 void AppModel::setCalEnabled(bool on) { calOn = on && cal.ok(); notify(Cal); }
+std::string AppModel::loopbackKey() const { return "synthetic-loopback"; }
+bool AppModel::beginLoopback() { throw std::logic_error("Unexpected interface measurement"); }
+void AppModel::clearLoopback() { throw std::logic_error("Unexpected interface calibration"); }
 void AppModel::clearSpl() { throw std::logic_error("Unexpected SPL calibration"); }
 foh::Json AppModel::splCalJson() const { return foh::Json::object(); }
 void AppModel::loadSplCalJson(const foh::Json&) {}
