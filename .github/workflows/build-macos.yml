@@ -5,11 +5,14 @@ concurrency:
 on:
   push:
     branches: [master]
+    tags: ['v*']
   pull_request:
     branches: [master]
   workflow_dispatch:
 jobs:
   build:
+    # macOS minutes are 10x Linux: only master pushes, v* tags, manual runs.
+    if: github.event_name != 'pull_request'
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
@@ -29,6 +32,7 @@ jobs:
           name: FOH-Gauge-macOS-arm64
           path: FOH-Gauge-macOS-arm64.zip
   linux-tests:
+    # Core-only (FOH_BUILD_APP=OFF, no JUCE fetch); this is the PR gate.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
