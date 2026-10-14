@@ -9,7 +9,7 @@
 
 class AppModel : private juce::Timer {
 public:
-    enum What { Snapshot = 1, Delay = 2, Traces = 4, Cal = 8, Levels = 16, Capture = 32, Overlay = 64, Settings = 128, Theme = 256 };
+    enum What { Snapshot = 1, Delay = 2, Traces = 4, Cal = 8, Levels = 16, Capture = 32, Overlay = 64, Settings = 128, Theme = 256, Expert = 512 };
     struct Listener { virtual ~Listener() = default; virtual void modelChanged(int what) = 0; };
 
     AppModel();
@@ -21,6 +21,13 @@ public:
     // ---- audio / analysis
     juce::AudioDeviceManager dm; AudioEngine engine; AnalysisEngine analysis { engine };
     juce::ApplicationProperties settings;
+    // Global presentation preference; message thread only, never an audio command.
+    bool expertMode() { auto* pf = settings.getUserSettings(); return pf && pf->getBoolValue("expertMode", false); }
+    void setExpertMode(bool enabled) {
+        if (enabled == expertMode()) return;
+        if (auto* pf = settings.getUserSettings()) { pf->setValue("expertMode", enabled); pf->saveIfNeeded(); }
+        notify(Expert);
+    }
     void send(const foh::Command& c) { analysis.send(c); }
     void setPaused(bool p) { paused = p; analysis.paused = p; notify(Levels); }
     bool paused = false;

@@ -22,6 +22,13 @@ MainComponent::MainComponent(juce::File workspaceFolder) : mgr(std::move(workspa
     content.addAndMakeVisible(switcher); switcher.onChange = [this](int i) { selectWorkspace(i); };
     content.addAndMakeVisible(status);
     content.addChildComponent(audioNotice); audioNotice.setFont(FohLookAndFeel::font(T::small));
+    content.addAndMakeVisible(expertBtn); expertBtn.setButtonText("Expert"); expertBtn.setClickingTogglesState(true);
+    expertBtn.setToggleState(model.expertMode(), dontSendNotification);
+    expertBtn.setTooltip("Reveal all charts and settings in every workspace; guides remain available");
+    expertBtn.onClick = [this] {
+        if (expertBtn.getToggleState() && showMode) setShowMode(false);
+        model.setExpertMode(expertBtn.getToggleState());
+    };
     content.addAndMakeVisible(showModeBtn); showModeBtn.setButtonText("Show mode"); showModeBtn.setClickingTogglesState(true);
     showModeBtn.setTooltip("Minimal live RTA view; toggle off to restore the workspace layout");
     showModeBtn.onClick = [this] { setShowMode(showModeBtn.getToggleState()); };
@@ -284,7 +291,8 @@ void MainComponent::layoutContent() {
     setupBtn.setBounds(bar.removeFromRight(106).withSizeKeepingCentre(106, 30)); bar.removeFromRight(8);
     pauseBtn.setBounds(bar.removeFromRight(84).withSizeKeepingCentre(84, 30)); bar.removeFromRight(12);
     showModeBtn.setBounds(bar.removeFromRight(96).withSizeKeepingCentre(96, 30)); bar.removeFromRight(8);
-    const bool wide = content.getWidth() >= 1100;
+    expertBtn.setBounds(bar.removeFromRight(70).withSizeKeepingCentre(70, 30)); bar.removeFromRight(8);
+    const bool wide = content.getWidth() >= 1200;
     toolbarTitle.setVisible(wide); status.setVisible(wide);
     toolbarTitle.setBounds(wide ? bar.removeFromLeft(110) : Rectangle<int>());
     int sw = jlimit(100, 380, bar.getWidth() - 128); switcher.setBounds(bar.removeFromLeft(sw).withSizeKeepingCentre(sw, foh::theme::ws::switcherHeight - 6)); bar.removeFromLeft(8);
@@ -306,7 +314,12 @@ void MainComponent::changeListenerCallback(ChangeBroadcaster*) {
     resized(); content.repaint(); view.repaint(); for (auto* f : floats) f->restyle();
     if (auto* w = getTopLevelComponent()) if (auto* dw = dynamic_cast<DocumentWindow*>(w)) dw->setBackgroundColour(C::background());
 }
-void MainComponent::modelChanged(int) {}
+void MainComponent::modelChanged(int what) {
+    if (what & AppModel::Expert) {
+        expertBtn.setToggleState(model.expertMode(), dontSendNotification);
+        view.refreshPresentation();
+    }
+}
 
 void MainComponent::timerCallback() {
     toolbarTitle.setColour(Label::textColourId, C::textPrimary());

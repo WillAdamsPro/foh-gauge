@@ -60,7 +60,7 @@ protected:
     void openSetup();
     SetupPage setup { model };
     juce::TextButton setupBtn { "Audio Setup" }, splBtn { "SPL Cal" };
-    juce::TextButton wsMenuBtn, showModeBtn;
+    juce::TextButton wsMenuBtn, showModeBtn, expertBtn;
     void openFloatingWindows(); void closeFloatingWindows();
     void showWorkspaceMenu(); void updateSwitcher(); void leaveWorkspace();
     void saveWorkspaceAs(const juce::String& name);

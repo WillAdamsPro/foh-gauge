@@ -11,6 +11,10 @@ class TestMain : public MainComponent {
 public:
     explicit TestMain(const juce::File& folder) : MainComponent(folder) {}
     using MainComponent::saveWorkspaceAs;
+    using MainComponent::setShowMode;
+    bool inShowMode() const { return showMode; }
+    AppModel& appModel() { return model; }
+    juce::TextButton& expertToggle() { return expertBtn; }
     void showWorkspace() { setup.setVisible(false); view.setVisible(true); openFloatingWindows(); }
     FloatingPanelWindow* floating(int index) { return floats[index]; }
     int floatingCount() const { return floats.size(); }
@@ -130,4 +134,99 @@ TEST_CASE("Setup unsubscribes device changes and wizard cancels timers on destru
     for (const auto sample : output) CHECK(sample == 0);
     for (const auto sample : loopback) CHECK(sample == 0);
     CHECK(model.engine.connectionResult() == foh::ConnectionResult::pending);
+}
+
+TEST_CASE("Expert toggle reveals every panel globally without changing saved layouts", "[app][expert]") {
+    juce::ScopedJuceInitialiser_GUI initialise;
+    TemporaryWorkspaces temporary;
+    TestMain main(temporary.folder);
+    main.showWorkspace();
+    CHECK_FALSE(main.appModel().expertMode());
+    CHECK_FALSE(main.expertToggle().getToggleState());
+    auto* guide = main.workspaceView().panel("GuideInspector");
+    auto state = fohws::Json::object(); state.set("guide", 2); state.set("step", 1);
+    guide->loadState(state);
+    const auto guideState = guide->saveState().dump();
+    const auto original = main.workspace().root;
+    main.expertToggle().setToggleState(true, juce::dontSendNotification);
+    main.expertToggle().onClick();
+    CHECK(main.appModel().expertMode());
+    CHECK(main.workspace().root == original);
+    CHECK(main.workspaceView().panel("GuideInspector") == guide);
+    CHECK(guide->saveState().dump() == guideState);
+    for (int i = 0; i < 4; ++i) {
+        main.selectWorkspace(i);
+        CHECK(main.expertToggle().getToggleState());
+        for (const auto& entry : PanelRegistry::standard().all())
+            CHECK(main.workspaceView().panel(entry.id, false) != nullptr);
+    }
+    main.setShowMode(true);
+    main.expertToggle().setToggleState(false, juce::dontSendNotification);
+    main.expertToggle().onClick();
+    main.expertToggle().setToggleState(true, juce::dontSendNotification);
+    main.expertToggle().onClick();
+    CHECK_FALSE(main.inShowMode());
+    main.selectWorkspace("alignment");
+    main.appModel().setExpertMode(false);
+    CHECK_FALSE(main.expertToggle().getToggleState());
+    CHECK(main.workspace().root == original);
+}
+
+TEST_CASE("Expert exposes selectable charts and settings and keeps guide navigation working", "[app][expert]") {
+    juce::ScopedJuceInitialiser_GUI initialise;
+    AppModel model;
+    fohws::Workspace workspace;
+    workspace.root = fohws::L("TransferFunction");
+    WorkspaceView view(model, PanelRegistry::standard());
+    view.setSize(1200, 800); view.setVisible(true);
+    view.setWorkspace(&workspace);
+    view.toggleMaximise("TransferFunction");
+    model.setExpertMode(true);
+    view.refreshPresentation();
+    int index = 0;
+    for (const auto& entry : PanelRegistry::standard().all()) {
+        view.activateTab({}, index++);
+        auto* panel = view.panel(entry.id, false);
+        REQUIRE(panel != nullptr);
+        CHECK(panel->getParentComponent() != nullptr);
+        CHECK(panel->isVisible());
+        if (entry.id == "GuideInspector") {
+            auto state = fohws::Json::object(); state.set("guide", 0); state.set("step", 1);
+            panel->loadState(state);
+            const int before = panel->saveState()["step"].asInt();
+            bool advanced = false;
+            for (auto* child : panel->getChildren())
+                if (auto* button = dynamic_cast<juce::TextButton*>(child))
+                    if (button->isVisible() && button->getButtonText() == "Start pink noise") {
+                        button->onClick(); advanced = true;
+                    }
+            CHECK(advanced);
+            CHECK(panel->saveState()["step"].asInt() == before + 1);
+        }
+    }
+    CHECK(workspace.root == fohws::L("TransferFunction"));
+    model.setExpertMode(false); view.rebuild();
+    CHECK(view.panel("TransferFunction")->getParentComponent() != nullptr);
+    CHECK(view.panel("GuideInspector")->getParentComponent() == nullptr);
+}
+
+TEST_CASE("Expert preference defaults off and persists both values across reload", "[app][expert]") {
+    juce::ScopedJuceInitialiser_GUI initialise;
+    TemporaryWorkspaces temporary;
+    juce::PropertiesFile::Options options;
+    options.applicationName = "FOH synthetic expert";
+    options.filenameSuffix = "settings";
+    options.folderName = temporary.folder.getFullPathName();
+    options.osxLibrarySubFolder = "Application Support";
+    // An absolute folder keeps this test entirely outside the user's preferences.
+    for (bool enabled : {true, false}) {
+        AppModel model;
+        model.settings.closeFiles(); model.settings.setStorageParameters(options);
+        if (enabled) CHECK_FALSE(model.expertMode());
+        else CHECK(model.expertMode());
+        model.setExpertMode(enabled);
+        model.settings.closeFiles();
+        model.settings.setStorageParameters(options);
+        CHECK(model.expertMode() == enabled);
+    }
 }
