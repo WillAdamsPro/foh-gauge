@@ -1,0 +1,56 @@
+#include "FloatingPanels.h"
+using namespace juce;
+namespace WS = foh::theme::ws;
+static const foh::theme::Theme& TH() { return foh::theme::ThemeManager::get().current(); }
+
+std::string displayIdFor(Rectangle<int> r) {
+    auto* d = Desktop::getInstance().getDisplays().getDisplayForRect(r); if (!d) return {};
+    auto a = d->totalArea; return (String(a.getX()) + "," + String(a.getY()) + "," + String(a.getWidth()) + "x" + String(a.getHeight())).toStdString();
+}
+std::vector<fohws::DisplayInfo> currentDisplays() {
+    std::vector<fohws::DisplayInfo> out;
+    for (auto& d : Desktop::getInstance().getDisplays().displays) { auto a = d.totalArea, u = d.userArea;
+        out.push_back({ (String(a.getX()) + "," + String(a.getY()) + "," + String(a.getWidth()) + "x" + String(a.getHeight())).toStdString(), { u.getX(), u.getY(), u.getWidth(), u.getHeight() }, d.isMain }); }
+    return out;
+}
+
+// 20x20 title-bar button: Pin (toggle, accent + filled when on) and Dock (arrow to tray)
+struct FloatingPanelWindow::TitleButton : Button {
+    bool isPin; TitleButton(bool p) : Button(p ? "Pin" : "Dock"), isPin(p) { setTooltip(p ? "Keep on top" : "Return to dock"); setClickingTogglesState(p); }
+    void paintButton(Graphics& g, bool over, bool down) override {
+        auto& t = TH(); auto r = getLocalBounds().toFloat();
+        if (down) { g.setColour(WS::pressedOverlay(t)); g.fillRoundedRectangle(r, 4.f); } else if (over) { g.setColour(WS::hoverOverlay(t)); g.fillRoundedRectangle(r, 4.f); }
+        bool on = isPin && getToggleState(); Colour c = on ? t.accent : over ? t.text.primary : t.text.axis; g.setColour(c);
+        auto b = r.withSizeKeepingCentre(12, 12);
+        if (isPin) { Path p; p.addRoundedRectangle(b.getX() + 3, b.getY(), 6, 6, 1.5f); p.addTriangle(b.getX() + 1, b.getY() + 6, b.getRight() - 1, b.getY() + 6, b.getCentreX(), b.getY() + 9);
+                     if (on) g.fillPath(p); else g.strokePath(p, PathStrokeType(1.f)); g.fillRect(b.getCentreX() - 0.5f, b.getY() + 8, 1.f, 4.f); }
+        else { g.drawLine(b.getCentreX(), b.getY(), b.getCentreX(), b.getY() + 7, 1.3f); Path a; a.addTriangle(b.getCentreX() - 3.5f, b.getY() + 5, b.getCentreX() + 3.5f, b.getY() + 5, b.getCentreX(), b.getY() + 9); g.fillPath(a);
+               g.fillRect(b.getX() + 1, b.getBottom() - 1.5f, b.getWidth() - 2, 1.3f); }
+    }
+};
+
+FloatingPanelWindow::FloatingPanelWindow(Panel& p, fohws::FloatingPanel& state)
+    : DocumentWindow(p.title() + " (FOH Gauge)", TH().surfaces.background, DocumentWindow::closeButton), panel(p), st(state) {
+    setUsingNativeTitleBar(false); setTitleBarHeight(WS::floatTitleBarHeight); setTitleBarTextCentred(false);
+    setContentNonOwned(&panel, false);
+    setResizable(true, false); setResizeLimits(WS::floatMinWidth, WS::floatMinHeight, 4000, 3000);
+    pin = std::make_unique<TitleButton>(true); dock = std::make_unique<TitleButton>(false);
+    Component::addAndMakeVisible(*pin); Component::addAndMakeVisible(*dock);
+    pin->onClick = [this] { setPinned(pin->getToggleState()); if (onChanged) onChanged(); };
+    dock->onClick = [this] { if (onDock) onDock(); };
+    auto r = fohws::clampToDisplays(st, currentDisplays(), WS::floatMinWidth, WS::floatMinHeight); // display gone -> main display
+    setBounds(r.x, r.y, r.w, r.h); setPinned(st.alwaysOnTop); restyle();
+    setVisible(true); ready = true;
+}
+FloatingPanelWindow::~FloatingPanelWindow() { ready = false; clearContentComponent(); }
+void FloatingPanelWindow::setPinned(bool on) { st.alwaysOnTop = on; pin->setToggleState(on, dontSendNotification); setAlwaysOnTop(on); }
+void FloatingPanelWindow::restyle() { setBackgroundColour(TH().surfaces.background); repaint(); }
+void FloatingPanelWindow::moved() { DocumentWindow::moved(); if (!ready) return; auto b = getBounds(); st.bounds = { b.getX(), b.getY(), b.getWidth(), b.getHeight() }; st.displayId = displayIdFor(b); if (onChanged) onChanged(); }
+void FloatingPanelWindow::resized() {
+    DocumentWindow::resized();
+    if (pin && dock) { auto tb = getTitleBarArea(); int s = WS::headerButtonSize, y = tb.getCentreY() - s / 2;
+        int closeW = tb.getHeight(); int x = tb.getRight() - closeW - WS::headerButtonGap - s;
+        dock->setBounds(x, y, s, s); pin->setBounds(x - WS::headerButtonGap - s, y, s, s); }
+    if (ready) { auto b = getBounds(); st.bounds = { b.getX(), b.getY(), b.getWidth(), b.getHeight() }; st.displayId = displayIdFor(b); if (onChanged) onChanged(); }
+}
+void FloatingPanelWindow::mouseDoubleClick(const MouseEvent& e) { if (e.y < getTitleBarHeight() && onDock) onDock(); }

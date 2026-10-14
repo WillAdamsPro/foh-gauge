@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.22)
 # Must precede project(). Will's Mac: M1 Max, macOS 26.6.
 set(CMAKE_OSX_DEPLOYMENT_TARGET "26.0" CACHE STRING "Minimum macOS version")
-project(FOHGauge VERSION 0.1.0 LANGUAGES C CXX)
+project(FOHGauge VERSION 0.0.0 LANGUAGES C CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 option(FOH_BUILD_TESTS "Build core unit tests" ON)

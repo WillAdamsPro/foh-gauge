@@ -5,3 +5,9 @@ target_compile_definitions(fohcore_tests PRIVATE FOH_TEST_DATA="${CMAKE_CURRENT_
 include(CTest)
 include(Catch)
 catch_discover_tests(fohcore_tests)
+
+# Workspace layout model (app/Source/LayoutModel.cpp is pure C++17, no JUCE)
+add_executable(fohws_tests test_layout.cpp ${CMAKE_SOURCE_DIR}/app/Source/LayoutModel.cpp)
+target_include_directories(fohws_tests PRIVATE ${CMAKE_SOURCE_DIR}/app/Source)
+target_link_libraries(fohws_tests PRIVATE Catch2::Catch2WithMain)
+catch_discover_tests(fohws_tests)

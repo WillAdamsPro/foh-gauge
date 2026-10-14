@@ -5,42 +5,60 @@ namespace foh {
 double wrapDeg(double d) { d = std::fmod(d + 180.0, 360.0); if (d < 0) d += 360.0; return d - 180.0; }
 TransferFunction::TransferFunction(int n, double sr) : fft(n), N(n), fs(sr), win(hannWindow(n)),
     xbuf((size_t) n), ybuf((size_t) n), refHistory(1 << 17), Sxx((size_t) n / 2 + 1), Syy((size_t) n / 2 + 1), Sxy((size_t) n / 2 + 1), X((size_t) n), Y((size_t) n) { resetConvergence(); }
+double settleDeltaDb(const std::vector<double>& prev, const std::vector<double>& cur, const std::vector<double>& coh,
+                     const std::vector<double>& f, const ConvergenceSettings& s, int* used) {
+    size_t n = std::min(std::min(prev.size(), cur.size()), std::min(coh.size(), f.size()));
+    double acc = 0; int cnt = 0, inBand = 0;
+    for (size_t k = 0; k < n; ++k) {
+        if (!(f[k] >= s.fLo && f[k] <= s.fHi)) continue; ++inBand;
+        if (!(coh[k] >= s.minCoherence)) continue;
+        double d = cur[k] - prev[k]; if (!std::isfinite(d)) continue;
+        acc += d * d; ++cnt; }
+    if (used) *used = cnt;
+    if (cnt == 0 || cnt < s.minCoherentFraction * inBand) return std::numeric_limits<double>::quiet_NaN();
+    return std::sqrt(acc / cnt);
+}
 void TransferFunction::resetConvergence() {
-    gridBins.clear(); double bin = fs / N; int M = N / 2;
-    for (auto& b : octaveBands(3, conv.fLo, conv.fHi)) {
-        int lo = std::max(1, (int) std::ceil(b.fLo / bin)), hi = std::min(M, (int) std::floor(b.fHi / bin));
-        if (hi >= lo) gridBins.push_back({lo, hi}); }
-    gridPrevDb.assign(gridBins.size(), 0.0); gridHavePrev = false; cstate = ConvergenceState{};
+    double bin = fs / N; int M = N / 2;
+    convLo = std::max(1, (int) std::ceil(conv.fLo / bin)); convHi = std::min(M, (int) std::floor(conv.fHi / bin));
+    convPrevDb.assign((size_t) M + 1, 0.0); convHavePrev = false; settle = SettleDetector(conv); cstate = ConvergenceState{};
 }
 void TransferFunction::updateConvergence() {
-    double wsum = 0, dsum = 0, csum = 0;
-    for (size_t g = 0; g < gridBins.size(); ++g) {
-        double sxx = 0, syy = 0; cpx sxy{};
-        for (int k = gridBins[g].first; k <= gridBins[g].second; ++k) { sxx += Sxx[(size_t) k]; syy += Syy[(size_t) k]; sxy += Sxy[(size_t) k]; }
-        double coh = (sxx * syy > 1e-40) ? std::min(1.0, std::norm(sxy) / (sxx * syy)) : 0.0;
-        double db = 20.0 * std::log10(std::abs(sxx > 1e-30 ? sxy / sxx : cpx{}) + 1e-12);
-        if (gridHavePrev) { dsum += coh * std::fabs(db - gridPrevDb[g]); wsum += coh; }
-        csum += coh; gridPrevDb[g] = db;
+    // allocation-free: per-bin raw (unsmoothed) estimate, compared with the previous update
+    double acc = 0, csum = 0; int cnt = 0, nb = 0;
+    for (int k = convLo; k <= convHi; ++k) {
+        size_t i = (size_t) k; double sxx = Sxx[i], syy = Syy[i];
+        double coh = (sxx * syy > 1e-40) ? std::min(1.0, std::norm(Sxy[i]) / (sxx * syy)) : 0.0;
+        double db = 20.0 * std::log10(std::abs(sxx > 1e-30 ? Sxy[i] / sxx : cpx{}) + 1e-12);
+        if (convHavePrev && coh >= conv.minCoherence) { double d = db - convPrevDb[i]; if (std::isfinite(d)) { acc += d * d; ++cnt; } }
+        convPrevDb[i] = db; csum += coh; ++nb;
     }
-    ConvergenceState& c = cstate; c.frames = frameCount;
-    c.meanCoherence = gridBins.empty() ? 0 : csum / (double) gridBins.size();
-    if (gridHavePrev) c.deltaDb = wsum > 1e-9 ? dsum / wsum : 1e9;
-    gridHavePrev = true;
-    c.stableFrames = (c.deltaDb < conv.toleranceDb) ? c.stableFrames + 1 : 0;
-    c.settled = c.frames >= conv.minFrames && c.stableFrames >= conv.holdFrames;
-    c.timedOut = !c.settled && conv.maxFrames > 0 && c.frames >= conv.maxFrames;
-    double pm = std::min(1.0, (double) c.frames / std::max(1, conv.minFrames));
-    double ph = std::min(1.0, (double) c.stableFrames / std::max(1, conv.holdFrames));
-    c.progress = c.settled ? 1.0 : std::min(pm, ph);
+    ConvergenceState& c = cstate; c.frames = frameCount; c.elapsedSeconds = frameCount * frameSeconds();
+    c.meanCoherence = nb ? csum / nb : 0; c.coherentBins = cnt;
+    bool enough = cnt > 0 && cnt >= conv.minCoherentFraction * nb;
+    c.deltaDb = (convHavePrev && enough) ? std::sqrt(acc / cnt) : std::numeric_limits<double>::quiet_NaN();
+    convHavePrev = true;
+    if (!settle.finished()) settle.update(c.deltaDb, c.elapsedSeconds);
+    c.stableFrames = settle.streakCount(); c.settled = settle.settled(); c.unsettled = c.timedOut = settle.unsettled();
+    c.finished = settle.finished();
+    c.progress = c.finished ? 1.0 : std::min(1.0, (double) c.stableFrames / std::max(1, conv.consecutive));
 }
 void TransferFunction::reset() { resetConvergence(); std::fill(Sxx.begin(), Sxx.end(), 0.0); std::fill(Syy.begin(), Syy.end(), 0.0);
     std::fill(Sxy.begin(), Sxy.end(), cpx{}); frameCount = 0; fill = 0; }
-void TransferFunction::setReferenceDelaySamples(int d) { refDelay = std::clamp(d, 0, (int) refHistory.size() - 1); reset(); }
+void TransferFunction::setReferenceDelaySamples(double d) {
+    if (!std::isfinite(d)) d = 0;
+    d = std::clamp(d, 0.0, (double) refHistory.size() - 1.0);
+    refDelayInt = (int) std::floor(d); refDelayFrac = d - refDelayInt;
+    if (refDelayInt >= (int) refHistory.size() - 1) refDelayFrac = 0;
+    fracRot.resize((size_t) N / 2 + 1);
+    for (int k = 0; k <= N / 2; ++k) fracRot[(size_t) k] = std::polar(1.0, -2.0 * M_PI * k * refDelayFrac / N);
+    reset();
+}
 void TransferFunction::process(const float* ref, const float* meas, int n) {
     int H = (int) refHistory.size();
     for (int i = 0; i < n; ++i) {
         refHistory[(size_t) histPos] = ref[i];
-        float delayed = refHistory[(size_t) ((histPos - refDelay + H) % H)];
+        float delayed = refHistory[(size_t) ((histPos - refDelayInt + H) % H)];
         histPos = (histPos + 1) % H;
         xbuf[(size_t) fill] = delayed; ybuf[(size_t) fill] = meas[i];
         if (++fill == N) { frame(); // 50% overlap
@@ -51,6 +69,7 @@ void TransferFunction::process(const float* ref, const float* meas, int n) {
 void TransferFunction::frame() {
     for (int i = 0; i < N; ++i) { X[(size_t) i] = xbuf[(size_t) i] * win[(size_t) i]; Y[(size_t) i] = ybuf[(size_t) i] * win[(size_t) i]; }
     fft.forward(X); fft.forward(Y);
+    if (refDelayFrac != 0) for (int k = 0; k <= N / 2; ++k) X[(size_t) k] *= fracRot[(size_t) k];
     ++frameCount;
     double a = (avgN <= 0) ? 1.0 / frameCount : std::max(1.0 / frameCount, 1.0 / avgN);
     for (size_t k = 0; k <= (size_t) N / 2; ++k) {
@@ -95,6 +114,40 @@ PhaseOffset phaseOffset(const TFResult& a, const TFResult& b, double lo, double 
     p.meanDeg = std::arg(acc) * 180.0 / M_PI; p.centerHz = fsum / wsum;
     p.impliedMs = -p.meanDeg / 360.0 / p.centerHz * 1000.0; // positive => b lags a
     return p;
+}
+CoherenceSummary coherenceSummary(const TFResult& tf, double lo, double hi) {
+    CoherenceSummary c; double s = 0;
+    for (size_t k = 1; k < tf.freq.size() && k < tf.coherence.size(); ++k)
+        if (tf.freq[k] >= lo && tf.freq[k] <= hi) { s += tf.coherence[k]; ++c.bins; }
+    if (c.bins) c.meanCoherence = s / c.bins;
+    c.light = classifyCoherence(c.meanCoherence); return c;
+}
+SubDelayEstimate subDelayFromPhase(const TFResult& a, const TFResult& b, double lo, double hi, double xo, const DelayResult* hint) {
+    SubDelayEstimate e;
+    if (hint && !hint->arrivals.empty()) { e.hasHint = true; e.hintMs = hint->arrivals[0].delayMs; e.hintInverted = hint->arrivals[0].inverted; }
+    if (!(lo > 0) || !(hi > lo)) return e;
+    PhaseOffset p = phaseOffset(a, b, lo, hi); if (!(p.centerHz > 0)) return e;
+    e.xoHz = xo > 0 ? xo : p.centerHz; e.periodMs = 1000.0 / e.xoHz;
+    // weighted LS slope of unwrapped phase difference (deg) vs f, and phase at xo
+    size_t n = std::min(a.H.size(), b.H.size()); std::vector<double> fv, ph, wv; double prev = 0, cs = 0; bool first = true;
+    for (size_t k = 1; k < n && k < a.freq.size(); ++k) { double f = a.freq[k]; if (f < lo || f > hi) continue;
+        cpx d = b.H[k] * std::conj(a.H[k]); if (std::abs(d) < 1e-20) continue;
+        double w = std::min(a.coherence[k], b.coherence[k]); double v = std::arg(d) * 180.0 / M_PI;
+        if (!first) { while (v - prev > 180) v -= 360; while (v - prev < -180) v += 360; } first = false; prev = v;
+        fv.push_back(f); ph.push_back(v); wv.push_back(w); cs += w; }
+    if (fv.size() < 2 || cs <= 0) return e;
+    double sw = 0, sf = 0, sp = 0, sff = 0, sfp = 0;
+    for (size_t i = 0; i < fv.size(); ++i) { sw += wv[i]; sf += wv[i]*fv[i]; sp += wv[i]*ph[i]; sff += wv[i]*fv[i]*fv[i]; sfp += wv[i]*fv[i]*ph[i]; }
+    double den = sw * sff - sf * sf; if (std::fabs(den) < 1e-30) return e;
+    double slope = (sw * sfp - sf * sp) / den, icpt = (sp - slope * sf) / sw; // deg per Hz
+    e.slopeMs = -slope / 360.0 * 1000.0;
+    e.phaseDeg = wrapDeg(icpt + slope * e.xoHz);
+    e.wrappedMs = -e.phaseDeg / 360.0 * e.periodMs;
+    double k = std::round((e.slopeMs - e.wrappedMs) / e.periodMs);
+    e.primaryMs = e.wrappedMs + k * e.periodMs;
+    e.alternativesMs[0] = e.primaryMs - e.periodMs; e.alternativesMs[1] = e.primaryMs + e.periodMs;
+    e.coherence = cs / (double) fv.size(); e.valid = true;
+    return e;
 }
 TFResult virtualSum(const TFResult& a, const TFResult& b) {
     TFResult r = a; size_t n = std::min(a.H.size(), b.H.size());
