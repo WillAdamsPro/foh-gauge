@@ -71,7 +71,7 @@ AppModel::AppModel() {
     send(foh::Command::averages(averages)); send(foh::Command::smoothing(smoothingFraction)); send(foh::Command::blankThreshold(blankThreshold)); send(foh::Command::rtaFraction(rtaFraction));
     startTimerHz(15);
 }
-AppModel::~AppModel() { stopTimer(); if (loopbackMeasuring) finishLoopback(); dm.removeAudioCallback(&engine); analysis.stop(); if (auto* pf = settings.getUserSettings()) pf->saveIfNeeded(); }
+AppModel::~AppModel() { generatorConfirmation.close(); stopTimer(); if (loopbackMeasuring) finishLoopback(); dm.removeAudioCallback(&engine); analysis.stop(); if (auto* pf = settings.getUserSettings()) pf->saveIfNeeded(); }
 
 void AppModel::requestDelay(bool sub, std::function<void()> then) {
     pendingDelay.id = ++nextDelayId; pendingDelay.then = std::move(then); delayPending = true; delayWasSub = sub;

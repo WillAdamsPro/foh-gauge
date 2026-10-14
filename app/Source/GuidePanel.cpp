@@ -375,8 +375,12 @@ private:
         String out; SafePointer<GuidePanel> safe(this);
         switch (a) {
             case 1: if (model.requestWorkspace) model.requestWorkspace("setup"); return;
-            case 2: model.engine.gen = AudioEngine::Pink; model.notify(AppModel::Settings);
-                    out = "Pink noise on at " + String(model.engine.genGainDb.load(), 1) + " dBFS. Watch the signal meters."; next(); break;
+            case 2: model.confirmGeneratorStart("Pink noise", [safe] {
+                        if (!safe) return;
+                        safe->model.engine.gen = AudioEngine::Pink; safe->model.notify(AppModel::Settings);
+                        safe->say("Pink noise on at " + String(safe->model.engine.genGainDb.load(), 1) + " dBFS. Watch the signal meters.");
+                        safe->next(); safe->refresh();
+                    }); return;
             case 3: say("Finding the delay...");
                     guidedDelay(false, [safe] { if (!safe) return; auto& p = *safe; String o;
                         if (p.model.delayLocked()) { p.model.lockDelayFromLast(); o = "Locked reference delay " + String(consoleMs(p.model.lockedDelayMs), 2) + " ms. " + p.delayText(); p.next(); }
@@ -420,7 +424,9 @@ private:
                     p.suggestedChange = o; p.next(); p.say(o); p.refresh(); });
                 return;
 
-            case 24: case 26: startBoxSweep(a == 26); return;
+            case 24: case 26: model.confirmGeneratorStart("Log sweep", [safe, a] {
+                if (safe) safe->startBoxSweep(a == 26);
+            }); return;
             case 25: if (boxBaseline != foh::ImpulsePolarity::Unknown) { verified = false; note.clear(); next(); } break;
             case 27: step = 0; resetVerification(); out = "Select and isolate the next box."; break;
             case 23: next(); break; // Manual checklist acknowledgement; no engine or DSP changes.

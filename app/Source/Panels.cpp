@@ -448,7 +448,13 @@ public:
     explicit ImpulsePanel(AppModel& m) : Panel(m, "Impulse", "Impulse") {
         helpText = "Measure a 5-second log sweep with a safety ramp, followed by silence for decay. The impulse is deconvolved against the recorded loopback reference. Start at a low generator level and check your routing. ETC shows envelope energy relative to its peak.";
         addAndMakeVisible(imp); addAndMakeVisible(measure); addAndMakeVisible(etc); addAndMakeVisible(status);
-        measure.onClick = [this] { foh::Command c; c.type = foh::CommandType::MeasureSweep; model.send(c); };
+        measure.onClick = [this] {
+            SafePointer<ImpulsePanel> safe(this);
+            model.confirmGeneratorStart("Log sweep", [safe] {
+                if (!safe) return;
+                foh::Command c; c.type = foh::CommandType::MeasureSweep; safe->model.send(c);
+            });
+        };
         etc.onClick = [this] { imp.showEtc = etc.getToggleState(); imp.repaint(); };
     }
     Json saveState() const override { Json j = Json::object(); j.set("postMs", imp.postMs); j.set("etc", etc.getToggleState()); return j; }
@@ -511,18 +517,35 @@ class GeneratorPanel : public Panel {
 public:
     explicit GeneratorPanel(AppModel& m) : Panel(m, "Generator", "Generator") {
         helpText = "Pink noise for the transfer function and RTA; the log sweep lasts 5 s followed by a 1 s silence gap.\n\nOut 1 goes to the console, Out 2 loops back to In 2 as the reference.";
-        type.addItem("Generator off", 1); type.addItem("Pink noise", 2); type.addItem("Log sweep 20 Hz-20 kHz (5 s, loops)", 3);
-        type.onChange = [this] { model.engine.gen = type.getSelectedId() - 1; };
-        gain.setRange(-60, 0, 0.5); gain.setTextValueSuffix(" dBFS"); gain.setTextBoxStyle(Slider::TextBoxRight, false, 90, 22);
-        gain.onValueChange = [this] { model.engine.genGainDb = (float) gain.getValue(); };
-        addAndMakeVisible(type); addAndMakeVisible(gain); sync();
+        type.addItem("Generator off", 1); type.addItem("Pink noise", 2); type.addItem(u8("Log sweep 20 Hz\xe2\x80\x93" "20 kHz (5 s, repeating)"), 3);
+        type.onChange = [this] {
+            const int mode = type.getSelectedId() - 1;
+            if (mode == AudioEngine::Off) { model.stopGenerator(); return; }
+            sync(); // Keep the actual state visible until the user confirms.
+            SafePointer<GeneratorPanel> safe(this);
+            model.confirmGeneratorStart(mode == AudioEngine::Pink ? "Pink noise" : "Log sweep", [safe, mode] {
+                if (!safe) return;
+                safe->model.engine.gen = mode; safe->model.notify(AppModel::Settings);
+            });
+        };
+        gain.setTextValueSuffix(" dBFS"); gain.setTextBoxStyle(Slider::TextBoxRight, false, 90, 22);
+        gain.onValueChange = [this] { model.setGeneratorLevel((float) gain.getValue()); };
+        fullLevel.setButtonText("Allow full level");
+        fullLevel.setTooltip("Allow output up to 0 dBFS for this app session. Turning this off caps output at -6 dBFS.");
+        fullLevel.onClick = [this] { model.allowFullGeneratorLevel(fullLevel.getToggleState()); };
+        addAndMakeVisible(type); addAndMakeVisible(gain); addAndMakeVisible(fullLevel); sync();
     }
-    fohws::Size minSize() const override { return { 240, 80 }; }
-    void sync() { type.setSelectedId(model.engine.gen.load() + 1, dontSendNotification); gain.setValue(model.engine.genGainDb.load(), dontSendNotification); }
-    void resized() override { auto r = getLocalBounds().reduced(pad, 8); type.setBounds(controlRow(r)); gain.setBounds(controlRow(r)); }
+    fohws::Size minSize() const override { return { 360, 112 }; }
+    void sync() {
+        type.setSelectedId(model.engine.gen.load() + 1, dontSendNotification);
+        gain.setRange(-60, model.allowsFullGeneratorLevel() ? 0 : -6, 0.5);
+        gain.setValue(model.engine.genGainDb.load(), dontSendNotification);
+        fullLevel.setToggleState(model.allowsFullGeneratorLevel(), dontSendNotification);
+    }
+    void resized() override { auto r = getLocalBounds().reduced(pad, 8); type.setBounds(controlRow(r)); gain.setBounds(controlRow(r)); fullLevel.setBounds(controlRow(r)); }
     void modelChanged(int w) override { if (w & AppModel::Settings) sync(); }
 private:
-    ComboBox type; Slider gain;
+    ComboBox type; Slider gain; ToggleButton fullLevel;
 };
 
 // ===================== Inputs & devices (mic / channel list) =====================
