@@ -39,6 +39,7 @@ MainComponent::MainComponent() {
     view.onFloatRequested = [this](const std::string& id) { floatPanel(id); };
     view.isFloating = [this](const std::string& id) { if (auto* w = view.workspace()) for (auto& f : w->floating) if (f.panel == id) return true; return false; };
     setWantsKeyboardFocus(true);
+    addKeyListener(presetCommands.keyMappings());
     setSize(std::getenv("FOH_WINDOW_W") ? std::atoi(std::getenv("FOH_WINDOW_W")) : foh::theme::frame::baseWidth, foh::theme::frame::baseHeight); /* FOH_WINDOW_W: dev aid */
     int start = std::getenv("FOH_WORKSPACE") ? jlimit(0, 3, std::atoi(std::getenv("FOH_WORKSPACE"))) : jmax(0, mgr.indexOf(model.settings.getUserSettings() ? model.settings.getUserSettings()->getValue("workspace", "alignment").toStdString() : "alignment")); // dev/screenshot aid, default Alignment
     selectWorkspace(start);
@@ -46,7 +47,7 @@ MainComponent::MainComponent() {
     if (auto* f = std::getenv("FOH_FLOAT")) { std::string id = f; Timer::callAfterDelay(800, [sp = SafePointer<MainComponent>(this), id] { if (sp) sp->floatPanel(id); }); } // dev/screenshot aid
     startTimerHz(15);
 }
-MainComponent::~MainComponent() { stopTimer(); leaveWorkspace(); view.setWorkspace(nullptr); model.removeListener(this); foh::theme::ThemeManager::get().removeChangeListener(this); floats.clear(); LookAndFeel::setDefaultLookAndFeel(nullptr); setLookAndFeel(nullptr); }
+MainComponent::~MainComponent() { removeKeyListener(presetCommands.keyMappings()); stopTimer(); leaveWorkspace(); view.setWorkspace(nullptr); model.removeListener(this); foh::theme::ThemeManager::get().removeChangeListener(this); floats.clear(); LookAndFeel::setDefaultLookAndFeel(nullptr); setLookAndFeel(nullptr); }
 
 void MainComponent::selectWorkspace(const std::string& id) { int i = mgr.indexOf(id); if (i >= 0) selectWorkspace(i); }
 void MainComponent::leaveWorkspace() {
@@ -94,6 +95,7 @@ void MainComponent::openFloatingWindows() {
     auto* w = view.workspace(); if (!w) return;
     for (auto& f : w->floating) { auto* p = view.panel(f.panel); if (!p) continue; view.releasePanel(f.panel, p);
         auto* win = floats.add(new FloatingPanelWindow(*p, f)); std::string id = f.panel;
+        win->addKeyListener(presetCommands.keyMappings());
         win->onDock = [this, id] { MessageManager::callAsync([sp = SafePointer<MainComponent>(this), id] { if (sp) sp->dockPanel(id); }); };
         win->onClose = [this, id] { MessageManager::callAsync([sp = SafePointer<MainComponent>(this), id] { if (sp) { // close = hide; Workspace > Show Panels brings it back
             auto* w2 = sp->view.workspace(); if (!w2) return; for (int k = sp->floats.size(); --k >= 0;) if (&sp->floats[k]->panel == sp->view.panel(id, false)) sp->floats.remove(k);
@@ -170,7 +172,6 @@ bool MainComponent::keyPressed(const KeyPress& k) {
         if (count > 0) selectWorkspace((current + (m.isShiftDown() ? count - 1 : 1)) % count);
         return true;
     }
-    if (m.isCommandDown() && !m.isAltDown() && code >= '1' && code <= '4') { selectWorkspace(code - '1'); return true; }
     if (showMode) return false; // Layout shortcuts cannot alter the hidden workspace in Show mode.
     if (m.isCommandDown() && m.isAltDown() && code == '0') { if (current >= 0) { mgr.revert(current); closeFloatingWindows(); view.setWorkspace(&mgr.at(current)); openFloatingWindows(); updateSwitcher(); } return true; }
     if (m.isCommandDown() && m.isAltDown() && (code == 'I' || code == 'i')) { if (auto* w = view.workspace()) if (!w->root.contains("Inspector")) { fohws::addAsTab(w->root, "Inspector", view.focusedPanel()); view.rebuild(); updateSwitcher(); } return true; }

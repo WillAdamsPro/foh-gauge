@@ -3,6 +3,7 @@
 #pragma once
 #include "FloatingPanels.h"
 #include "WorkspaceManager.h"
+#include "WorkspacePresetCommands.h"
 
 class MainComponent : public juce::Component, private juce::Timer, private juce::ChangeListener, private AppModel::Listener {
 public:
@@ -20,6 +21,7 @@ protected:
     FohLookAndFeel lnf;
     AppModel model;
     WorkspaceManager mgr; int current = -1;
+    WorkspacePresetCommands presetCommands { [this](int i) { selectWorkspace(i); } };
     juce::OwnedArray<FloatingPanelWindow> floats;
     bool showMode = false;
     void setShowMode(bool enabled);
