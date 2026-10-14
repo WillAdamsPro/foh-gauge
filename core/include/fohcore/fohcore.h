@@ -11,8 +11,9 @@
 
 // Mark functions callable from the audio thread. With clang >= 20 and
 // -fsanitize=realtime, RealtimeSanitizer verifies them; elsewhere it is a no-op.
-#if defined(__has_cpp_attribute)
-#  if __has_cpp_attribute(clang::nonblocking)
+// Only enabled under RTSan: Apple clang (Xcode 26) rejects the attribute in leading position.
+#if defined(__has_feature)
+#  if __has_feature(realtime_sanitizer)
 #    define FOH_RT [[clang::nonblocking]]
 #  endif
 #endif
