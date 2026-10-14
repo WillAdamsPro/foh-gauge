@@ -119,6 +119,38 @@ TEST_CASE("Sweep removes DC without changing synthetic arrival or direction", "[
     for (auto x : offset.etcDb) CHECK(std::isfinite(x));
 }
 
+TEST_CASE("Sweep rejects arrivals outside the causal impulse window", "[sweep][edges]") {
+    // A late loopback puts the real arrival at negative lag. Searching only
+    // positive lags would incorrectly publish a regularization sidelobe.
+    std::vector<float> ref(4096), mic(4096);
+    ref[300] = 0.5f; mic[100] = 0.25f;
+    auto result = deconvolveSweep(ref, mic, 48000);
+    CHECK_FALSE(result.response.ok());
+    CHECK_FALSE(result.response.error.empty());
+    CHECK(result.response.impulse.empty());
+    CHECK(result.response.arrivals.empty());
+    CHECK(result.etcDb.empty());
+
+    // Positive lag beyond the displayed half-second window is also unusable.
+    ref.assign(32768, 0); mic.assign(32768, 0);
+    ref[100] = 0.5f; mic[25000] = 0.25f;
+    result = deconvolveSweep(ref, mic, 48000);
+    CHECK_FALSE(result.response.ok());
+    CHECK(result.response.impulse.empty());
+    CHECK(result.response.arrivals.empty());
+    CHECK(result.etcDb.empty());
+}
+
+TEST_CASE("Sweep accepts zero lag and subnormal samples in an otherwise usable capture", "[sweep][edges]") {
+    std::vector<float> ref(4096, std::numeric_limits<float>::denorm_min()), mic(ref);
+    ref[100] = 0.5f; mic[100] = 0.25f;
+    const auto result = deconvolveSweep(ref, mic, 48000);
+    REQUIRE(result.response.ok());
+    CHECK(result.response.arrivals[0].delaySamples == Catch::Approx(0));
+    for (auto sample : result.response.impulse) CHECK(std::isfinite(sample));
+    for (auto db : result.etcDb) CHECK(std::isfinite(db));
+}
+
 TEST_CASE("Impulse view rejects incomplete or unusable stored spectra", "[sweep][edges]") {
     TFResult tf; tf.fftSize = 64; tf.H.assign(33, 0.5);
     REQUIRE(impulseFromTF(tf).size() == 64);

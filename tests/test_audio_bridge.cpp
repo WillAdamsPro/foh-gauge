@@ -1035,6 +1035,7 @@ TEST_CASE("Multi-mic TF average overlays the target with controls reachable", "[
     REQUIRE(panel->getLocalBounds().contains(show->getBounds()));
     REQUIRE(show->getWidth() > 80);
     model.multiPosition.fftSize = 1024;
+    model.multiPosition.H.assign(513, std::pow(10.0, 2.0 / 20.0));
     model.multiPosition.magDb.assign(513, 2);
     model.multiPosition.coherence.assign(513, 1);
     model.positionCount = 2;
@@ -1048,12 +1049,59 @@ TEST_CASE("Multi-mic TF average overlays the target with controls reachable", "[
         for (double value : series.v) REQUIRE(value == 2);
     }
     REQUIRE(hasSeries("Target +6"));
+    model.multiPosition.coherence.assign(513, 0);
+    model.multiPosition.blanked.assign(513, 1);
+    panel->modelChanged(AppModel::Snapshot);
+    CHECK(plot->note.contains("No coherent positions"));
+    model.multiPosition.coherence.assign(513, 1);
+    model.multiPosition.blanked.assign(513, 0);
+    panel->modelChanged(AppModel::Snapshot);
+    CHECK_FALSE(plot->note.contains("No coherent positions"));
     show->setToggleState(false, juce::dontSendNotification); show->onClick();
     REQUIRE_FALSE(hasSeries("Multi-mic average"));
     REQUIRE(hasSeries("Target +6"));
     show->setToggleState(true, juce::dontSendNotification);
     model.positionCount = 1; panel->modelChanged(AppModel::Snapshot);
     REQUIRE_FALSE(hasSeries("Multi-mic average"));
+}
+
+TEST_CASE("Clearing positions and losing a mic during a sweep discards capture state", "[app][audio][sweep][multipos][edges]") {
+    AudioEngine engine; SyntheticDevice device; engine.audioDeviceAboutToStart(&device);
+    AnalysisEngine analysis(engine); AnalysisEngineTestAccess consumer(analysis);
+    consumer.step();
+    std::vector<float> noise(32768); foh::PinkNoise generator;
+    generator.process(noise.data(), int(noise.size()));
+    std::vector<float> outA(noise.size()), outB(noise.size());
+    float* outputs[] {outA.data(), outB.data()};
+    const float* connected[] {noise.data(), noise.data()};
+    engine.audioDeviceIOCallbackWithContext(connected, 2, outputs, 2, int(noise.size()), {});
+    consumer.step();
+    REQUIRE(analysis.send(foh::Command::micPosition(0, 0))); consumer.step();
+    REQUIRE(analysis.latest().positionCount == 1);
+    foh::Command sweep; sweep.type = foh::CommandType::MeasureSweep;
+    REQUIRE(analysis.send(sweep)); consumer.step();
+    REQUIRE(analysis.latest().sweepCapturing);
+    engine.audioDeviceIOCallbackWithContext(connected, 2, outputs, 2, 512, {});
+    consumer.step();
+    REQUIRE(analysis.latest().sweepCapturing);
+    foh::Command clear; clear.type = foh::CommandType::ClearMicPositions;
+    REQUIRE(analysis.send(clear)); consumer.step();
+    CHECK(analysis.latest().positionCount == 0);
+    CHECK(analysis.latest().multiPosition.H.empty());
+    CHECK(analysis.latest().sweepCapturing);
+    // A missing physical input is published by I/O as a new capture epoch.
+    const float* disconnected[] {nullptr, noise.data()};
+    engine.audioDeviceIOCallbackWithContext(disconnected, 2, outputs, 2, 512, {});
+    REQUIRE(engine.state.load() == AudioEngine::InvalidInputs);
+    consumer.step();
+    const auto snapshot = analysis.latest();
+    CHECK_FALSE(snapshot.sweepCapturing);
+    CHECK_FALSE(snapshot.sweep.response.error.empty());
+    CHECK(snapshot.sweep.response.impulse.empty()); CHECK(snapshot.sweep.etcDb.empty());
+    CHECK(snapshot.positionMask == 0); CHECK(snapshot.positionCount == 0);
+    CHECK(engine.gen.load() == AudioEngine::Off);
+    for (double c : snapshot.tf.coherence) CHECK(std::isfinite(c));
+    for (double db : snapshot.tf.magDb) CHECK(std::isfinite(db));
 }
 
 TEST_CASE("Sweep measurement captures loopback and publishes impulse and ETC", "[app][audio][sweep]") {

@@ -79,3 +79,24 @@ TEST_CASE("Multi-position silence cancellation and extreme spectra stay unsuppor
     b = a; a.tf.blankThreshold = NAN;
     CHECK(foh::multiPositionAverage({a, b}).H.empty());
 }
+
+TEST_CASE("Missing coherence in one or all positions never contaminates the average", "[multipos][edges]") {
+    for (double invalid : {0.0, double(NAN)}) {
+        auto valid = position(2, 0.9, 4.8), missing = position(3, invalid, 12.5);
+        for (const auto& inputs : {std::vector<foh::MicPosition>{valid, missing},
+                                  std::vector<foh::MicPosition>{missing, valid, missing},
+                                  std::vector<foh::MicPosition>{missing, missing}}) {
+            const bool supported = inputs[0].tf.coherence[0] == 0.9 || inputs.size() == 3;
+            const auto avg = foh::multiPositionAverage(inputs);
+            REQUIRE(avg.H.size() == 4);
+            for (size_t k = 0; k < avg.H.size(); ++k) {
+                CHECK(std::isfinite(avg.H[k].real())); CHECK(std::isfinite(avg.H[k].imag()));
+                CHECK(std::isfinite(avg.magDb[k])); CHECK(std::isfinite(avg.phaseDeg[k]));
+                CHECK(std::isfinite(avg.coherence[k]));
+                CHECK(avg.isBlanked(k) == !supported);
+                CHECK(avg.coherence[k] == Approx(supported ? 0.9 : 0));
+                CHECK(avg.H[k].real() == Approx(supported ? 2 : 0));
+            }
+        }
+    }
+}
