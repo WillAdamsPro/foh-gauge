@@ -2,6 +2,16 @@
 #include <algorithm>
 
 namespace foh {
+ImpulsePolarity polarityFromImpulse(const std::vector<double>& impulse) {
+    double peak = 0;
+    for (double sample : impulse) {
+        if (!std::isfinite(sample)) return ImpulsePolarity::Unknown;
+        if (std::abs(sample) > std::abs(peak)) peak = sample;
+    }
+    if (std::abs(peak) <= 1e-12) return ImpulsePolarity::Unknown;
+    return peak < 0 ? ImpulsePolarity::Inverted : ImpulsePolarity::Normal;
+}
+
 SweepResult deconvolveSweep(const std::vector<float>& ref, const std::vector<float>& mic, double fs) {
     SweepResult result;
     auto fail = [&](const char* error) { result.response.error = error; return result; };
@@ -49,7 +59,7 @@ SweepResult deconvolveSweep(const std::vector<float>& ref, const std::vector<flo
     Arrival arrival{}; arrival.delaySamples = double(peak) + offset;
     arrival.delayMs = arrival.delaySamples / fs * 1000;
     arrival.distanceM = arrival.delaySamples / fs * 343;
-    arrival.inverted = y[peak].real() < 0;
+    arrival.inverted = polarityFromImpulse(response.impulse) == ImpulsePolarity::Inverted;
     response.arrivals.push_back(arrival); response.samplesUsed = int(ref.size());
     // Analytic impulse: keep DC/Nyquist, double positive frequencies, zero negatives.
     for (int k = 1; k < n/2; ++k) x[k] *= 2;
