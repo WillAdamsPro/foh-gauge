@@ -18,6 +18,16 @@ Opt-in AddressSanitizer + UndefinedBehaviorSanitizer core/tests build (Clang or 
 
 `FOH_SANITIZE` defaults to empty; the normal build and CI gate are unchanged.
 
+App and JUCE lifetime checks on macOS (Debug also enables JUCE's leak detector):
+
+    cmake -S . -B build-app-sanitize -DCMAKE_BUILD_TYPE=Debug -DFOH_SANITIZE=address,undefined
+    cmake --build build-app-sanitize --parallel
+    ctest --test-dir build-app-sanitize --output-on-failure
+    build-app-sanitize/app/fohapp_tests
+
+The same option instruments both `FOHGauge` and `fohapp_tests`, including their JUCE module sources.
+Use an unsanitized Debug app for macOS `leaks --atExit`; quit normally so JUCE shutdown runs.
+
 Opt-in ThreadSanitizer build (Clang or GCC; separate from ASan/UBSan):
 
     cmake -S . -B build-thread -DFOH_BUILD_APP=OFF -DFOH_TSAN=ON -DCMAKE_BUILD_TYPE=RelWithDebInfo

@@ -4,20 +4,34 @@
 
 std::unique_ptr<Panel> makeGuidePanel(AppModel&);
 
-// Isolated UI model: no devices, analysis worker, preferences or timers.
+// Isolated UI model: no devices, analysis worker, disk writes or model timers.
 // The guide must only present instructions, never apply hardware changes.
-AppModel::AppModel() = default;
+AppModel::AppModel() {
+    juce::PropertiesFile::Options options;
+    options.applicationName = "FOH synthetic tests " + juce::Uuid().toString();
+    options.filenameSuffix = "settings";
+    options.osxLibrarySubFolder = "Application Support";
+    options.doNotSave = true;
+    settings.setStorageParameters(options);
+    settings.getUserSettings()->setValue("setupComplete", true);
+}
 AppModel::~AppModel() = default;
 void AppModel::timerCallback() {}
 foh::SplCal AppModel::splCal() const { return {}; }
 bool AppModel::calibrateSpl(double) { throw std::logic_error("Unexpected SPL calibration"); }
 bool AppModel::micLevelReady() const { return false; }
 void AppModel::loadCalFile(const juce::File&) { throw std::logic_error("Unexpected calibration file load"); }
-void AppModel::setCalEnabled(bool) { throw std::logic_error("Unexpected calibration change"); }
+void AppModel::setCalEnabled(bool on) { calOn = on && cal.ok(); notify(Cal); }
 void AppModel::clearSpl() { throw std::logic_error("Unexpected SPL calibration"); }
+foh::Json AppModel::splCalJson() const { return foh::Json::object(); }
+void AppModel::loadSplCalJson(const foh::Json&) {}
 void AppModel::requestDelay(bool, std::function<void()>) { throw std::logic_error("Unexpected delay request"); }
 void AppModel::lockDelayFromLast() { throw std::logic_error("Unexpected delay lock"); }
-void AppModel::beginCapture(const juce::String&, std::function<void(bool)>) { throw std::logic_error("Unexpected capture"); }
+static std::function<void(AppModel&, const juce::String&, std::function<void(bool)>)> guideCapture;
+void AppModel::beginCapture(const juce::String& name, std::function<void(bool)> then) {
+    if (!guideCapture) throw std::logic_error("Unexpected capture");
+    guideCapture(*this, name, std::move(then));
+}
 bool AppModel::storeTrace(const juce::String&) { throw std::logic_error("Unexpected capture"); }
 const foh::Trace* AppModel::findTrace(const char* name) const {
     for (int i = traces.count() - 1; i >= 0; --i)
@@ -106,4 +120,122 @@ TEST_CASE("W2 disables delay choices without captured traces", "[app][guide]") {
     panel->loadState(findDelayStep());
     for (auto* row : choices(*panel)) CHECK_FALSE(row->isEnabled());
     CHECK(labelContains(*panel, "Capture mains and sub first"));
+}
+
+namespace {
+juce::TextButton& button(Panel& panel, const char* text) {
+    for (int i = 0; i < panel.getNumChildComponents(); ++i)
+        if (auto* b = dynamic_cast<juce::TextButton*>(panel.getChildComponent(i)))
+            if (b->getButtonText() == text) return *b;
+    throw std::logic_error("Missing guide button");
+}
+juce::TextEditor& noteEditor(Panel& panel) {
+    for (int i = 0; i < panel.getNumChildComponents(); ++i)
+        if (auto* e = dynamic_cast<juce::TextEditor*>(panel.getChildComponent(i))) return *e;
+    throw std::logic_error("Missing verification note");
+}
+struct CaptureStub {
+    bool settled = true;
+    int calls = 0;
+    std::function<void(bool)> pending;
+    juce::String name;
+    CaptureStub() {
+        guideCapture = [this](AppModel&, const juce::String& n, std::function<void(bool)> then) {
+            ++calls; name = n; pending = std::move(then);
+        };
+    }
+    void finish(AppModel& m, double magnitude = 0) {
+        foh::TFResult tf;
+        tf.freq = {100, 1000}; tf.magDb = {magnitude, magnitude}; tf.phaseDeg = {0, 0}; tf.coherence = {1, 1};
+        REQUIRE(m.traces.store(name.toStdString(), tf, m.refDelayMs));
+        auto then = std::move(pending); then(settled);
+    }
+    ~CaptureStub() { guideCapture = {}; }
+};
+}
+
+TEST_CASE("Every W1-W5 frame requires manual Apply and ends in fresh Verify with a verdict note", "[app][guide]") {
+    juce::ScopedJuceInitialiser_GUI gui;
+    for (int guide = 0; guide < 5; ++guide) {
+        CAPTURE(guide);
+        AppModel model; CaptureStub capture;
+        auto panel = makeGuidePanel(model); panel->setSize(260, 660);
+        auto state = fohws::Json::object(); state.set("guide", guide); state.set("step", 100);
+        // Restoring Apply/Verify must restart at Store, since the baseline is not restored.
+        panel->loadState(state);
+        const int beforeStep = panel->saveState()["step"].asInt();
+        button(*panel, "Measure before change").onClick();
+        CHECK_FALSE(button(*panel, "Measure before change").isEnabled());
+        capture.finish(model);
+        CHECK(panel->saveState()["step"].asInt() == beforeStep + 1);
+        CHECK(labelContains(*panel, "FOH Gauge never applies it"));
+        CHECK(capture.calls == 1); // Apply only acknowledges a user's external DSP change.
+        button(*panel, "I entered the change").onClick();
+        CHECK(panel->saveState()["step"].asInt() == beforeStep + 2);
+        CHECK(labelContains(*panel, "Verify against the stored trace"));
+        CHECK_FALSE(button(*panel, "Pass").isEnabled());
+        CHECK_FALSE(button(*panel, "Fail").isEnabled());
+        button(*panel, "Re-measure to verify").onClick();
+        CHECK(capture.calls == 2);
+        CHECK_FALSE(button(*panel, "Pass").isEnabled());
+        capture.finish(model, 3);
+        CHECK(labelContains(*panel, "3.00 dB across 2 coherent bins"));
+        CHECK_FALSE(button(*panel, "Pass").isEnabled());
+        noteEditor(*panel).setText("Improved overlap", false); noteEditor(*panel).onTextChange();
+        REQUIRE(button(*panel, "Pass").isEnabled());
+        button(*panel, "Pass").onClick(); CHECK(labelContains(*panel, "PASS: Improved overlap"));
+        button(*panel, "Fail").onClick(); CHECK(labelContains(*panel, "FAIL: Improved overlap"));
+        CHECK(panel->saveState()["verificationNote"].asString() == "FAIL: Improved overlap");
+        CHECK(panel->saveState()["step"].asInt() == beforeStep + 2); // Verify is the final step.
+        button(*panel, "Re-measure to verify").onClick();
+        CHECK_FALSE(button(*panel, "Pass").isEnabled());
+        capture.settled = false; capture.finish(model);
+        CHECK_FALSE(button(*panel, "Fail").isEnabled());
+        CHECK(labelContains(*panel, "No settled measurement"));
+        CHECK(model.engine.gen.load() == AudioEngine::Off);
+        CHECK(model.lockedDelayMs == 0);
+    }
+}
+
+TEST_CASE("Verify rejects reference-delay changes and stale completion after guide navigation", "[app][guide]") {
+    juce::ScopedJuceInitialiser_GUI gui;
+    AppModel model; CaptureStub capture;
+    auto panel = makeGuidePanel(model); panel->setSize(260, 660);
+    auto state = fohws::Json::object(); state.set("guide", 3); state.set("step", 0); panel->loadState(state);
+    button(*panel, "Measure before change").onClick(); capture.finish(model);
+    button(*panel, "I entered the change").onClick();
+    button(*panel, "Re-measure to verify").onClick(); model.refDelayMs = 5; capture.finish(model);
+    CHECK(panel->saveState()["step"].asInt() == 0);
+    CHECK(labelContains(*panel, "Reference delay or routing changed"));
+    button(*panel, "Measure before change").onClick();
+    state.set("guide", 4); panel->loadState(state); capture.finish(model);
+    CHECK(panel->saveState()["guide"].asInt() == 4);
+    CHECK(panel->saveState()["step"].asInt() == 0);
+}
+
+TEST_CASE("Guide requires a settled baseline and rejects captures with no comparable coherent bins", "[app][guide]") {
+    juce::ScopedJuceInitialiser_GUI gui;
+    AppModel model; CaptureStub capture;
+    auto panel = makeGuidePanel(model); panel->setSize(260, 660);
+    auto state = fohws::Json::object(); state.set("guide", 4); state.set("step", 0); panel->loadState(state);
+    capture.settled = false;
+    button(*panel, "Measure before change").onClick(); capture.finish(model);
+    CHECK(panel->saveState()["step"].asInt() == 0);
+    CHECK(labelContains(*panel, "No settled measurement"));
+    capture.settled = true;
+    button(*panel, "Measure before change").onClick(); capture.finish(model);
+    button(*panel, "I entered the change").onClick();
+    button(*panel, "Re-measure to verify").onClick();
+    foh::TFResult lowCoherence;
+    lowCoherence.freq = {100, 1000}; lowCoherence.magDb = {0, 0}; lowCoherence.coherence = {0.1, 0.1};
+    REQUIRE(model.traces.store(capture.name.toStdString(), lowCoherence, 0));
+    auto then = std::move(capture.pending); then(true);
+    CHECK(labelContains(*panel, "No comparable coherent bins"));
+    noteEditor(*panel).setText("Cannot judge", false); noteEditor(*panel).onTextChange();
+    CHECK_FALSE(button(*panel, "Pass").isEnabled());
+    CHECK_FALSE(button(*panel, "Fail").isEnabled());
+    for (int i = 0; i < panel->getNumChildComponents(); ++i) {
+        auto* child = panel->getChildComponent(i);
+        if (child->isVisible()) CHECK(panel->getLocalBounds().contains(child->getBounds()));
+    }
 }
