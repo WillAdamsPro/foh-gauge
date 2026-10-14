@@ -36,7 +36,7 @@ SetupPage::SetupPage(AppModel& m, bool showDone) : model(m) {
         else notice.setText("SPL calibration saved for this input. Keep the input gain unchanged.", dontSendNotification);
     };
     clearSpl.onClick = [this] { model.clearSpl(); };
-    addAndMakeVisible(chime); chime.setTooltip("Short chime at -18 dBFS on the selected generator and loopback outputs");
+    addAndMakeVisible(chime); chime.setTooltip("Short chime at -18 dBFS on the selected generator output");
     chime.onClick = [this] { model.engine.playChime(); };
     addChildComponent(done); done.setVisible(showDone); makePrimary(done);
     done.onClick = [this] {
@@ -75,6 +75,7 @@ void SetupPage::refresh() {
     };
     auto ins = dev ? dev->getInputChannelNames() : StringArray(); auto outs = dev ? dev->getOutputChannelNames() : StringArray();
     wizard.setChannels(ins, outs);
+    wizard.setDevices(setup.inputDeviceName, setup.outputDeviceName);
     channels(mic, ins, model.engine.micCh, "Mic"); channels(ref, ins, model.engine.refCh, "Reference");
     channels(generator, outs, model.engine.outA, "Generator output"); channels(loopback, outs, model.engine.outB, "Loopback output");
     // Enable every physical channel so callback indices match the displayed channel numbers.
