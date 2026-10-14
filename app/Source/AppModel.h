@@ -51,6 +51,18 @@ public:
         capture.active = false; capture.then = {}; pendingDelay = {};
         delayPending = false; delay = {}; overlay = {};
     }
+    // Device setup has already changed synchronously during session Open.
+    // Acknowledge its epoch before restoring delay so the next UI timer does not
+    // mistake the restored state for measurements from the previous device.
+    void restoreSessionDelay(double ms) {
+        lastInputEpoch = engine.captureEpoch.load(std::memory_order_acquire);
+        lastDeviceFailed = engine.deviceFailed.load();
+        tf = {}; rtaDb.clear(); rtaBands.clear(); conv = {}; micLevelValid = false;
+        sweep = {}; sweepCapturing = false;
+        refDelaySamples = 0; refDelayMs = 0;
+        lockedDelayMs = ms;
+        send(foh::Command::referenceDelay(ms * engine.sampleRate.load() / 1000.0));
+    }
     double lockedDelayMs = 0; bool delayPending = false;
 
     // ---- traces

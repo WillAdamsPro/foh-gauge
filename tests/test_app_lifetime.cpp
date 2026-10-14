@@ -11,6 +11,7 @@ class TestMain : public MainComponent {
 public:
     explicit TestMain(const juce::File& folder) : MainComponent(folder) {}
     using MainComponent::saveWorkspaceAs;
+    AppModel& state() { return model; }
     void showWorkspace() { setup.setVisible(false); view.setVisible(true); openFloatingWindows(); }
     FloatingPanelWindow* floating(int index) { return floats[index]; }
     int floatingCount() const { return floats.size(); }
@@ -99,6 +100,7 @@ TEST_CASE("Session replacement destroys windows before replacing their borrowed 
     REQUIRE(main.readSession(session));
     // Session open must return before its asynchronous device/rig fallback notice
     // is dismissed, including when JUCE modal loops are enabled.
+    drainMessages(); // Allow the asynchronous notice to enter modal state before dismissing it.
     juce::ModalComponentManager::getInstance()->cancelAllModalComponents();
     drainMessages();
     main.selectWorkspace("rta-show");
@@ -139,4 +141,86 @@ TEST_CASE("Setup unsubscribes device changes and wizard cancels timers on destru
     for (const auto sample : output) CHECK(sample == 0);
     for (const auto sample : loopback) CHECK(sample == 0);
     CHECK(model.engine.connectionResult() == foh::ConnectionResult::pending);
+}
+
+TEST_CASE("Bad session opens leave the running app state intact and show a notice", "[app][session][regression]") {
+    juce::ScopedJuceInitialiser_GUI initialise;
+    TemporaryWorkspaces temporary;
+    TestMain main(temporary.folder.getChildFile("workspaces"));
+    auto& model = main.state();
+    model.lockedDelayMs = 4.25;
+    model.rigProfile = foh::RigProfile{};
+    model.rigProfile->clusters = 3;
+    const auto folder = temporary.folder.getChildFile("Synthetic.fohsession");
+    REQUIRE(main.writeSession(folder));
+    const auto priorWorkspace = fohws::toJson(main.workspace());
+    auto manifest = folder.getChildFile("session.json");
+    SECTION("truncated") { REQUIRE(manifest.replaceWithText("{")); }
+    SECTION("wrong type") {
+        auto j = foh::Json::parse(manifest.loadFileAsString().toStdString());
+        auto d = j["devices"]; d.set("input", 3); j.set("devices", d);
+        REQUIRE(manifest.replaceWithText(juce::String(j.dump())));
+    }
+    SECTION("unknown version") {
+        auto j = foh::Json::parse(manifest.loadFileAsString().toStdString()); j.set("version", 999);
+        REQUIRE(manifest.replaceWithText(juce::String(j.dump())));
+    }
+    SECTION("invalid workspace") {
+        auto j = foh::Json::parse(manifest.loadFileAsString().toStdString()); j.set("workspace", foh::Json::object());
+        REQUIRE(manifest.replaceWithText(juce::String(j.dump())));
+    }
+    model.engine.gen = AudioEngine::Pink;
+    REQUIRE_FALSE(main.readSession(folder));
+    CHECK(fohws::toJson(main.workspace()) == priorWorkspace);
+    CHECK(model.lockedDelayMs == 4.25); CHECK(model.engine.gen.load() == AudioEngine::Pink);
+    REQUIRE(model.rigProfile); CHECK(model.rigProfile->clusters == 3);
+    drainMessages();
+    CHECK(juce::ModalComponentManager::getInstance()->getNumModalComponents() > 0);
+    drainMessages(); // Allow the asynchronous notice to enter modal state before dismissing it.
+    juce::ModalComponentManager::getInstance()->cancelAllModalComponents(); drainMessages();
+}
+
+TEST_CASE("Session traces colours and delays survive a different live sample rate", "[app][session][regression]") {
+    juce::ScopedJuceInitialiser_GUI initialise;
+    TemporaryWorkspaces temporary;
+    TestMain main(temporary.folder.getChildFile("workspaces"));
+    auto& model = main.state();
+    model.dm.removeAudioCallback(&model.engine); model.dm.closeAudioDevice();
+    model.engine.deviceFailed = false;
+    model.analysis.start();
+    foh::TFResult tf; tf.sampleRate = 96000; tf.fftSize = 8; tf.averages = 16; tf.blankThreshold = 0.6;
+    tf.freq = {0, 12000}; tf.magDb = {0, 2}; tf.phaseDeg = {0, -90}; tf.coherence = {1, 0.8};
+    tf.H = {{1, 0}, {0, -1}}; tf.blanked = {0, 0};
+    REQUIRE(model.traces.store("Synthetic", tf, 2.5));
+    model.colourTrace(0, juce::Colours::cyan); model.toggleTrace(0); model.lockedDelayMs = 2.5;
+    const auto folder = temporary.folder.getChildFile("Synthetic.fohsession");
+    REQUIRE(main.writeSession(folder));
+    auto manifestFile = folder.getChildFile("session.json");
+    auto manifest = foh::Json::parse(manifestFile.loadFileAsString().toStdString());
+    auto devices = manifest["devices"]; devices.set("sampleRate", 96000); devices.set("type", "Synthetic missing device");
+    manifest.set("devices", devices); REQUIRE(manifestFile.replaceWithText(juce::String(manifest.dump())));
+    model.clearTraces(); model.lockedDelayMs = 0;
+    model.engine.sampleRate = 48000;
+    // Model the epoch transition from a synchronous device setup, before its UI timer.
+    model.engine.captureEpoch.fetch_add(1);
+    model.multiPosition = tf; model.positionCount = 2; model.positionMask = 3;
+    REQUIRE(main.readSession(folder));
+    CHECK(main.workspace().id == "setup");
+    CHECK(model.positionCount == 0); CHECK(model.positionMask == 0); CHECK(model.multiPosition.freq.empty());
+    CHECK(model.engine.gen.load() == AudioEngine::Off);
+    REQUIRE(model.traces.count() == 1); CHECK(model.traces.at(0).tf.sampleRate == 96000);
+    CHECK(model.traces.at(0).tf.freq == tf.freq); CHECK(model.traces.at(0).tf.H == tf.H);
+    CHECK(model.traces.at(0).refDelayMs == 2.5); CHECK_FALSE(model.traces.at(0).visible);
+    CHECK(model.traceColour(0) == juce::Colours::cyan);
+    drainMessages(); // Allow the asynchronous notice to enter modal state before dismissing it.
+    juce::ModalComponentManager::getInstance()->cancelAllModalComponents(); drainMessages();
+    CHECK(model.lockedDelayMs == 2.5);
+    // The analysis command uses the running 48 kHz rate, not the saved 96 kHz.
+    const auto deadline = juce::Time::getMillisecondCounterHiRes() + 3000;
+    double delaySamples = 0;
+    while (delaySamples != 120 && juce::Time::getMillisecondCounterHiRes() < deadline) {
+        delaySamples = model.analysis.latest().refDelaySamples;
+        juce::Thread::sleep(5);
+    }
+    CHECK(delaySamples == 120);
 }

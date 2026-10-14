@@ -80,12 +80,14 @@ Json readJson(const Path& p, bool objectRequired = true) {
     return j;
 }
 void checkFolder(const Path& p) {
-    if (p.extension() != ".fohsession" || std::filesystem::is_symlink(p)) throw std::runtime_error("Select a .fohsession folder");
+    if (p.extension() != ".fohsession" || std::filesystem::is_symlink(p)
+        || (std::filesystem::exists(p) && !std::filesystem::is_directory(p))) throw std::runtime_error("Select a .fohsession folder");
 }
 void checkChild(const Path& p) {
     if (std::filesystem::is_symlink(p)) throw std::runtime_error("Session subfolders must not be symbolic links");
 }
 }
+static bool readBundle(const Path&, Session&, std::string&, std::string*);
 bool saveSession(const Path& folder, const Session& s, std::string& error) {
     Path staging = folder; staging += ".saving";
     Path backup = folder; backup += ".backup";
@@ -112,6 +114,12 @@ bool saveSession(const Path& folder, const Session& s, std::string& error) {
         j.set("captureCount", (int) s.captures.size());
         for (size_t i = 0; i < s.captures.size(); ++i) write(staging / "captures" / (std::to_string(i) + ".json"), captureJson(s.captures[i]).dump());
         j.set("workspace", s.workspace); j.set("measurement", s.measurement); write(staging / "session.json", j.dump());
+        // Validate the exact bytes that will be installed, using the same limits
+        // and schema as Open. A failed write/validation leaves the old bundle intact.
+        Session verified;
+        std::string validationError;
+        if (!readBundle(staging, verified, validationError, nullptr))
+            throw std::runtime_error(validationError);
         if (std::filesystem::exists(folder)) { std::filesystem::rename(folder, backup); backed = true; }
         std::filesystem::rename(staging, folder); staged = false;
         if (backed) { std::error_code ignored; std::filesystem::remove_all(backup, ignored); }
@@ -123,14 +131,21 @@ bool saveSession(const Path& folder, const Session& s, std::string& error) {
         error = e.what(); return false;
     }
 }
-bool loadSession(const Path& folder, Session& out, std::string& error, std::string* notice) {
+static bool readBundle(const Path& folder, Session& out, std::string& error, std::string* notice) {
     if (notice) notice->clear();
     try {
-        checkFolder(folder); checkChild(folder / "captures"); checkChild(folder / "targets");
+        for (const auto* child : {"captures", "targets"}) {
+            checkChild(folder / child);
+            if (!std::filesystem::is_directory(folder / child))
+                throw std::runtime_error("Missing session subfolder: " + std::string(child));
+        }
         auto j = readJson(folder / "session.json");
         if (j["version"].asNumber() != 1) throw std::runtime_error("Unsupported session version");
         Session s; const auto& d = j["devices"]; const auto& c = j["channels"]; const auto& cal = j["micCal"];
         if (!d.isObject() || !c.isObject() || !cal.isObject() || !j["workspace"].isObject()) throw std::runtime_error("Incomplete session manifest");
+        for (const auto* key : {"type", "input", "output", "inputChannels", "outputChannels"})
+            if (d[key].type() != Json::String) throw std::runtime_error("Invalid device string: " + std::string(key));
+        if (cal["name"].type() != Json::String) throw std::runtime_error("Invalid calibration name");
         s.deviceType = d["type"].asString(); s.inputDevice = d["input"].asString(); s.outputDevice = d["output"].asString(); s.sampleRate = d["sampleRate"].asNumber(); s.bufferSize = integer(d["bufferSize"], 1, 1 << 20); s.inputChannels = d["inputChannels"].asString(); s.outputChannels = d["outputChannels"].asString();
         s.mic = integer(c["mic"], -1, 1023); s.reference = integer(c["reference"], -1, 1023); s.outputA = integer(c["outputA"], -1, 1023); s.outputB = integer(c["outputB"], -1, 1023);
         if (!std::isfinite(s.sampleRate) || s.sampleRate < 8000 || s.sampleRate > 768000 || s.bufferSize <= 0 || s.mic < -1 || s.reference < -1 || s.outputA < -1 || s.outputB < -1 || s.mic > 1023 || s.reference > 1023 || s.outputA > 1023 || s.outputB > 1023) throw std::runtime_error("Invalid device or channel settings");
@@ -156,6 +171,19 @@ bool loadSession(const Path& folder, Session& out, std::string& error, std::stri
         for (int i = 0; i < count; ++i) s.captures.push_back(captureFromJson(readJson(folder / "captures" / (std::to_string(i) + ".json"))));
         if (!j["measurement"].isObject()) throw std::runtime_error("Invalid measurement settings");
         const auto& m = j["measurement"];
+        if (m.has("showMode") && m["showMode"].type() != Json::Bool)
+            throw std::runtime_error("Invalid show mode flag");
+        if (m.has("traceColours")) {
+            const auto& colours = m["traceColours"];
+            if (!colours.isArray() || colours.items().size() != s.captures.size())
+                throw std::runtime_error("Invalid stored trace colours");
+            for (const auto& colour : colours.items()) {
+                const auto text = colour.asString();
+                if (colour.type() != Json::String || text.size() != 8
+                    || text.find_first_not_of("0123456789abcdefABCDEF") != std::string::npos)
+                    throw std::runtime_error("Invalid stored trace colour");
+            }
+        }
         for (const auto* key : {"smoothing", "averages", "rtaFraction"})
             if (m.has(key)) integer(m[key], 0, 65536);
         for (const auto* key : {"blankThreshold", "refDelayMs"}) {
@@ -177,6 +205,12 @@ bool loadSession(const Path& folder, Session& out, std::string& error, std::stri
         if (notice) *notice = std::move(rigNotice);
         error.clear(); return true;
     } catch (const std::exception& e) { error = e.what(); return false; }
+}
+bool loadSession(const Path& folder, Session& out, std::string& error, std::string* notice) {
+    if (notice) notice->clear();
+    try { checkFolder(folder); }
+    catch (const std::exception& e) { error = e.what(); return false; }
+    return readBundle(folder, out, error, notice);
 }
 bool sessionDevicesAvailable(const Session& s, const std::string& type, const std::vector<std::string>& inputs, const std::vector<std::string>& outputs) {
     auto contains = [](const auto& names, const auto& name) { return name.empty() || std::find(names.begin(), names.end(), name) != names.end(); };

@@ -69,12 +69,16 @@ bool MainComponent::writeSession(const File& folder) {
     s.rigProfile = model.rigProfile;
     s.splCal = model.splCalJson(); s.targets = sessionTargets;
     for (int i = 0; i < model.traces.count(); ++i) s.captures.push_back(model.traces.at(i));
+    auto colours = foh::Json::array();
+    for (int i = 0; i < model.traces.count(); ++i)
+        colours.push(model.traceColour(i).toString().toStdString());
+    s.measurement.set("traceColours", colours);
     view.storePanelStates();
     if (current >= 0) s.workspace = fohws::toJson(mgr.at(current));
     s.measurement.set("smoothing", model.smoothingFraction); s.measurement.set("averages", model.averages); s.measurement.set("rtaFraction", model.rtaFraction); s.measurement.set("blankThreshold", model.blankThreshold); s.measurement.set("refDelayMs", model.lockedDelayMs); s.measurement.set("showMode", showMode);
     std::string error;
     if (!foh::saveSession(folder.getFullPathName().toStdString(), s, error)) {
-        AlertWindow::showMessageBoxAsync(MessageBoxIconType::WarningIcon, "Session save failed", String(error)); return false;
+        AlertWindow::showMessageBoxAsync(MessageBoxIconType::WarningIcon, "Session save failed", String(error), {}, nullptr, ModalCallbackFunction::create([](int) {})); return false;
     }
     sessionFolder = folder; return true;
 }
@@ -121,10 +125,19 @@ bool MainComponent::readSession(const File& folder) {
     model.calText = s.micCalText; model.cal = foh::parseMicCal(s.micCalText); model.calFile = String(s.micCalName); model.setCalEnabled(s.micCalEnabled);
     model.clearTraces();
     for (const auto& t : s.captures) { model.traces.store(t.name, t.tf, t.refDelayMs); model.traces.at(model.traces.count() - 1).visible = t.visible; }
+    if (s.measurement.has("traceColours")) {
+        const auto& colours = s.measurement["traceColours"].items();
+        for (size_t i = 0; i < colours.size(); ++i)
+            model.colourTrace((int) i, Colour::fromString(String(colours[i].asString())));
+    }
+    // Position captures belong to the old measurement/calibration. In particular,
+    // a same-rate open does not rebuild the analysis engine and must clear them.
+    model.send(foh::Command::clearMicPositions());
+    model.multiPosition = {}; model.positionCount = 0; model.positionMask = 0;
     model.loadSplCalJson(s.splCal.value_or(foh::Json::object()));
     if (auto* prefs = model.settings.getUserSettings()) { prefs->setValue("splCalibration", String(model.splCalJson().dump())); prefs->saveIfNeeded(); } sessionTargets = s.targets;
     model.setSmoothing(s.measurement["smoothing"].asInt(12)); model.setAverages(s.measurement["averages"].asInt(16)); model.setRtaFraction(s.measurement["rtaFraction"].asInt(3)); model.setBlankThreshold(s.measurement["blankThreshold"].asNumber(0.5));
-    model.lockedDelayMs = s.measurement["refDelayMs"].asNumber(); model.send(foh::Command::referenceDelay(model.lockedDelayMs * model.engine.sampleRate.load() / 1000.0));
+    model.restoreSessionDelay(s.measurement["refDelayMs"].asNumber());
     model.send(foh::Command::resetAverages()); model.notify(AppModel::Traces | AppModel::Cal | AppModel::Settings);
     sessionFolder = folder;
     if (!available) {
