@@ -16,7 +16,7 @@ static Rectangle<int> controlRow(Rectangle<int>& r, int h = 26) { auto row = r.r
 // ---- helpers shared by the plot panels ----
 static void addStoredTraces(const AppModel& m, PlotComponent& p, bool mag) {
     for (int i = 0; i < m.traces.count(); ++i) { auto& t = m.traces.at(i); if (!t.visible) continue;
-        PlotComponent::Series s; s.c = C::storedTrace(i % 8); s.dash = foh::theme::stroke::dashStored; s.width = D::traceStored(); s.label = String(t.name);
+        PlotComponent::Series s; s.c = m.traceColour(i); s.dash = foh::theme::stroke::dashStored; s.width = D::traceStored(); s.label = String(t.name);
         logDecimate(t.tf, mag ? t.tf.magDb : t.tf.phaseDeg, s.f, s.v); p.series.push_back(s); }
 }
 static std::vector<std::pair<double,double>> blankedRegions(const foh::TFResult& tf) { // from fohcore's TFResult::blanked
@@ -423,24 +423,76 @@ private:
 class TraceListPanel : public Panel, private ListBoxModel {
 public:
     explicit TraceListPanel(AppModel& m) : Panel(m, "TraceList", "Traces") {
-        helpText = "Up to 8 stored traces. Click the box to show or hide a trace on the plots. Stored traces are dashed.";
-        list.setModel(this); list.setRowHeight(24); addAndMakeVisible(list); del.onClick = [this] { if (list.getSelectedRow() >= 0) model.removeTrace(list.getSelectedRow()); }; addAndMakeVisible(del);
+        helpText = "Up to 8 stored traces. Select a row to edit its name or colour; click the box to show/hide it. Choose two sources for a complex virtual sum preview, including the same trace twice. The preview does not store or change measurements.";
+        list.setModel(this); list.setRowHeight(24);
+        name.setTextToShowWhenEmpty("Select a trace to rename", C::textAxis());
+        name.onReturnKey = [this] { model.renameTrace(list.getSelectedRow(), name.getText()); };
+        rename.onClick = name.onReturnKey;
+        const char* names[] = {"Red", "Orange", "Yellow", "Green", "Cyan", "Blue", "Purple", "Pink"};
+        for (int i = 0; i < 8; ++i) colour.addItem(names[i], i + 1);
+        colour.setTextWhenNothingSelected("Colour");
+        colour.onChange = [this] { if (colour.getSelectedId() > 0) model.colourTrace(list.getSelectedRow(), palette(colour.getSelectedId() - 1)); };
+        del.onClick = [this] { model.removeTrace(list.getSelectedRow()); };
+        sourceA.setTextWhenNothingSelected("Sum source A"); sourceB.setTextWhenNothingSelected("Sum source B");
+        sourceA.onChange = sourceB.onChange = [this] { model.selectSum(sourceA.getSelectedId() - 1, sourceB.getSelectedId() - 1); };
+        preview.yLabel = "SUM DB"; preview.yMin = -12; preview.yMax = 12; preview.yStep = 6; preview.showLegend = true;
+        for (auto* c : std::initializer_list<Component*>{&list, &name, &rename, &colour, &del, &sourceA, &sourceB, &preview}) addAndMakeVisible(c);
+        modelChanged(AppModel::Traces);
     }
     ~TraceListPanel() override { list.setModel(nullptr); }
+    fohws::Size minSize() const override { return {300, 420}; }
     int priority() const override { return 5; }
-    void resized() override { auto r = getLocalBounds().reduced(pad, 6); del.setBounds(r.removeFromBottom(28).removeFromRight(110)); r.removeFromBottom(6); list.setBounds(r); }
-    void modelChanged(int w) override { if (w & (AppModel::Traces | AppModel::Theme)) { list.updateContent(); list.repaint(); } }
+    void resized() override {
+        auto r = getLocalBounds().reduced(pad, 6);
+        list.setBounds(r.removeFromTop(120)); r.removeFromTop(6);
+        auto row = controlRow(r); rename.setBounds(row.removeFromRight(76)); row.removeFromRight(6); name.setBounds(row);
+        row = controlRow(r); del.setBounds(row.removeFromRight(110)); row.removeFromRight(6); colour.setBounds(row);
+        row = controlRow(r); sourceA.setBounds(row.removeFromLeft(row.getWidth() / 2)); row.removeFromLeft(6); sourceB.setBounds(row);
+        preview.setBounds(r);
+    }
+    void modelChanged(int w) override {
+        if (!(w & (AppModel::Traces | AppModel::Theme))) return;
+        list.updateContent(); list.repaint(); selectedRowsChanged(list.getSelectedRow());
+        sourceA.clear(dontSendNotification); sourceB.clear(dontSendNotification);
+        for (int i = 0; i < model.traces.count(); ++i) {
+            auto title = String(i + 1) + ": " + String(model.traces.at(i).name);
+            sourceA.addItem(title, i + 1); sourceB.addItem(title, i + 1);
+        }
+        sourceA.setSelectedId(model.sumA + 1, dontSendNotification); sourceB.setSelectedId(model.sumB + 1, dontSendNotification);
+        auto sum = model.sumPreview(); preview.series.clear();
+        preview.centreNote = sum.freq.empty() ? (model.validTrace(model.sumA) && model.validTrace(model.sumB)
+            ? "Sources need matching frequency grids and complete TF data" : "Choose two stored traces to preview their sum") : String{};
+        preview.note = {};
+        if (!sum.freq.empty()) {
+            PlotComponent::Series s; s.c = C::accent(); s.label = "Virtual sum";
+            logDecimate(sum, sum.magDb, s.f, s.v, &s.gap); preview.series.push_back(std::move(s));
+            // A numerical readout makes the preview useful even in a small panel.
+            auto bin = std::min_element(sum.freq.begin(), sum.freq.end(), [](double a, double b) { return std::abs(a - 1000) < std::abs(b - 1000); });
+            auto k = (size_t) std::distance(sum.freq.begin(), bin);
+            preview.note = String(*bin, 0) + " Hz: " + (sum.magDb[k] >= 0 ? "+" : "") + String(sum.magDb[k], 2) + " dB";
+        }
+        preview.repaint();
+    }
     int getNumRows() override { return model.traces.count(); }
     void paintListBoxItem(int row, Graphics& g, int w, int h, bool sel) override {
-        if (row >= model.traces.count()) return; auto& t = model.traces.at(row);
+        if (!model.validTrace(row)) return; auto& t = model.traces.at(row);
         if (sel) g.fillAll(C::navItemActiveBg());
-        auto box = Rectangle<float>(6, h / 2.f - 6, 12, 12); g.setColour(C::storedTrace(row % 8)); g.drawRect(box, 1.f); if (t.visible) g.fillRect(box.reduced(3));
+        auto box = Rectangle<float>(6, h / 2.f - 6, 12, 12); g.setColour(model.traceColour(row)); g.drawRect(box, 1.f); if (t.visible) g.fillRect(box.reduced(3));
         g.setColour(t.visible ? C::textPrimary() : C::textAxis()); g.setFont(FohLookAndFeel::font(T::small));
         g.drawText(String(t.name) + "   ref delay " + String(t.refDelayMs, 2) + " ms", 26, 0, w - 30, h, Justification::centredLeft);
     }
-    void listBoxItemClicked(int row, const MouseEvent& e) override { if (row < model.traces.count() && e.x < 24) model.toggleTrace(row); }
+    void selectedRowsChanged(int row) override {
+        bool valid = model.validTrace(row);
+        name.setEnabled(valid); rename.setEnabled(valid); colour.setEnabled(valid); del.setEnabled(valid);
+        name.setText(valid ? String(model.traces.at(row).name) : String{}, false);
+        int id = 0;
+        if (valid) for (int i = 0; i < 8; ++i) if (model.traceColour(row) == palette(i)) id = i + 1;
+        colour.setSelectedId(id, dontSendNotification);
+    }
+    void listBoxItemClicked(int row, const MouseEvent& e) override { if (e.x < 24) model.toggleTrace(row); }
 private:
-    ListBox list; TextButton del {"Delete trace"};
+    static Colour palette(int i) { return Colour::fromHSV((float) i / 8.0f, 0.7f, 0.9f, 1.0f); }
+    ListBox list; TextEditor name; ComboBox colour, sourceA, sourceB; TextButton rename {"Rename"}, del {"Delete trace"}; PlotComponent preview;
 };
 
 // ===================== Inspector =====================
