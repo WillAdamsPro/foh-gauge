@@ -1,6 +1,7 @@
 #include "Panels.h"
 #include "BinaryData.h"
 #include "SetupPage.h"
+#include "SettleStatus.h"
 using namespace juce;
 namespace C = foh::ui::col;
 namespace D = foh::ui::dim;
@@ -162,7 +163,8 @@ public:
                PlotComponent::Series s; s.c = C::traceLive(); s.label = "Live"; logDecimate(model.tf, model.tf.magDb, s.f, s.v, &s.gap); plot.series.push_back(s); }
         target.appendTo(plot);
         plot.lowCoh = blankedRegions(model.tf);
-        plot.note = "averages " + String(model.tf.averages) + (model.calApplied ? u8(" \xc2\xb7 cal applied") : "") + ((model.conv.unsettled || model.capture.unsettled) ? u8(" \xc2\xb7 \xe2\x96\xb2 unsettled") : model.conv.settled ? u8(" \xc2\xb7 settled") : u8(" \xc2\xb7 averaging"));
+        plot.note = "averages " + String(model.tf.averages) + (model.calApplied ? u8(" \xc2\xb7 cal applied") : "")
+                    + u8(" \xc2\xb7 ") + u8(fohui::settleStatusText(model.conv, model.capture.active, model.capture.unsettled));
         plot.repaint();
     }
 private:
@@ -255,33 +257,51 @@ public:
         helpText = "The delay finder lines up the reference with the mic (cross-correlation in fohcore).\n\nInsert delay applies it to the reference so the transfer function phase flattens.\n\nTwo similar spikes: arrivals within 3 dB and more than 0.5 ms apart. Check that only one speaker is on.\n\nConfidence 0 means no lock: check signal and that only one speaker is on.";
         value.setFont(FohLookAndFeel::numeric(34)); value.setText("--", dontSendNotification);
         styleLabel(detail, T::small, C::textSecondary()); detail.setJustificationType(Justification::topLeft); detail.setText("Press Find", dontSendNotification);
+        styleLabel(twoSpikeBadge, T::small, C::warning(), true);
+        twoSpikeBadge.setText(u8("\xe2\x96\xb2 Two similar spikes"), dontSendNotification);
+        twoSpikeBadge.setColour(Label::backgroundColourId, C::warning().withAlpha(0.12f));
+        twoSpikeBadge.setColour(Label::outlineColourId, C::warning());
+        twoSpikeBadge.setTooltip("Two arrivals within 3 dB and more than 0.5 ms apart: only one speaker on? Confidence is multiplied by 0.75 in the delay finder.");
+        addChildComponent(twoSpikeBadge);
         makePrimary(insert); find.onClick = [this] { model.requestDelay(sub.getToggleState()); }; insert.onClick = [this] { model.lockDelayFromLast(); };
         sub.setButtonText("Sub (LF)");
         for (auto* c : std::initializer_list<Component*>{&value, &detail, &find, &insert, &sub}) addAndMakeVisible(c);
+        if (model.delayPending || model.delayLocked()) modelChanged(AppModel::Delay);
     }
-    fohws::Size minSize() const override { return { 300, 90 }; }
+    fohws::Size minSize() const override { return { 300, 150 }; }
     int priority() const override { return 70; }
     void resized() override {
         auto r = getLocalBounds().reduced(pad, 6); auto right = r.removeFromRight(110);
         insert.setBounds(right.removeFromTop(28)); right.removeFromTop(6); find.setBounds(right.removeFromTop(28)); right.removeFromTop(4); sub.setBounds(right.removeFromTop(22));
+        if (twoSpikeBadge.isVisible()) { twoSpikeBadge.setBounds(r.removeFromTop(22)); r.removeFromTop(4); }
         value.setBounds(r.removeFromTop(44)); detail.setBounds(r);
     }
     void modelChanged(int w) override {
-        if (w & AppModel::Theme) { makePrimary(insert); detail.setColour(Label::textColourId, C::textSecondary()); }
+        if (w & AppModel::Theme) {
+            makePrimary(insert); detail.setColour(Label::textColourId, C::textSecondary());
+            twoSpikeBadge.setColour(Label::textColourId, C::warning());
+            twoSpikeBadge.setColour(Label::backgroundColourId, C::warning().withAlpha(0.12f));
+            twoSpikeBadge.setColour(Label::outlineColourId, C::warning());
+        }
         if (!(w & (AppModel::Delay | AppModel::Theme))) return;
         auto& d = model.delay;
+        twoSpikeBadge.setVisible(!model.delayPending && model.delayLocked() && d.twoSimilarArrivals);
+        resized();
         if (model.delayPending) { detail.setText(model.delayWasSub ? "Finding sub delay (3 s window)..." : "Finding delay...", dontSendNotification); return; }
         if (!model.delayLocked()) { value.setText("--", dontSendNotification); detail.setText(d.arrivals.empty() ? "No signal: is pink noise playing?" : "No valid delay result: check signal and that only one speaker is on", dontSendNotification); return; }
         auto& a0 = d.arrivals[0];
         value.setText(String(consoleMs(a0.delayMs), 2) + " ms", dontSendNotification);
-        String t = String(d.confidence > 0.7 ? "High" : d.confidence > 0.35 ? "Medium" : "LOW") + u8(" confidence \xc2\xb7 polarity ") + (a0.inverted ? "INVERTED" : "normal")
+        // The core has already applied the two-spike penalty; display it only once.
+        String t = String(d.confidence > 0.7 ? "High" : d.confidence > 0.35 ? "Medium" : "LOW") + " confidence " + String(roundToInt(d.confidence * 100.0)) + "%"
+                 + (d.twoSimilarArrivals ? u8(" (\xc3\x97" "0.75)") : "")
+                 + "\npolarity " + (a0.inverted ? "INVERTED" : "normal")
                  + u8("\n\xe2\x89\x88 ") + String(a0.distanceM, 2) + " m" + (model.delayWasSub ? " (sub, LF-weighted)" : "");
         for (size_t i = 1; i < d.arrivals.size(); ++i) t << u8("  \xc2\xb7  #") << (int) i + 1 << " " << String(consoleMs(d.arrivals[i].delayMs), 2) << " ms (" << String(d.arrivals[i].relLevelDb, 1) << " dB)";
-        if (d.twoSimilarArrivals) t << u8("\n\xe2\x96\xb2 Two similar spikes: is only one speaker on?");
         detail.setText(t, dontSendNotification);
     }
 private:
-    Label value, detail; TextButton find {"Find"}, insert {"Insert delay"}; ToggleButton sub;
+    Label value, detail, twoSpikeBadge; TextButton find {"Find"}, insert {"Insert delay"}; ToggleButton sub;
+    TooltipWindow tooltip { nullptr, 700 };
 };
 
 // ===================== Impulse =====================
@@ -357,6 +377,8 @@ public:
     }
     fohws::Size minSize() const override { return { 360, 420 }; }
     void resized() override { setup.setBounds(getLocalBounds()); }
+    Json saveState() const override { Json j = Json::object(); j.set("mic", model.engine.micCh.load()); j.set("ref", model.engine.refCh.load()); j.set("outA", model.engine.outA.load()); j.set("outB", model.engine.outB.load()); return j; }
+    void loadState(const Json& j) override { if (!j.isObject()) return; model.engine.micCh = j["mic"].asInt(0); model.engine.refCh = j["ref"].asInt(1); model.engine.outA = j["outA"].asInt(0); model.engine.outB = j["outB"].asInt(1); model.notify(AppModel::Settings); }
 private:
     SetupPage setup;
 };

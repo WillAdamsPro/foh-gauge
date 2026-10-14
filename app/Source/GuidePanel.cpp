@@ -15,7 +15,7 @@ static const std::vector<std::vector<Step>> kGuides = {
    {"Save", "Save Position 1", "Store this trace so you can compare later. If you move the mic, find the delay again.", "Store 'Position 1'", 5, 6} },
  { {"Measure mains", "Measure the mains alone", "Mute the subs. Mic where sub and mains are about equally loud (often FOH). Pink noise on. This finds and locks the delay to the mains, then stores 'Main'.", "Capture mains \xe2\x97\x8f", 12, 1},
    {"Measure sub", "Measure the sub alone", "Mute the mains, unmute the subs. Don't find the delay again: the comparison depends on the same timing. The dashed line is your stored mains.", "Capture sub \xe2\x97\x8f", 7, 2},
-   {"Find delay", "Find the delay", "Compare phase in the shaded crossover band (phase above 250 Hz is hidden). Judge polarity from these traces, not the impulse. Prefer the option where slopes match across the band and that needs the least delay.", "Use this delay", 8, 3},
+   {"Find delay", "Find the delay", "Compare phase across the shaded crossover band (up to 250 Hz). Choose matching slopes and the least delay. Judge polarity from phase, not the impulse.", "Use this delay", 8, 3},
    {"Apply & verify", "Apply and verify", "Enter the change in your DSP and unmute both. The sum (white) should RISE in the crossover band, up to ~+6 dB where the two are equal, not dip. Walk a few seats.", "Capture both \xe2\x97\x8f", 9, 4},
    {"Done", "Sub and mains aligned", "", "Measure again", 13, 5} },
  { {"Mains", "Measure the mains", "Mains already tuned. Mic in the seam: where main and fill are about equally loud, inside the fill's area. Fill muted. This finds and locks the delay to the mains.", "Find + lock delay", 3, 6},
@@ -32,6 +32,15 @@ public:
         guideBox.setSelectedId(guide + 1, dontSendNotification);
         guideBox.onChange = [this] { guide = guideBox.getSelectedId() - 1; step = 0; result.setText({}, dontSendNotification); refresh(); };
         for (auto* c : std::initializer_list<Component*>{&guideBox, &stepLabel, &titleLabel, &body, &result, &readout, &polarity, &prev, &act, &doneActions}) addChildComponent(c);
+        for (size_t i = 0; i < delayChoices.size(); ++i) {
+            auto& row = delayChoices[i];
+            addChildComponent(row);
+            row.setRadioGroupId(27);
+            row.setClickingTogglesState(true);
+            if (i == 3) row.setTooltip("Flip sub polarity and use the displayed delay. Verify the phase slopes across the crossover band.");
+            row.onClick = [this, i] { if (delayChoices[i].getToggleState()) selectedDelay = i; };
+        }
+        delayChoices[0].setToggleState(true, dontSendNotification);
         guideBox.setVisible(true);
         prev.onClick = [this] { if (step > 0) { --step; refresh(); } };
         act.onClick = [this] { action(kGuides[(size_t) guide][(size_t) step].act); };
@@ -41,7 +50,7 @@ public:
         refresh();
     }
     ~GuidePanel() override { model.overlayBuilder = {}; model.overlay = {}; }
-    fohws::Size minSize() const override { return { foh::theme::ws::inspectorMinWidth, 360 }; }
+    fohws::Size minSize() const override { return { foh::theme::ws::inspectorMinWidth, guide == 1 ? 660 : 360 }; }
     int priority() const override { return 60; }
     fohws::Json saveState() const override { auto j = fohws::Json::object(); j.set("guide", guide); j.set("step", step); return j; }
     void loadState(const fohws::Json& j) override {
@@ -100,6 +109,7 @@ private:
         titleLabel.setVisible(true); titleLabel.setText(u8(st.title), dontSendNotification); titleLabel.setBounds(c.removeFromTop(26)); c.removeFromTop(6);
         auto buttons = c.removeFromBottom(36); c.removeFromBottom(8);
         summary = {};
+        for (auto& row : delayChoices) row.setVisible(st.chart == 3);
         if (st.chart == 5) { // Done
             body.setVisible(false); readout.setVisible(false); polarity.setVisible(false); result.setVisible(false); prev.setVisible(false);
             summary = c.removeFromTop(jmax(22, (int) summaryRows.size() * 40)); c.removeFromTop(10);
@@ -110,11 +120,15 @@ private:
         doneActions.setVisible(false);
         body.setVisible(true); body.setText(u8(st.body), dontSendNotification);
         int bodyH = jmin(c.getHeight() / 2, roundToInt(body.getFont().getHeight() * 1.25f * (2 + body.getFont().getStringWidthFloat(body.getText()) / jmax(1, c.getWidth() - 8))));
+        if (st.chart == 3) bodyH = jmin(bodyH, 96);
         body.setBounds(c.removeFromTop(bodyH)); c.removeFromTop(6);
         bool ro = st.chart == 3; readout.setVisible(ro); polarity.setVisible(ro);
-        if (ro) { if (readout.getText().isEmpty()) readout.setText("Suggested: --", dontSendNotification);
-                  if (polarity.getText().isEmpty()) polarity.setText(u8("Polarity: judge it from the phase traces in the shaded band, not from the impulse. A flip moves the sub phase by 180\xc2\xb0."), dontSendNotification);
-                  readout.setBounds(c.removeFromTop(40)); polarity.setBounds(c.removeFromTop(64)); c.removeFromTop(4); }
+        if (ro) {
+            say(updateSubChoices());
+            readout.setBounds(c.removeFromTop(24));
+            for (auto& row : delayChoices) row.setBounds(c.removeFromTop(28));
+            polarity.setBounds(c.removeFromTop(76)); c.removeFromTop(4);
+        }
         progress = c.removeFromBottom(26); c.removeFromBottom(4);
         result.setVisible(true); result.setBounds(c);
         prev.setVisible(step > 0); act.setVisible(true); act.setButtonText(u8(st.action));
@@ -153,6 +167,43 @@ private:
         return u8("\xe2\x89\x88 ") + String(a0.distanceM, 2) + u8(" m \xc2\xb7 confidence ") + (d.confidence > 0.7 ? "high" : d.confidence > 0.35 ? "medium" : "LOW") + u8(" \xc2\xb7 polarity ") + (a0.inverted ? "INVERTED" : "normal")
              + (d.twoSimilarArrivals ? u8(" \xc2\xb7 \xe2\x96\xb2 two similar arrivals: is only one speaker on?") : "");
     }
+    // Message-thread only: phase analysis and row text never run in the audio callback.
+    String updateSubChoices() {
+        choicesValid = false;
+        readout.setText("Choose a delay: --", dontSendNotification);
+        polarity.setText({}, dontSendNotification);
+        for (auto& row : delayChoices) { row.setEnabled(false); row.setButtonText("--"); }
+        auto* m = model.findTrace("Main"); auto* s = model.findTrace("Sub"); if (!m || !s) { return "Capture mains and sub first."; }
+        xover = foh::acousticCrossover(m->tf, s->tf, 10.0); if (!xover.found) { return "No overlap within 10 dB between 30-300 Hz. Check levels."; }
+        auto estimate = foh::subDelayFromPhase(m->tf, s->tf, xover.lo, xover.hi, 0,
+            model.delayLocked() && model.delayWasSub ? &model.delay : nullptr);
+        if (!estimate.valid) { return "No reliable phase estimate in the crossover band. Check signal and coherence."; }
+        double period = estimate.periodMs;
+        // A polarity flip shifts the primary candidate by half a period; prefer the smaller change.
+        double invMs = estimate.primaryMs > 0 ? estimate.primaryMs - period / 2 : estimate.primaryMs + period / 2;
+        // QA (Vega): the W2 delay comes from the crossover-band phase offset; +/-1 period are the alternatives.
+        // The raw impulse peak is only a hint (it is dominated by the mains HF energy).
+        double d = consoleMs(std::abs(estimate.primaryMs));
+        auto alt = [&](double ms) { double v = consoleMs(ms); return (v >= 0 ? String("Mains +") : String("Sub +")) + String(std::abs(v), 2) + " ms"; };
+        String hint; if (estimate.hasHint) hint = "Raw impulse peak: " + String(consoleMs(estimate.hintMs), 2) + " ms (hint only).";
+        choiceMs = {estimate.primaryMs, estimate.alternativesMs[0], estimate.alternativesMs[1], invMs};
+        const char* names[] = {"Primary: ", "-1 period: ", "+1 period: ", "Flip sub: "};
+        for (size_t i = 0; i < delayChoices.size(); ++i) {
+            delayChoices[i].setEnabled(true);
+            delayChoices[i].setButtonText(String(names[i]) + alt(choiceMs[i]));
+        }
+        choicesValid = true;
+        readout.setText("Choose a delay (XO " + String(estimate.xoHz, 0) + " Hz)", dontSendNotification);
+        polarity.setText("Judge polarity from the phase traces. A flip shifts phase by 180 degrees."
+            + (hint.isNotEmpty() ? "\n" + hint : String()), dontSendNotification);
+        String out;
+        out << "Crossover " << String(xover.lo, 0) << "-" << String(xover.hi, 0) << " Hz (centre ~" << String(estimate.xoHz, 0) << " Hz). Sub vs main phase " << String(estimate.phaseDeg, 0) << u8("\xc2\xb0 = ") << String(d, 2) << " ms ("
+            << (estimate.primaryMs > 0 ? "sub LATE" : "sub EARLY") << "). Other answers differ by whole cycles (" << String(period, 2) << u8(" ms). Target: within ~60\xc2\xb0 and parallel across the band.");
+        summaryRows = { {"Crossover", String(xover.lo, 0) + "-" + String(xover.hi, 0) + " Hz"},
+                        {"Reference delay", String(consoleMs(model.lockedDelayMs), 2) + " ms"} };
+        return out;
+    }
+
     void action(int a) {
         String out; SafePointer<GuidePanel> safe(this);
         switch (a) {
@@ -179,34 +230,19 @@ private:
                     model.beginCapture("Sub", [safe](bool settled) { if (!safe) return; auto& q = *safe;
                         q.say("Stored 'Sub' (same locked delay " + String(consoleMs(q.model.lockedDelayMs), 2) + " ms)." + String(settled ? "" : u8(" \xe2\x96\xb2 Unsettled: the average did not settle within 10 s.")));
                         auto* m = q.model.findTrace("Main"); auto* s = q.model.findTrace("Sub"); if (m && s) q.xover = foh::acousticCrossover(m->tf, s->tf, 10.0);
+                        q.selectedDelay = 0; q.delayChoices[0].setToggleState(true, dontSendNotification);
                         q.next(); q.refresh(); });
                     return;
-            case 8: { auto* m = model.findTrace("Main"); auto* s = model.findTrace("Sub"); if (!m || !s) { out = "Capture mains and sub first."; break; }
-                xover = foh::acousticCrossover(m->tf, s->tf, 10.0); if (!xover.found) { out = "No overlap within 10 dB between 30-300 Hz. Check levels."; break; }
-                auto estimate = foh::subDelayFromPhase(m->tf, s->tf, xover.lo, xover.hi, 0,
-                    model.delayLocked() && model.delayWasSub ? &model.delay : nullptr);
-                if (!estimate.valid) { out = "No reliable phase estimate in the crossover band. Check signal and coherence."; break; }
-                double period = estimate.periodMs;
-                // A polarity flip shifts the primary candidate by half a period; prefer the smaller change.
-                double invMs = estimate.primaryMs > 0 ? estimate.primaryMs - period / 2 : estimate.primaryMs + period / 2;
-                // QA (Vega): the W2 delay comes from the crossover-band phase offset; +/-1 period are the alternatives.
-                // The raw impulse peak is only a hint (it is dominated by the mains HF energy).
-                String who = estimate.primaryMs > 0 ? "Mains" : "Sub"; double d = consoleMs(std::abs(estimate.primaryMs));
-                auto alt = [&](double ms) { double v = consoleMs(ms); return (v >= 0 ? String("Mains +") : String("Sub +")) + String(std::abs(v), 2) + " ms"; };
-                String alts = alt(estimate.alternativesMs[0]) + "  /  " + alt(estimate.alternativesMs[1]);
-                String hint; if (estimate.hasHint) hint = "Impulse peak hint: sub arrives " + String(consoleMs(estimate.hintMs - model.lockedDelayMs), 2) + " ms vs mains (hint only).";
-                readout.setText("Suggested: " + who + " +" + String(d, 2) + " ms\n" + u8("\xc2\xb1" "1 period: ") + alts, dontSendNotification);
-                { double halfMs = 500.0 / estimate.xoHz; bool flipLess = std::abs(invMs) < std::abs(estimate.primaryMs);
-                  polarity.setText(u8("Or flip sub polarity + ") + (invMs > 0 ? "mains " : "sub ") + String(consoleMs(std::abs(invMs)), 2) + u8(" ms. A flip = 180\xc2\xb0 \xe2\x89\x88 ") + String(halfMs, 2) + " ms at " + String(estimate.xoHz, 0) + " Hz. "
-                      + (flipLess ? "Flipping needs less delay; check the slopes still match." : "Normal polarity needs less delay; prefer it if the slopes match.")
-                      + (estimate.hasHint ? String(estimate.hintInverted ? " Delay finder: sub correlation INVERTED." : " Delay finder: polarity normal.") : String())
-                      + (hint.isNotEmpty() ? " " + hint : String()), dontSendNotification); }
-                out << "Crossover " << String(xover.lo, 0) << "-" << String(xover.hi, 0) << " Hz (centre ~" << String(estimate.xoHz, 0) << " Hz). Sub vs main phase " << String(estimate.phaseDeg, 0) << u8("\xc2\xb0 = ") << String(d, 2) << " ms ("
-                    << (estimate.primaryMs > 0 ? "sub LATE" : "sub EARLY") << "). Other answers differ by whole cycles (" << String(period, 2) << u8(" ms). Target: within ~60\xc2\xb0 and parallel across the band.");
-                summaryRows = { {"Crossover", String(xover.lo, 0) + "-" + String(xover.hi, 0) + " Hz"}, {"Suggested", who + " +" + String(d, 2) + " ms"},
-                                {u8("\xc2\xb1" "1 period"), alts},
-                                {"Alternative", "Flip sub polarity, " + String(invMs > 0 ? "mains " : "sub ") + String(consoleMs(std::abs(invMs)), 2) + " ms"}, {"Reference delay", String(consoleMs(model.lockedDelayMs), 2) + " ms"} };
-                next(); break; }
+            case 8: {
+                out = updateSubChoices();
+                if (!choicesValid) break;
+                const double ms = choiceMs[selectedDelay];
+                const String instruction = String(selectedDelay == 3 ? "Flip sub polarity; delay " : "Delay ")
+                    + (ms >= 0 ? "mains " : "sub ") + String(consoleMs(std::abs(ms)), 2) + " ms";
+                summaryRows.push_back({"Selected", instruction});
+                out = instruction + ". Enter this in your DSP, then capture both to verify.";
+                next(); break;
+            }
             case 9: { if (model.storeTrace("Both")) { auto* m = model.findTrace("Main"); auto* s = model.findTrace("Sub"); auto* b = model.findTrace("Both");
                         if (m && s && b && xover.found) { auto vs = foh::virtualSum(m->tf, s->tf); double gain = 0, ref = 0; int n = 0;
                             for (size_t k = 1; k < b->tf.freq.size(); ++k) if (b->tf.freq[k] >= xover.lo && b->tf.freq[k] <= xover.hi) { gain += b->tf.magDb[k] - std::max(m->tf.magDb[k], s->tf.magDb[k]); ref += vs.magDb[k] - std::max(m->tf.magDb[k], s->tf.magDb[k]); ++n; }
@@ -223,13 +259,18 @@ private:
                     p.next(); p.say(o); p.refresh(); });
                 return;
             case 11: if (model.storeTrace("Main+Fill")) out = "Stored 'Main+Fill'. Compare with 'Main' in the Traces panel."; break;
-            case 13: step = 0; break;
+            case 13: step = 0; selectedDelay = 0;
+                delayChoices[0].setToggleState(true, dontSendNotification); break;
             default: break;
         }
         say(out); refresh();
     }
 
     ComboBox guideBox; Label stepLabel, titleLabel, body, result, readout, polarity, doneActions; TextButton prev {"Back"}, act {"Do it"};
+    std::array<ToggleButton, 4> delayChoices;
+    std::array<double, 4> choiceMs {};
+    size_t selectedDelay = 0;
+    bool choicesValid = false;
     std::vector<Rectangle<int>> rows; Rectangle<int> progress, summary;
     int guide = 1, step = 0; foh::Band2 xover; std::vector<std::pair<String, String>> summaryRows;
 };

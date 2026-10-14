@@ -2,13 +2,21 @@
 // (appearance, UI scale) and the WorkspaceView that hosts the panels.
 #pragma once
 #include "FloatingPanels.h"
+#include <fohcore/session.h>
 #include "SetupPage.h"
 #include "WorkspaceManager.h"
 #include "WorkspacePresetCommands.h"
 
-class MainComponent : public juce::Component, private juce::Timer, private juce::ChangeListener, private AppModel::Listener {
+class MainComponent : public juce::Component, public juce::MenuBarModel, private juce::Timer, private juce::ChangeListener, private AppModel::Listener {
 public:
     MainComponent(); ~MainComponent() override;
+    juce::StringArray getMenuBarNames() override { return {"File"}; }
+    juce::PopupMenu getMenuForIndex(int, const juce::String&) override;
+    void menuItemSelected(int, int) override;
+    void saveSession(bool saveAs);
+    void openSession();
+    bool writeSession(const juce::File&);
+    bool readSession(const juce::File&);
     void resized() override;
     int uiScalePercent() const { return uiScale; }
     void setUiScale(int percent);
@@ -34,6 +42,9 @@ protected:
     void paintContent(juce::Graphics&);
     void layoutContent();
     int uiScale = 100;
+    juce::File sessionFolder;
+    std::unique_ptr<juce::FileChooser> sessionChooser;
+    std::optional<foh::Json> sessionSplCal, sessionTargets;
     FohLookAndFeel lnf;
     AppModel model;
     WorkspaceManager mgr; int current = -1;

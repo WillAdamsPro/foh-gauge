@@ -65,8 +65,9 @@ public:
         }
         void moved() override { constrainToDisplay(); }
         void resized() override { DocumentWindow::resized(); constrainToDisplay(); }
-        juce::StringArray getMenuBarNames() override { return { "View" }; }
-        juce::PopupMenu getMenuForIndex(int, const juce::String&) override {
+        juce::StringArray getMenuBarNames() override { return { "File", "View" }; }
+        juce::PopupMenu getMenuForIndex(int index, const juce::String& name) override {
+            if (index == 0) return main->getMenuForIndex(0, name);
             juce::PopupMenu menu;
             for (int id : { resetScale, scale125, scale150, scale200, largerScale, smallerScale })
                 menu.addCommandItem(&commands, id);
@@ -75,7 +76,7 @@ public:
             menu.addCommandItem(&commands, sunlightTheme);
             return menu;
         }
-        void menuItemSelected(int, int) override {}
+        void menuItemSelected(int id, int index) override { if (index == 0) main->menuItemSelected(id, 0); }
         juce::ApplicationCommandTarget* getNextCommandTarget() override { return nullptr; }
         void getAllCommands(juce::Array<juce::CommandID>& ids) override {
             for (int id : { resetScale, largerScale, smallerScale, scale125, scale150, scale200, darkTheme, sunlightTheme }) ids.add(id);
