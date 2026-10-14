@@ -18,6 +18,8 @@ endif()
 
 # Keep this identity stable across builds so macOS can retain microphone consent.
 juce_add_gui_app(FOHGauge
+    VERSION "${FOH_APP_VERSION}"
+    BUILD_NUMBER "${FOH_BUILD_NUMBER}"
     PRODUCT_NAME "FOH Gauge"
     COMPANY_NAME "Will Adams"
     BUNDLE_ID "com.willadams.fohgauge"
