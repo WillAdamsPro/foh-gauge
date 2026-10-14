@@ -37,6 +37,7 @@ public:
     std::atomic<int> gen{Off}, micCh{0}, refCh{1}, outA{0}, outB{1};
     std::atomic<bool> sweepPlaybackDone {false}; // callback -> analysis, automatic end vs user stop
     std::atomic<float> genGainDb{-20.f};
+    std::atomic<bool> monitoringSilent{false}; // W7: suppress all generated playback
     static_assert(std::atomic<int>::is_always_lock_free);
     static_assert(std::atomic<float>::is_always_lock_free);
     static_assert(std::atomic<bool>::is_always_lock_free);
@@ -45,6 +46,8 @@ public:
     // Device restart handshake: capture waits for the analysis consumer to discard
     // both old-rate queues and reset history before accepting new-rate samples.
     std::atomic<uint64_t> captureEpoch{0}, analysisEpoch{0};
+    // Monotonic capture-quality marker; only lock-free atomics cross to the guide.
+    std::atomic<uint64_t> signalFaults{0};
     foh::RingBuffer micRing{1 << 19}, refRing{1 << 19};
     std::atomic<double> sampleRate{48000};
     static_assert(std::atomic<double>::is_always_lock_free);

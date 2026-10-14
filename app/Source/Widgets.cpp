@@ -69,6 +69,9 @@ void makePrimary(TextButton& b) { b.getProperties().set("primary", true); b.setC
 float PlotComponent::xOf(double f) const { return (float) (plotX() + plotW() * std::log10(f / fMin) / std::log10(fMax / fMin)); }
 float PlotComponent::yOf(double v) const { return (float) (plotY() + plotH() * (yMax - jlimit(yMin, yMax, v)) / (yMax - yMin)); }
 void PlotComponent::paint(Graphics& g) {
+    // Workspace collapse/reparenting and UI scaling can briefly leave no room
+    // after axis/legend padding. Do not submit negative drawing dimensions.
+    if (plotW() <= 0 || plotH() <= 0) return;
     auto pr = Rectangle<float>((float) plotX(), (float) plotY(), (float) plotW(), (float) plotH());
     g.setColour(C::plotWell()); g.fillRect(pr); // A2: darker plot well
     g.setFont(FohLookAndFeel::font(T::axisTick));

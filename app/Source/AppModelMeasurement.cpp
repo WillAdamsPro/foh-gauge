@@ -8,6 +8,9 @@ void AppModel::timerCallback() {
     sampleRate = engine.sampleRate.load();
     const auto epoch = engine.captureEpoch.load(std::memory_order_acquire);
     const bool deviceFailed = engine.deviceFailed.load(std::memory_order_acquire);
+    syncLoopback();
+    if (loopbackMeasuring && (deviceFailed || measuringLoopbackKey != loopbackKey()
+        || epoch != activeLoopbackEpoch || Time::getMillisecondCounterHiRes() - loopbackStart > 10000)) finishLoopback();
     if (epoch != lastInputEpoch || deviceFailed != lastDeviceFailed) {
         lastDeviceFailed = deviceFailed;
         lastInputEpoch = epoch;
@@ -31,6 +34,7 @@ void AppModel::timerCallback() {
           micLevelValid = snap.micLevelValid && snap.inputEpoch == engine.captureEpoch.load()
               && snap.micChannel == engine.micCh.load() && engine.micCh.load() >= 0;
           sweep = snap.sweep; sweepCapturing = snap.sweepCapturing;
+          if (loopbackMeasuring && snap.resetSeq == loopbackResetId && snap.refDelaySamples == 0 && snap.convergence.settled) finishLoopback(&snap.rawTf);
           multiPosition = snap.multiPosition; positionCount = snap.positionCount; positionMask = snap.positionMask;
           tf = snap.tf; rtaDb = snap.rtaDb; rtaBands = snap.rtaBands; conv = snap.convergence;
           if (capture.active) {
