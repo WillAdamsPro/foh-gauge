@@ -23,8 +23,6 @@ public:
     int floatingCount() const { return floats.size(); }
     fohws::Workspace& workspace() { return mgr.at(current); }
     WorkspaceView& workspaceView() { return view; }
-    AppModel& appModel() { return model; }
-    using MainComponent::setShowMode;
     int selectedWorkspace() const { return current; }
     void clickSwitcher(int index) { switcher.setSelected(index, true); }
     bool commandWorkspace(int index) {
