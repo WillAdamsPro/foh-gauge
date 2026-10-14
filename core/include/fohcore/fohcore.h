@@ -135,6 +135,14 @@ struct TFResult {
     bool isBlanked(size_t k) const { return k < blanked.size() && blanked[k] != 0; }
     TrafficLight light(size_t k) const { return k < coherence.size() ? classifyCoherence(coherence[k]) : TrafficLight::Red; }
 };
+// Worker/message-thread only. Delay is the remaining acoustic delay in the supplied
+// TF (subtract any reference compensation already applied). Positive delay is removed.
+struct MicPosition { TFResult tf; double delayMs = 0; };
+// Two or three matching frequency grids; invalid inputs return an empty result.
+// Complex responses are aligned, then averaged with per-bin coherence weights.
+// Blanked/nonfinite/zero-coherence bins contribute no weight; unsupported bins are blanked.
+TFResult multiPositionAverage(const std::vector<MicPosition>& positions);
+
 // Band summary for the status pill: mean coherence over [lo, hi] Hz and its light.
 struct CoherenceSummary {
     double meanCoherence = 0; TrafficLight light = TrafficLight::Red; int bins = 0;
@@ -410,6 +418,9 @@ private:
 struct AnalysisSnapshot {
     uint64_t seq = 0;           // increments on every publish
     TFResult tf;                // smoothed + blanked TF
+    TFResult multiPosition;
+    int positionCount = 0;
+    uint8_t positionMask = 0;
     int smoothingFraction = 0;  // smoothing applied to tf (0,3,6,12,24,48)
     std::vector<double> rtaDb;  // per-band dBFS, same order/size as rtaBands
     std::vector<Band> rtaBands; // RTA band centre + edges (fCenter, fLo, fHi)
@@ -444,12 +455,12 @@ private:
 };
 
 // ---------- Commands in (UI -> analysis thread), lock-free SPSC, fixed-size POD ----------
-enum class CommandType : uint8_t { SetSmoothing, SetRtaFraction, FindDelay, SetBlankThreshold, SetAverages, ResetAverages, SetReferenceDelay };
+enum class CommandType : uint8_t { SetSmoothing, SetRtaFraction, FindDelay, SetBlankThreshold, SetAverages, ResetAverages, SetReferenceDelay, StoreMicPosition, ClearMicPositions };
 struct Command {
     CommandType type = CommandType::ResetAverages;
     bool sub = false;        // FindDelay: true = subs (LF-weighted, 3 s), false = mains
-    int32_t i = 0;           // SetSmoothing/SetRtaFraction: fraction; SetAverages: N (0 = infinite)
-    double d = 0;            // SetBlankThreshold: 0..1; SetReferenceDelay: samples
+    int32_t i = 0;           // SetSmoothing/SetRtaFraction: fraction; SetAverages: N (0 = infinite); StoreMicPosition: slot 0..2
+    double d = 0;            // SetBlankThreshold: 0..1; SetReferenceDelay: samples; StoreMicPosition: total arrival ms
     uint64_t id = 0;         // caller tag, echoed in delaySeq (FindDelay) or resetSeq (ResetAverages)
     static Command smoothing(int frac) { Command c; c.type = CommandType::SetSmoothing; c.i = frac; return c; }
     static Command rtaFraction(int frac) { Command c; c.type = CommandType::SetRtaFraction; c.i = frac; return c; }
@@ -457,6 +468,8 @@ struct Command {
     static Command blankThreshold(double t) { Command c; c.type = CommandType::SetBlankThreshold; c.d = t; return c; }
     static Command averages(int n) { Command c; c.type = CommandType::SetAverages; c.i = n; return c; }
     static Command resetAverages(uint64_t id = 0) { Command c; c.type = CommandType::ResetAverages; c.id = id; return c; }
+    static Command micPosition(int slot, double delayMs) { Command c; c.type = CommandType::StoreMicPosition; c.i = slot; c.d = delayMs; return c; }
+    static Command clearMicPositions() { Command c; c.type = CommandType::ClearMicPositions; return c; }
     static Command referenceDelay(double samples) { Command c; c.type = CommandType::SetReferenceDelay; c.d = samples; return c; }
 };
 static_assert(std::is_trivially_copyable<Command>::value, "Command must be POD");

@@ -67,6 +67,7 @@ void AppModel::timerCallback() {
         lastInputEpoch = epoch;
         auto then = std::move(capture.then);
         cancelSessionOperations();
+        multiPosition = {}; positionCount = 0; positionMask = 0;
         tf = {}; rtaDb.clear(); rtaBands.clear(); conv = {}; micLevelValid = false;
         lockedDelayMs = 0; refDelaySamples = 0; refDelayMs = 0;
         what |= Snapshot | Delay | Capture | Settings;
@@ -79,6 +80,7 @@ void AppModel::timerCallback() {
           levelTimeMs = Time::getMillisecondCounterHiRes();
           micLevelValid = snap.micLevelValid && snap.inputEpoch == engine.captureEpoch.load()
               && snap.micChannel == engine.micCh.load() && engine.micCh.load() >= 0;
+          multiPosition = snap.multiPosition; positionCount = snap.positionCount; positionMask = snap.positionMask;
           tf = snap.tf; rtaDb = snap.rtaDb; rtaBands = snap.rtaBands; conv = snap.convergence;
           if (capture.active) {
               capture.resetAcknowledged = snap.resetSeq == capture.resetId;

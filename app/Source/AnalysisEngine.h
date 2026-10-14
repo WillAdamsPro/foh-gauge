@@ -5,6 +5,7 @@
 #include <juce_core/juce_core.h>
 #include <mutex>
 #include <memory>
+#include <array>
 #include "fohcore/fohcore.h"
 
 class AudioEngine;
@@ -36,6 +37,9 @@ private:
     std::shared_ptr<const foh::MicCal> cal; std::string calName;
 
     // analysis-thread state
+    std::array<foh::MicPosition, 3> positions;
+    uint8_t positionMask = 0;
+    foh::TFResult positionAverage; int positionCount = 0;
     double levelEnergy = 0; int levelSamples = 0;
     uint64_t inputEpoch = 0; int micChannel = -1;
     double fs = 0; int fftN = 16384;

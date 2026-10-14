@@ -129,7 +129,7 @@ private:
 class TransferFunctionPanel : public Panel {
 public:
     explicit TransferFunctionPanel(AppModel& m) : Panel(m, "TransferFunction", "Transfer Function") {
-        helpText = "Settled: less than 0.5 dB RMS change for 3 consecutive updates, with at least 25% coherent bins (100 Hz-10 kHz). After 10 s, capture proceeds with an unsettled warning.\n\nThis compares the console (reference) to the mic. Anything that isn't flat is what the speakers + room are doing to your mix.\n\nMagnitude: 0 dB = unchanged.\n\nDimmed regions: coherence below the Dim threshold. Don't EQ there; move the mic or treat the reflection.\n\nStored traces are dashed.";
+        helpText = "Settled: less than 0.5 dB RMS change for 3 consecutive updates, with at least 25% coherent bins (100 Hz-10 kHz). After 10 s, capture proceeds with an unsettled warning.\n\nThis compares the console (reference) to the mic. Anything that isn't flat is what the speakers + room are doing to your mix.\n\nMagnitude: 0 dB = unchanged.\n\nDimmed regions: coherence below the Dim threshold. Don't EQ there; move the mic or treat the reflection.\n\nStored traces are dashed.\n\nMulti-mic: move to each of 2-3 positions, Reset avg and wait for a fresh trace. Enter the total arrival delay (or Use found), then Capture. The aligned average uses coherence weights and can be compared with the target. Capture again to replace a position; Clear starts a new set.";
         plot.yLabel = "MAGNITUDE DB"; plot.yMin = -12; plot.yMax = 12; plot.yStep = 6; plot.showLegend = true; plot.showLowCohCallout = true;
         addAndMakeVisible(plot);
         smooth.addItem("Smooth off", 1); smooth.addItem("Smooth 1/3", 4); smooth.addItem("Smooth 1/6", 7); smooth.addItem("Smooth 1/12", 13); smooth.addItem("Smooth 1/24", 25); smooth.addItem("Smooth 1/48", 49);
@@ -142,9 +142,23 @@ public:
         store.onClick = [this] { model.storeTrace("Trace " + String(model.traces.count() + 1)); };
         for (auto* c : std::initializer_list<Component*>{&smooth, &avg, &blank, &reset, &store}) addAndMakeVisible(c);
         addAndMakeVisible(target); target.onChange = [this] { modelChanged(AppModel::Overlay); };
+        for (int i = 1; i <= 3; ++i) position.addItem("Position " + String(i), i);
+        position.setSelectedId(1, dontSendNotification);
+        positionDelay.setRange(-500, 3000, 0.001); positionDelay.setTextValueSuffix(" ms");
+        positionDelay.setSliderStyle(Slider::IncDecButtons);
+        positionDelay.setTextBoxStyle(Slider::TextBoxLeft, false, 94, 24);
+        positionDelay.setTooltip("Total arrival delay for this position. Enter it or use the delay finder result. Reference compensation is subtracted automatically.");
+        position.onChange = [this] { positionDelay.setValue(positionDelays[(size_t)(position.getSelectedId() - 1)], dontSendNotification); };
+        positionDelay.onValueChange = [this] { positionDelays[(size_t)(position.getSelectedId() - 1)] = positionDelay.getValue(); };
+        useDelay.onClick = [this] { if (model.delayLocked()) positionDelay.setValue(model.delay.arrivals[0].delayMs); };
+        capturePosition.onClick = [this] { model.send(foh::Command::micPosition(position.getSelectedId() - 1, positionDelay.getValue())); };
+        clearPositions.onClick = [this] { model.send(foh::Command::clearMicPositions()); };
+        showPositions.setButtonText("Multi-mic"); showPositions.setToggleState(true, dontSendNotification); showPositions.onClick = [this] { modelChanged(AppModel::Snapshot); };
+        capturePosition.setTooltip("Move the mic, Reset avg, wait for a fresh settled trace, then capture this position. Capture again to replace it.");
+        for (auto* c : std::initializer_list<Component*>{&position, &positionDelay, &useDelay, &capturePosition, &clearPositions, &showPositions}) addAndMakeVisible(c);
         syncControls();
     }
-    fohws::Size minSize() const override { return { WS::plotPanelMinWidth, WS::plotPanelMinHeight }; }
+    fohws::Size minSize() const override { return { WS::plotPanelMinWidth, WS::plotPanelMinHeight + 64 }; }
     int priority() const override { return 100; }
     Json saveState() const override { Json j = Json::object(); j.set("yMin", plot.yMin); j.set("yMax", plot.yMax); target.save(j); return j; }
     void loadState(const Json& j) override { if (j.has("yMin")) { plot.yMin = j["yMin"].asNumber(-12); plot.yMax = j["yMax"].asNumber(12); plot.yStep = (plot.yMax - plot.yMin) / 4; } target.load(j); }
@@ -152,6 +166,12 @@ public:
         auto r = getLocalBounds().reduced(pad, 6); auto row = controlRow(r);
         store.setBounds(row.removeFromRight(64)); row.removeFromRight(6); reset.setBounds(row.removeFromRight(84)); row.removeFromRight(6);
         avg.setBounds(row.removeFromRight(92)); row.removeFromRight(6); smooth.setBounds(row.removeFromRight(118)); row.removeFromRight(6); blank.setBounds(row.removeFromRight(108));
+        auto multiRow = controlRow(r);
+        position.setBounds(multiRow.removeFromLeft(100)); positionDelay.setBounds(multiRow.removeFromLeft(140));
+        useDelay.setBounds(multiRow.removeFromLeft(86));
+        multiRow = controlRow(r);
+        capturePosition.setBounds(multiRow.removeFromLeft(68));
+        clearPositions.setBounds(multiRow.removeFromLeft(54)); showPositions.setBounds(multiRow);
         target.setBounds(controlRow(r)); plot.setBounds(r);
     }
     void syncControls() { smooth.setSelectedId(model.smoothingFraction + 1, dontSendNotification); avg.setSelectedId(model.averages == 0 ? 1000 : model.averages, dontSendNotification);
@@ -164,13 +184,24 @@ public:
         if (ov.active && !ov.mag.empty()) { plot.series = ov.mag; plot.shade = ov.shade; plot.shadeLabel = ov.shadeLabel; }
         else { addStoredTraces(model, plot, true);
                PlotComponent::Series s; s.c = C::traceLive(); s.label = "Live"; logDecimate(model.tf, model.tf.magDb, s.f, s.v, &s.gap); plot.series.push_back(s); }
+        if (showPositions.getToggleState() && model.positionCount >= 2) {
+            PlotComponent::Series s; s.c = C::storedTrace(3); s.label = "Multi-mic average";
+            logDecimate(model.multiPosition, model.multiPosition.magDb, s.f, s.v, &s.gap);
+            plot.series.push_back(std::move(s));
+        }
+        capturePosition.setEnabled(model.tf.averages > 0 && !model.paused);
+        useDelay.setEnabled(model.delayLocked());
+        for (int i = 1; i <= 3; ++i) position.changeItemText(i, "Position " + String(i) + ((model.positionMask & (1 << (i - 1))) ? " *" : ""));
         target.appendTo(plot);
         plot.lowCoh = blankedRegions(model.tf);
         plot.note = "averages " + String(model.tf.averages) + (model.calApplied ? u8(" \xc2\xb7 cal applied") : "")
-                    + u8(" \xc2\xb7 ") + u8(fohui::settleStatusText(model.conv, model.capture.active, model.capture.unsettled));
+                    + u8(" \xc2\xb7 ") + u8(fohui::settleStatusText(model.conv, model.capture.active, model.capture.unsettled))
+                    + " | Multi-mic: " + String(model.positionCount) + "/3 positions (2 required)";
         plot.repaint();
     }
 private:
+    ComboBox position; Slider positionDelay; std::array<double, 3> positionDelays {};
+    TextButton useDelay {"Use found"}, capturePosition {"Capture"}, clearPositions {"Clear"}; ToggleButton showPositions;
     TargetControls target; PlotComponent plot; ComboBox smooth, avg, blank; TextButton reset {"Reset avg"}, store {"Store"};
 };
 
