@@ -511,3 +511,38 @@ TEST_CASE("D-INS fractional reference delay: inserting 230.4 samples leaves < 1 
     REQUIRE(tf.referenceDelayMs()==Approx(4.8)); tf.setReferenceDelaySamples(-3); REQUIRE(tf.referenceDelaySamples()==0);
     tf.setReferenceDelaySamples(NAN); REQUIRE(tf.referenceDelaySamples()==0); tf.setReferenceDelaySamples(1e9); REQUIRE(tf.referenceDelaySamples()==131071);
 }
+// ---- W2 sub delay (QA D7 / D-SUBGD / S15)
+static std::vector<float> biquad(const std::vector<float>& x, bool hp, double fc, double Q, double fs) {
+    double w=2*M_PI*fc/fs, al=std::sin(w)/(2*Q), c=std::cos(w), b0,b1,b2;
+    if (hp) { b0=(1+c)/2; b1=-(1+c); b2=(1+c)/2; } else { b0=(1-c)/2; b1=1-c; b2=(1-c)/2; }
+    double a0=1+al, a1=-2*c, a2=1-al, x1=0,x2=0,y1=0,y2=0; std::vector<float> y(x.size());
+    for (size_t i=0;i<x.size();++i){ double o=(b0*x[i]+b1*x1+b2*x2-a1*y1-a2*y2)/a0; x2=x1;x1=x[i];y2=y1;y1=o;y[i]=(float)o;} return y; }
+static std::vector<float> bp30_120(const std::vector<float>& x, double fs) { // 4th-order Butterworth HP 30 + LP 120
+    auto y = biquad(biquad(x, true, 30, 0.5412, fs), true, 30, 1.3066, fs); return biquad(biquad(y, false, 120, 0.5412, fs), false, 120, 1.3066, fs); }
+TEST_CASE("D-SUBGD: sub delay from XO-band phase = 12.5 ms; alternatives +-1 period; raw peak is only a hint") {
+    const double fs=48000; std::mt19937 g(7); std::normal_distribution<float> nd(0, 0.25f);
+    std::vector<float> rs(1<<19); for (auto& v : rs) v = nd(g);           // broadband reference (~10.9 s)
+    auto mainsSig = bp30_120(rs, fs); auto subSig = fdel(mainsSig, 0.0125*fs); // "flat main" in the XO band vs sub 12.5 ms later
+    TransferFunction ta(16384,fs), tb(16384,fs); ta.setAverages(0); tb.setAverages(0);
+    ta.process(rs.data(), mainsSig.data(), (int)rs.size()); tb.process(rs.data(), subSig.data(), (int)rs.size());
+    auto A = ta.result(), B = tb.result();
+    // the trap: broadband ref vs band-limited sub -> raw peak is NOT 12.5 ms (filter group delay / half cycle)
+    auto raw = findDelay(head(rs, 144000), head(subSig, 144000), fs, false);
+    REQUIRE(raw.ok()); // plain xcorr, like Echo's reference_tf (20.50 ms, pol -, with scipy's filter; ~19.7 ms here)
+    REQUIRE(raw.arrivals[0].delayMs > 18.0); REQUIRE(raw.arrivals[0].delayMs < 22.0); REQUIRE(raw.arrivals[0].inverted);
+    auto e = subDelayFromPhase(A, B, 60, 100, 80, &raw);
+    REQUIRE(e.valid); REQUIRE(e.xoHz==80); REQUIRE(e.periodMs==Approx(12.5));
+    REQUIRE(e.primaryMs==Approx(12.5).margin(0.25)); REQUIRE(e.alternativesMs[0]==Approx(0.0).margin(0.25)); REQUIRE(e.alternativesMs[1]==Approx(25.0).margin(0.25));
+    REQUIRE(e.slopeMs==Approx(12.5).margin(1.0)); REQUIRE(e.coherence > 0.95);
+    REQUIRE(e.hasHint); REQUIRE(e.hintMs==Approx(raw.arrivals[0].delayMs)); REQUIRE(std::fabs(e.hintMs - e.primaryMs) > 2.0);
+    // auto XO (band centre) and a different XO change only the spacing of the alternatives
+    auto e2 = subDelayFromPhase(A, B, 60, 100); REQUIRE(e2.primaryMs==Approx(12.5).margin(0.25)); REQUIRE(e2.xoHz > 60); REQUIRE(e2.xoHz < 100);
+    auto e3 = subDelayFromPhase(A, B, 60, 100, 100); REQUIRE(e3.primaryMs==Approx(12.5).margin(0.25)); REQUIRE(e3.alternativesMs[1]==Approx(22.5).margin(0.25));
+    // sign: swapping roles gives -12.5 (mains later than sub)
+    REQUIRE(subDelayFromPhase(B, A, 60, 100, 80).primaryMs==Approx(-12.5).margin(0.25));
+    // invalid inputs
+    REQUIRE(!subDelayFromPhase(A, B, 0, 100).valid); REQUIRE(!subDelayFromPhase(TFResult{}, TFResult{}, 60, 100).valid);
+    // S15: filtered pair (bp 0 ms vs bp 12.5 ms), 3 s window, sub options -> 12.5 +- 0.1 ms
+    auto s15 = findDelay(head(mainsSig, 144000), head(subSig, 144000), fs, DelayOptions::forSubs());
+    REQUIRE(s15.arrivals[0].delayMs==Approx(12.5).margin(0.1));
+}

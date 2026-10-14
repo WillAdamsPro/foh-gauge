@@ -122,6 +122,33 @@ CoherenceSummary coherenceSummary(const TFResult& tf, double lo, double hi) {
     if (c.bins) c.meanCoherence = s / c.bins;
     c.light = classifyCoherence(c.meanCoherence); return c;
 }
+SubDelayEstimate subDelayFromPhase(const TFResult& a, const TFResult& b, double lo, double hi, double xo, const DelayResult* hint) {
+    SubDelayEstimate e;
+    if (hint && !hint->arrivals.empty()) { e.hasHint = true; e.hintMs = hint->arrivals[0].delayMs; e.hintInverted = hint->arrivals[0].inverted; }
+    if (!(lo > 0) || !(hi > lo)) return e;
+    PhaseOffset p = phaseOffset(a, b, lo, hi); if (!(p.centerHz > 0)) return e;
+    e.xoHz = xo > 0 ? xo : p.centerHz; e.periodMs = 1000.0 / e.xoHz;
+    // weighted LS slope of unwrapped phase difference (deg) vs f, and phase at xo
+    size_t n = std::min(a.H.size(), b.H.size()); std::vector<double> fv, ph, wv; double prev = 0, cs = 0; bool first = true;
+    for (size_t k = 1; k < n && k < a.freq.size(); ++k) { double f = a.freq[k]; if (f < lo || f > hi) continue;
+        cpx d = b.H[k] * std::conj(a.H[k]); if (std::abs(d) < 1e-20) continue;
+        double w = std::min(a.coherence[k], b.coherence[k]); double v = std::arg(d) * 180.0 / M_PI;
+        if (!first) { while (v - prev > 180) v -= 360; while (v - prev < -180) v += 360; } first = false; prev = v;
+        fv.push_back(f); ph.push_back(v); wv.push_back(w); cs += w; }
+    if (fv.size() < 2 || cs <= 0) return e;
+    double sw = 0, sf = 0, sp = 0, sff = 0, sfp = 0;
+    for (size_t i = 0; i < fv.size(); ++i) { sw += wv[i]; sf += wv[i]*fv[i]; sp += wv[i]*ph[i]; sff += wv[i]*fv[i]*fv[i]; sfp += wv[i]*fv[i]*ph[i]; }
+    double den = sw * sff - sf * sf; if (std::fabs(den) < 1e-30) return e;
+    double slope = (sw * sfp - sf * sp) / den, icpt = (sp - slope * sf) / sw; // deg per Hz
+    e.slopeMs = -slope / 360.0 * 1000.0;
+    e.phaseDeg = wrapDeg(icpt + slope * e.xoHz);
+    e.wrappedMs = -e.phaseDeg / 360.0 * e.periodMs;
+    double k = std::round((e.slopeMs - e.wrappedMs) / e.periodMs);
+    e.primaryMs = e.wrappedMs + k * e.periodMs;
+    e.alternativesMs[0] = e.primaryMs - e.periodMs; e.alternativesMs[1] = e.primaryMs + e.periodMs;
+    e.coherence = cs / (double) fv.size(); e.valid = true;
+    return e;
+}
 TFResult virtualSum(const TFResult& a, const TFResult& b) {
     TFResult r = a; size_t n = std::min(a.H.size(), b.H.size());
     for (size_t k = 0; k < n; ++k) { r.H[k] = a.H[k] + b.H[k];
