@@ -662,3 +662,27 @@ TEST_CASE("P-VS/S14 virtual sum: +6.02 dB coherent, null with inverted copy; INV
     // same phase at the XO -> same candidate set (no auto polarity pick, P-NA); only the slope differs
     REQUIRE(e5.phaseDeg==Approx(e10.phaseDeg).margin(1)); REQUIRE(e5.slopeMs==Approx(5).margin(0.5)); REQUIRE(e10.slopeMs==Approx(10).margin(0.5));
 }
+TEST_CASE("Juno sanitizer repro cases (juno/delay-finder-repro e8ef37a) as regressions") {
+    std::vector<float> s(48000); for (size_t i=0;i<s.size();++i) s[i]=std::sin((float)i*0.37f);
+    std::vector<float> nanv(48000, NAN), z(48000, 0.f), a63(63, 1.f); DelayOptions o;
+    auto r = findDelay(nanv, s, 48000, o); REQUIRE(!r.ok()); REQUIRE(!r.error.empty()); REQUIRE(r.nonFiniteSamples==48000);
+    r = findDelay(z, z, 48000, o); REQUIRE(r.error=="reference is silent"); REQUIRE(r.confidence==0);
+    r = findDelay(s, s, 0, o); REQUIRE(r.error=="invalid sample rate"); REQUIRE(r.arrivals.empty()); REQUIRE(r.confidence==0); // no confident 0
+    r = findDelay(s, s, NAN, o); REQUIRE(r.error=="invalid sample rate"); REQUIRE(r.confidence==0);
+    r = findDelay(s, s, INFINITY, o); REQUIRE(!r.ok());
+    r = findDelay(a63, a63, 48000, o); REQUIRE(!r.error.empty()); REQUIRE(r.arrivals.empty());
+    auto p = pink(48000, 201);
+    for (double v : {1e12, -1.0, 0.0, (double)NAN}) { DelayOptions q; q.minSeparationMs = v; auto t = findDelay(p, p, 48000, q); REQUIRE(t.ok()); REQUIRE(t.arrivals[0].delaySamples==Approx(0).margin(0.01)); }
+    for (double v : {1e12, -5.0, (double)NAN, (double)INFINITY}) { DelayOptions q; q.maxDelayMs = v; auto t = findDelay(p, p, 48000, q); REQUIRE(t.ok()); REQUIRE(t.arrivals[0].delaySamples==Approx(0).margin(0.01)); }
+    { DelayOptions q; q.maxArrivals = 100000; auto t = findDelay(p, p, 48000, q); REQUIRE(t.ok()); REQUIRE(t.arrivals.size() <= 16); }
+    // lpHz floor: 1e-12 Hz behaves like the 10 Hz floor (signal still found), not numerical noise
+    auto d = delayed(p, 480);
+    { DelayOptions q; q.lpHz = 1e-12; auto t = findDelay(p, d, 48000, q); DelayOptions f; f.lpHz = 10; auto u = findDelay(p, d, 48000, f);
+      REQUIRE(t.ok()); REQUIRE(t.arrivals[0].delaySamples==Approx(u.arrivals[0].delaySamples).margin(1e-9)); }
+    { DelayOptions q; q.lpHz = NAN; q.hpHz = INFINITY; auto t = findDelay(p, d, 48000, q); REQUIRE(t.ok()); REQUIRE(t.arrivals[0].delaySamples==Approx(480).margin(0.1)); }
+    { DelayOptions q; q.lpHz = 100; q.hpHz = 200; REQUIRE(findDelay(p, d, 48000, q).error=="empty band (hpHz >= lpHz)"); }
+    { DelayOptions q; q.lpHz = 1e9; auto t = findDelay(p, d, 48000, q); REQUIRE(t.arrivals[0].delaySamples==Approx(480).margin(0.1)); }
+    { DelayOptions q; q.speedOfSound = NAN; auto t = findDelay(p, d, 48000, q); REQUIRE(std::isfinite(t.arrivals[0].distanceM)); }
+    REQUIRE(findDelay(p, d, 1.0, DelayOptions::forSubs()).arrivals.size() <= 16); // tiny fs: no clamp UB
+    REQUIRE(findDelay(p, d, 48000).samplesUsed == 48000); REQUIRE(!findDelay(p, d, 48000).truncated);
+}

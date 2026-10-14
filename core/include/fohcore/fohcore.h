@@ -255,6 +255,7 @@ struct DelayResult {
     std::vector<Arrival> arrivals; double confidence = 0; std::vector<double> impulse;
     bool twoSimilarArrivals = false;          // "Two similar spikes: is only one speaker on?" (confidence x0.75)
     int nonFiniteSamples = 0;       // NaN/Inf input samples, replaced by 0
+    int samplesUsed = 0; bool truncated = false; // window is capped at 2^23 samples (~175 s @ 48k)
     std::string error;              // empty on success; set for unusable input (too short, bad rate, silent, all-NaN)
     bool ok() const { return error.empty() && !arrivals.empty(); }
 };
@@ -270,6 +271,7 @@ DelayResult findDelay(const std::vector<float>& ref, const std::vector<float>& m
 struct DelayOptions {
     bool phat = true; int maxArrivals = 3; double minSeparationMs = 0.5;
     double speedOfSound = 343.0; double hpHz = 0, lpHz = 0; double maxDelayMs = 0;
+    // lpHz (if > 0) is floored at 10 Hz and both edges are clamped to Nyquist; hpHz >= lpHz is an error.
     // Level measurement for relLevelDb / two-spike: Unweighted = envelope of the plain
     // cross-correlation (Vega spec); RefWhitened = envelope of Y X* / |X|^2 (impulse-response
     // estimate; immune to the source spectrum, e.g. pink noise's broad autocorrelation).
