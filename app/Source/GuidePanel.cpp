@@ -1,6 +1,7 @@
 // Guide / inspector panel: a narrow stepper. Its charts are drawn as an overlay in the Transfer
 // Function and Phase panels (AppModel::overlay), so the guide works inside any workspace layout.
 #include "Panels.h"
+#include "Diagrams.h"
 using namespace juce;
 namespace C = foh::ui::col;
 namespace D = foh::ui::dim;
@@ -41,10 +42,10 @@ class GuidePanel : public Panel {
 public:
     explicit GuidePanel(AppModel& m) : Panel(m, "GuideInspector", "Guide") {
         helpText = "Step-by-step guides. The charts for each step appear in the Transfer Function and Phase panels.";
-        for (int i = 0; i < 5; ++i) guideBox.addItem(String("W") + String(i + 1) + ": " + kGuideNames[i], i + 1);
+        updateGuides();
         guideBox.setSelectedId(guide + 1, dontSendNotification);
         guideBox.onChange = [this] { guide = guideBox.getSelectedId() - 1; step = 0; resetVerification(); result.setText({}, dontSendNotification); refresh(); };
-        for (auto* c : std::initializer_list<Component*>{&guideBox, &stepLabel, &titleLabel, &body, &result, &readout, &polarity, &prev, &act, &note, &pass, &fail}) addChildComponent(c);
+        for (auto* c : std::initializer_list<Component*>{&guideBox, &stepLabel, &titleLabel, &body, &result, &readout, &polarity, &prev, &act, &note, &pass, &fail, &micDiagram}) addChildComponent(c);
         for (size_t i = 0; i < delayChoices.size(); ++i) {
             auto& row = delayChoices[i];
             addChildComponent(row);
@@ -67,16 +68,22 @@ public:
         refresh();
     }
     ~GuidePanel() override { model.overlayBuilder = {}; model.overlay = {}; }
-    fohws::Size minSize() const override { return { foh::theme::ws::inspectorMinWidth, 660 }; }
+    fohws::Size minSize() const override { return { foh::theme::ws::inspectorMinWidth, 780 }; }
     int priority() const override { return 60; }
     fohws::Json saveState() const override { auto j = fohws::Json::object(); j.set("guide", guide); j.set("step", step); j.set("verificationNote", verificationRecord.toStdString()); return j; }
     void loadState(const fohws::Json& j) override {
-        if (!j.isObject()) return; resetVerification(); guide = jlimit(0, 4, j["guide"].asInt(guide)); step = jlimit(0, (int) kGuides[(size_t) guide].size() - 1, j["step"].asInt(0));
-        if (step >= (int) kGuides[(size_t) guide].size() - 2) step = (int) kGuides[(size_t) guide].size() - 3;
+        if (!j.isObject()) return; resetVerification();
+        setGuide(j["guide"].asInt(guide), j["step"].asInt(0));
+        if (step >= (int) kGuides[(size_t) guide].size() - 2) step = std::max(0, (int) kGuides[(size_t) guide].size() - 3);
         verificationRecord = String(j["verificationNote"].asString());
         say(verificationRecord.isEmpty() ? String() : "Previous verification: " + verificationRecord);
-        guideBox.setSelectedId(guide + 1, dontSendNotification); refresh(); }
-    void setGuide(int g, int s) { guide = jlimit(0, 4, g); step = jlimit(0, (int) kGuides[(size_t) guide].size() - 1, s); guideBox.setSelectedId(guide + 1, dontSendNotification); refresh(); }
+        refresh(); }
+    void setGuide(int g, int s) {
+        int requested = jlimit(0, 4, g);
+        guide = availableGuide(requested);
+        step = guide == requested ? jlimit(0, (int) kGuides[(size_t) guide].size() - 1, s) : 0;
+        guideBox.setSelectedId(guide + 1, dontSendNotification); refresh();
+    }
 
     void restyle() {
         stepLabel.setFont(FohLookAndFeel::font(T::label, true)); stepLabel.setColour(Label::textColourId, C::accent());
@@ -88,6 +95,7 @@ public:
         makePrimary(act);
     }
     void modelChanged(int w) override {
+        if (w & AppModel::Rig) { updateGuides(); refresh(); }
         if (w & AppModel::Theme) { restyle(); repaint(); }
         if (w & AppModel::Capture) refresh();
     }
@@ -113,6 +121,23 @@ public:
     void resized() override { refresh(); }
 
 private:
+    int availableGuide(int requested) const {
+        if (requested >= 3 && requested <= 4) return requested; // W4 tuning and W5 pre-doors apply to every rig
+        for (auto id : foh::rigSteps(model.rigProfile))
+            if (static_cast<int>(id) == requested + 1) return requested;
+        return 0;
+    }
+    void updateGuides() {
+        guideBox.clear(dontSendNotification);
+        for (auto id : foh::rigSteps(model.rigProfile)) {
+            int i = static_cast<int>(id) - 1;
+            guideBox.addItem(String("W") + String(i + 1) + ": " + kGuideNames[i], i + 1);
+        }
+        for (int i = 3; i < 5; ++i) guideBox.addItem(String("W") + String(i + 1) + ": " + kGuideNames[i], i + 1);
+        int selected = availableGuide(guide);
+        if (selected != guide) { guide = selected; step = 0; result.setText({}, dontSendNotification); }
+        guideBox.setSelectedId(guide + 1, dontSendNotification);
+    }
     void refresh() {
         auto& steps = kGuides[(size_t) guide]; step = jlimit(0, (int) steps.size() - 1, step); auto& st = steps[(size_t) step];
         auto c = getLocalBounds().reduced(pad, 8);
@@ -130,6 +155,16 @@ private:
             note.setBounds(c.removeFromBottom(60)); c.removeFromBottom(6);
         }
         updateVerdictButtons();
+        // W4/W5 currently contain only the shared frame and prescribe no mic move.
+        // Retain the W1-W3 placement through Store / Apply / Verify.
+        using Placement = MicPlacementDiagram::Placement;
+        const auto placement = st.chart == 3 ? Placement::None : guide == 0 && step > 0 ? Placement::OnAxis
+            : guide == 1 ? Placement::SubMainCrossover
+            : guide == 2 ? Placement::Seam : Placement::None;
+        micDiagram.setPlacement(placement);
+        if (placement != Placement::None) {
+            micDiagram.setBounds(c.removeFromTop(104)); c.removeFromTop(6);
+        }
         body.setVisible(true); body.setText(u8(st.body) + (verifying && guide == 1 ? "\nThe sum should rise in the crossover band rather than dip. Walk a few seats and listen." : String())
             + (verifying && guide == 2 ? "\nCheck phase overlap through the seam and listen from mains-only to fill-only positions." : String()) + (st.act == 21 && suggestedChange.isNotEmpty() ? "\n" + suggestedChange : String()), dontSendNotification);
         // Measure wrapped lines, including the explicit W5 symptom list line breaks.
@@ -339,6 +374,7 @@ private:
         });
     }
 
+    MicPlacementDiagram micDiagram;
     ComboBox guideBox; Label stepLabel, titleLabel, body, result, readout, polarity; TextButton prev {"Back"}, act {"Do it"};
     TextEditor note; TextButton pass {"Pass"}, fail {"Fail"};
     foh::TFResult baseline, after; String suggestedChange, verificationRecord;
