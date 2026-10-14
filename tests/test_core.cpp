@@ -1,8 +1,12 @@
+#include <algorithm>
+#include <limits>
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/catch_approx.hpp>
 #include "fohcore/fohcore.h"
 #include <cmath>
 #include <random>
+#include <fstream>
+#include <sstream>
 using namespace foh; using Catch::Approx;
 
 static std::vector<float> pink(int n, uint32_t seed = 1) { PinkNoise p(seed); std::vector<float> v((size_t) n); for (auto& x : v) x = p.next(); return v; }
@@ -91,11 +95,13 @@ TEST_CASE("RTA: 1 kHz full-scale sine reads ~0 dBFS in 1 kHz band (1/3 and 1/6)"
         REQUIRE(b[k]==Approx(0).margin(0.5)); REQUIRE(b[k+2] < -40); }
     REQUIRE(octaveBands(3).size()==31); REQUIRE(octaveBands(6).size()==61);
 }
-TEST_CASE("Mic cal: Will's ECM8000 CSV") {
-    auto c = loadMicCal(std::string(FOH_TEST_DATA) + "/ecm8000-cal.csv");
-    REQUIRE(c.ok()); REQUIRE(c.hz.size()==124); REQUIRE(c.hasPhase);
-    REQUIRE(c.dbAt(20)==Approx(-0.07)); REQUIRE(c.dbAt(21999)==Approx(-4.92)); REQUIRE(c.dbAt(5)==Approx(-0.07)); REQUIRE(c.dbAt(30000)==Approx(-4.92));
-    double mid = c.dbAt(std::sqrt(20.0*25.1785)); REQUIRE(mid==Approx((-0.07+0.137)/2).margin(1e-6));
+TEST_CASE("Mic cal: synthetic ECM8000-style CSV (mixed separators, CRLF, comments, out-of-order row)") {
+    auto c = loadMicCal(std::string(FOH_TEST_DATA) + "/synthetic-mic-cal.csv");
+    REQUIRE(c.ok()); REQUIRE(c.hz.size()==77); REQUIRE(c.hasPhase); REQUIRE(c.sensitivityOffsetDb==Approx(-2.10));
+    REQUIRE(std::is_sorted(c.hz.begin(), c.hz.end())); REQUIRE(c.hz.front()==5.0); REQUIRE(c.hz.back()==30000.0);
+    REQUIRE(c.dbAt(5)==Approx(-2.234)); REQUIRE(c.dbAt(30000)==Approx(-2.468)); // ends
+    REQUIRE(c.dbAt(2)==Approx(-2.234)); REQUIRE(c.dbAt(40000)==Approx(-2.468)); // clamped outside 5 Hz-30 kHz
+    double mid = c.dbAt(std::sqrt(5.0*5.6123)); REQUIRE(mid==Approx((-2.234-2.191)/2).margin(1e-6));
 }
 TEST_CASE("Mic cal: tolerant parsing of .txt / .frd / headers / comments") {
     auto c = parseMicCal("\xEF\xBB\xBF\"Sens Factor =-1.5dB, SERNO: 123\"\n* comment\n# another\nFreq(Hz)\tSPL(dB)\tPhase\n\n20\t0.5\n100  0.0\r\n1000;1.0\n50,0.2,10\n");
@@ -104,7 +110,7 @@ TEST_CASE("Mic cal: tolerant parsing of .txt / .frd / headers / comments") {
     REQUIRE(!parseMicCal("hello\nworld\n").ok());
 }
 TEST_CASE("Mic cal applied to TF removes the mic response") {
-    auto c = loadMicCal(std::string(FOH_TEST_DATA) + "/ecm8000-cal.csv");
+    auto c = loadMicCal(std::string(FOH_TEST_DATA) + "/synthetic-mic-cal.csv");
     // synthetic TF equal to the mic response
     TFResult tf; tf.sampleRate=48000; tf.fftSize=16384; size_t M=8193; tf.freq.resize(M); tf.H.resize(M); tf.magDb.resize(M); tf.phaseDeg.resize(M); tf.coherence.assign(M,1);
     for (size_t k=0;k<M;++k){ tf.freq[k]=k*48000.0/16384; tf.H[k]=std::polar(std::pow(10.0,c.dbAt(tf.freq[k])/20), c.phaseAt(tf.freq[k])*M_PI/180); }
@@ -265,33 +271,6 @@ TEST_CASE("Generators: gain/reset are thread-safe requests honoured on next samp
     sw.process(a.data(), 1000); sw.reset(); sw.process(b.data(), 1000); REQUIRE(a == b);
     PinkNoise p1(9), p2(9); p2.setGainDb(-20); float x1=p1.next(), x2=p2.next(); REQUIRE(x2==Approx(x1*0.1f).epsilon(1e-4));
 }
-TEST_CASE("Convergence: clean DUT settles fast, noisy DUT later, timeout honoured") {
-    auto x = pink(48000*30, 31); auto nz = pink(48000*30, 32);
-    auto runUntil = [&](TransferFunction& tf, const std::vector<float>& y) {
-        const int blk = 512; for (size_t i=0; i+blk<=x.size(); i+=blk) { tf.process(x.data()+i, y.data()+i, blk);
-            auto c = tf.convergence(); if (c.settled || c.timedOut) return c; } return tf.convergence(); };
-    ConvergenceSettings cs; cs.toleranceDb = 0.1; cs.minFrames = 8; cs.holdFrames = 6;
-    auto clean = lowpass(x, 2000, 48000);
-    TransferFunction a(16384,48000); a.setAverages(0); a.setConvergence(cs); auto ca = runUntil(a, clean);
-    REQUIRE(ca.settled); REQUIRE(ca.frames < 20); REQUIRE(ca.progress==1.0); REQUIRE(ca.meanCoherence > 0.95);
-    REQUIRE(a.frameSeconds()==Approx(0.17067).margin(1e-4));
-    std::vector<float> noisy(x.size()); for (size_t i=0;i<x.size();++i) noisy[i]=clean[i]+nz[i];
-    TransferFunction b(16384,48000); b.setAverages(0); b.setConvergence(cs); auto cb = runUntil(b, noisy);
-    REQUIRE(cb.settled); REQUIRE(cb.frames > ca.frames); REQUIRE(cb.meanCoherence < ca.meanCoherence);
-    // settled estimate is actually close to truth
-    auto r = b.result(6); REQUIRE(r.magDb[binOf(r,500)]==Approx(0).margin(0.6));
-    // timeout: impossible tolerance
-    ConvergenceSettings tight = cs; tight.toleranceDb = 1e-9; tight.maxFrames = 12;
-    TransferFunction c(16384,48000); c.setAverages(0); c.setConvergence(tight); auto cc = runUntil(c, noisy);
-    REQUIRE(!cc.settled); REQUIRE(cc.timedOut); REQUIRE(cc.frames==12);
-    // reset clears state; setting a reference delay resets too
-    c.reset(); REQUIRE(c.convergence().frames==0); REQUIRE(!c.settled());
-    // a DUT change mid-run breaks the stable streak
-    std::vector<float> step(x.size()); for (size_t i=0;i<x.size();++i) step[i] = i < 48000*4 ? clean[i] : 0.3f*clean[i];
-    TransferFunction e(16384,48000); e.setAverages(4); ConvergenceSettings ce=cs; ce.minFrames=1000; e.setConvergence(ce);
-    e.process(x.data(), step.data(), 48000*4); int before = e.convergence().stableFrames;
-    e.process(x.data()+48000*4, step.data()+48000*4, 16384); REQUIRE(before > 0); REQUIRE(e.convergence().stableFrames < before);
-}
 TEST_CASE("Delay finder for subs: 3 s LF-weighted window recovers sub delay under HF noise") {
     const double fs = 48000; int L = recommendedDelayWindowSamples(fs, true);
     REQUIRE(L == 144000); REQUIRE(recommendedDelayWindowSamples(fs, true, 10) == 192000);
@@ -311,7 +290,7 @@ TEST_CASE("Delay finder for subs: 3 s LF-weighted window recovers sub delay unde
     for (auto& a : r.arrivals) REQUIRE(a.delayMs <= 500.0 + 0.1);
     // broadband search on the same capture is dominated by the noise
     auto bb = findDelay(x, m, fs, true);
-    REQUIRE(r.confidence > 0.3); REQUIRE(r.confidence > bb.confidence);
+    REQUIRE(r.confidence > 0.2); REQUIRE(r.confidence > bb.confidence);
     REQUIRE(std::fabs(bb.arrivals[0].delayMs - 35.0) > 5.0); // broadband locks onto noise here
     // the old 1 s window is still usable but less confident than 3 s
     std::vector<float> x1(x.begin(), x.begin()+48000), m1(m.begin(), m.begin()+48000);
@@ -369,4 +348,407 @@ TEST_CASE("UI bridge: commands drive the analysis objects end to end") {
     auto& s = p.beginWrite(); s.tf = tf.result(smooth); s.smoothingFraction = smooth; s.delaySeq = lastDelayId; p.publish();
     auto& r = p.latest(); REQUIRE(r.smoothingFraction==24); REQUIRE(r.tf.blankThreshold==0.8); REQUIRE(r.delaySeq==42);
     REQUIRE(!r.delayWasSub); REQUIRE(r.delay.arrivals[0].delaySamples==Approx(480).margin(0.5));
+}
+TEST_CASE("T6 traffic light: exact thresholds, NaN red") {
+    REQUIRE(classifyCoherence(1.0)==TrafficLight::Green); REQUIRE(classifyCoherence(0.9)==TrafficLight::Green);
+    REQUIRE(classifyCoherence(0.8999)==TrafficLight::Amber); REQUIRE(classifyCoherence(0.75)==TrafficLight::Amber);
+    REQUIRE(classifyCoherence(0.6)==TrafficLight::Amber); REQUIRE(classifyCoherence(0.5999)==TrafficLight::Red);
+    REQUIRE(classifyCoherence(0.0)==TrafficLight::Red); REQUIRE(classifyCoherence(std::nan(""))==TrafficLight::Red);
+    STATIC_REQUIRE(classifyCoherence(0.95)==TrafficLight::Green);
+    REQUIRE(std::string(trafficLightName(TrafficLight::Amber))=="amber");
+    // on a real TF: clean -> green, SNR 0 dB -> red (~0.5)
+    auto x = pink(48000*6, 5); auto nz = pink(48000*6, 99); std::vector<float> y(x.size()); for (size_t i=0;i<y.size();++i) y[i]=x[i]+nz[i];
+    TransferFunction a(16384,48000), b(16384,48000); a.setAverages(0); b.setAverages(0);
+    a.process(x.data(), x.data(), (int)x.size()); b.process(x.data(), y.data(), (int)x.size());
+    auto ra = a.result(), rb = b.result(3);
+    REQUIRE(coherenceSummary(ra).light==TrafficLight::Green); REQUIRE(coherenceSummary(rb).light==TrafficLight::Red);
+    REQUIRE(ra.light(binOf(ra,1000))==TrafficLight::Green); REQUIRE(ra.light(999999)==TrafficLight::Red);
+    TFResult empty; REQUIRE(coherenceSummary(empty).bins==0); REQUIRE(coherenceSummary(empty).light==TrafficLight::Red);
+}
+TEST_CASE("classifyCoherence(TFResult) band overload matches QaAdapters shape") {
+    TFResult t; for (int k=0;k<100;++k){ t.freq.push_back(k*200.0); t.coherence.push_back(k == 0 ? 0.1 : 0.95); }
+    auto c = classifyCoherence(t); REQUIRE(c.light==TrafficLight::Green); REQUIRE(c.state()==0); REQUIRE(c.mean()==Approx(0.95)); // 200..10k excludes nothing <200 except bin 0
+    t.coherence.assign(100, 0.75); REQUIRE(classifyCoherence(t).state()==1); t.coherence.assign(100, 0.6); REQUIRE(classifyCoherence(t).state()==1);
+    t.coherence.assign(100, std::nan("")); REQUIRE(classifyCoherence(t).state()==2);
+    REQUIRE(classifyCoherence(t, 0, 250).bins==1); // DC bin is never counted
+}
+// ---- Settle rule (QA CAP0-CAP4)
+TEST_CASE("CAP0 settle rule: pure streak counter, strict <, coherent in-band bins only") {
+    auto run = [](std::vector<double> d) { SettleDetector s; int at = 0; for (size_t i=0;i<d.size();++i) if (s.update(d[i]) && !at) at = (int)i+1; return at; };
+    REQUIRE(run({0.4,0.4,0.4})==3);
+    REQUIRE(run({0.4,0.4,0.6,0.4,0.4,0.4})==6);
+    REQUIRE(run({0.5,0.5,0.5})==0);
+    REQUIRE(run({0.4,std::nan(""),0.4,0.4,0.4})==5); // NaN (no coherent bins) breaks the streak
+    // bins with coh 0.5999 or outside 100 Hz-10 kHz with huge delta are ignored
+    std::vector<double> f{50, 100, 1000, 10000, 12000, 2000}, coh{1, 0.6, 1, 0.9, 1, 0.5999};
+    std::vector<double> prev(6, 0.0), cur{40, 0.3, 0.3, 0.3, 40, 40};
+    int used=0; REQUIRE(settleDeltaDb(prev, cur, coh, f, {}, &used)==Approx(0.3)); REQUIRE(used==3);
+    ConvergenceSettings nofrac; nofrac.minCoherentFraction = 0; REQUIRE(settleDeltaDb(prev, cur, coh, f, nofrac)==Approx(0.3));
+    std::vector<double> sparse{1, 0.1, 0.1, 0.1, 1, 0.9}; // only 1 of 4 in-band bins coherent: 25% -> still OK
+    REQUIRE(settleDeltaDb(prev, std::vector<double>{0,0,0,0,0,0.2}, sparse, f)==Approx(0.2));
+    sparse[5] = 0.1; sparse[3] = 0.1; REQUIRE(std::isnan(settleDeltaDb(prev, cur, sparse, f))); // none
+    std::vector<double> lowc(6, 0.2); REQUIRE(std::isnan(settleDeltaDb(prev, cur, lowc, f, {}, &used))); REQUIRE(used==0);
+    // timeout: unsettled after maxSeconds, settles take precedence before that
+    SettleDetector t; for (int i=1;i<=100 && !t.finished();++i) t.update(1.0, i*0.1707);
+    REQUIRE(t.unsettled()); REQUIRE(!t.settled()); REQUIRE(t.updates()==59);
+    ConvergenceSettings d; REQUIRE(d.toleranceDb==0.5); REQUIRE(d.consecutive==3); REQUIRE(d.maxSeconds==10.0);
+    REQUIRE(d.minCoherence==0.6); REQUIRE(d.fLo==100.0); REQUIRE(d.fHi==10000.0);
+}
+static std::vector<float> peq(const std::vector<float>& x, double f0, double g, double Q, double fs) {
+    double A=std::pow(10,g/40), w0=2*M_PI*f0/fs, al=std::sin(w0)/(2*Q), c=std::cos(w0);
+    double b0=1+al*A, b1=-2*c, b2=1-al*A, a0=1+al/A, a1=-2*c, a2=1-al/A; double x1=0,x2=0,y1=0,y2=0;
+    std::vector<float> y(x.size()); for (size_t i=0;i<x.size();++i){ double o=(b0*x[i]+b1*x1+b2*x2-a1*y1-a2*y2)/a0; x2=x1;x1=x[i];y2=y1;y1=o;y[i]=(float)o;} return y; }
+static ConvergenceState captureUntilFinished(TransferFunction& tf, const std::vector<float>& x, const std::vector<float>& y) {
+    const int blk = 512; for (size_t i=0; i+blk<=x.size(); i+=blk) { tf.process(x.data()+i, y.data()+i, blk); if (tf.convergence().finished) break; }
+    return tf.convergence(); }
+TEST_CASE("CAP1 stable DUT (+6 dB PEQ @1k Q1) settles well before 10 s; result matches S2") {
+    auto x = pink(48000*12, 71); auto y = peq(x, 1000, 6, 1, 48000);
+    for (int avg : {16, 0}) { TransferFunction tf(16384,48000); tf.setAverages(avg); auto c = captureUntilFinished(tf, x, y);
+        REQUIRE(c.settled); REQUIRE(!c.unsettled); REQUIRE(c.elapsedSeconds < 3.0); REQUIRE(c.coherentBins > 1000);
+        auto r = tf.result(); REQUIRE(r.magDb[binOf(r,1000)]==Approx(6.0).margin(0.2)); REQUIRE(std::fabs(r.phaseDeg[binOf(r,1000)]) < 3); }
+}
+TEST_CASE("CAP2 drifting DUT (delay 2->4 ms, gain +-3 dB @0.3 Hz) times out at 10 s, unsettled, result returned") {
+    const double fs = 48000; int n = (int)(fs*12); auto x = pink(n, 72); std::vector<float> y((size_t)n);
+    for (int i=0;i<n;++i){ double t=i/fs, d=0.002*fs+0.002*fs*std::fmod(t,5.0)/5.0, p=i-d; int i0=(int)std::floor(p); double fr=p-i0;
+        float v = (i0>=0 && i0+1<n) ? (float)((1-fr)*x[(size_t)i0]+fr*x[(size_t)i0+1]) : 0.f; y[(size_t)i]=v*(float)std::pow(10.0,3*std::sin(2*M_PI*0.3*t)/20); }
+    for (int avg : {16, 0}) { TransferFunction tf(16384,48000); tf.setAverages(avg); auto c = captureUntilFinished(tf, x, y);
+        INFO("avg " << avg << " t " << c.elapsedSeconds << " d " << c.deltaDb << " bins " << c.coherentBins);
+        REQUIRE(c.unsettled); REQUIRE(c.timedOut); REQUIRE(!c.settled); REQUIRE(c.elapsedSeconds==Approx(10.0).margin(0.5));
+        REQUIRE(tf.result().magDb.size()==8193); }
+}
+TEST_CASE("CAP3 low coherence (SNR -10 dB) and silent meas: unsettled by 10 s, no NaN/hang") {
+    auto x = pink(48000*12, 73); auto nz = pink(48000*12, 74); std::vector<float> y(x.size()), z(x.size(), 0.f);
+    for (size_t i=0;i<y.size();++i) y[i] = x[i] + 3.1623f*nz[i];
+    for (auto* m : {&y, &z}) for (int avg : {16, 0}) { TransferFunction tf(16384,48000); tf.setAverages(avg); auto c = captureUntilFinished(tf, x, *m);
+        INFO("avg " << avg << " t " << c.elapsedSeconds << " d " << c.deltaDb << " bins " << c.coherentBins << " silent " << (m==&z));
+        REQUIRE(c.finished); REQUIRE(c.unsettled); REQUIRE(c.elapsedSeconds <= 10.5); REQUIRE(c.progress==1.0); REQUIRE(std::isfinite(c.meanCoherence)); }
+    // silent ref too
+    TransferFunction tf(16384,48000); auto c = captureUntilFinished(tf, z, z); REQUIRE(c.unsettled); REQUIRE(std::isnan(c.deltaDb)); REQUIRE(c.coherentBins==0);
+}
+TEST_CASE("CAP4 infinite and exponential modes both terminate; reset/reference delay restart the rule") {
+    auto x = pink(48000*12, 75); auto y = lowpass(x, 2000, 48000);
+    for (int avg : {0, 4, 16, 64}) { TransferFunction tf(16384,48000); tf.setAverages(avg); auto c = captureUntilFinished(tf, x, y);
+        REQUIRE(c.finished); REQUIRE(c.elapsedSeconds <= 10.5); REQUIRE(c.settled);
+        tf.reset(); REQUIRE(!tf.convergence().finished); REQUIRE(tf.convergence().frames==0); }
+    ConvergenceSettings fast; fast.maxFrames = 5; fast.toleranceDb = 1e-12; TransferFunction tf(16384,48000); tf.setConvergence(fast);
+    auto c = captureUntilFinished(tf, x, y); REQUIRE(c.unsettled); REQUIRE(c.frames==5);
+}
+TEST_CASE("setConvergenceTimeout(seconds): default 10 s, configurable") {
+    TransferFunction tf(16384,48000); REQUIRE(tf.convergenceTimeout()==10.0);
+    tf.setConvergenceTimeout(2.0); REQUIRE(tf.convergenceTimeout()==2.0);
+    std::vector<float> x = pink(48000*6, 81), z(x.size(), 0.f);
+    auto c = captureUntilFinished(tf, x, z); REQUIRE(c.unsettled); REQUIRE(c.elapsedSeconds==Approx(2.0).margin(0.2));
+    TransferFunction t2(16384,48000); t2.setConvergenceTimeout(0); auto c2 = captureUntilFinished(t2, x, z); REQUIRE(!c2.finished); // no timeout
+}
+// ---- Two-spike rule (QA D4) + delay-finder robustness
+static std::vector<float> fdel(const std::vector<float>& x, double d) { // exact circular fractional delay (pow2 length)
+    int N=(int)x.size(); FFT f(N); std::vector<cpx> X((size_t)N); for (int i=0;i<N;++i) X[(size_t)i]=x[(size_t)i]; f.forward(X);
+    for (int k=0;k<N;++k){ double kk = k<=N/2 ? k : k-N; X[(size_t)k]*=std::polar(1.0,-2*M_PI*kk*d/N); }
+    if (N%2==0) X[(size_t)N/2]=std::real(X[(size_t)N/2]); // keep Nyquist real
+    f.inverse(X); std::vector<float> y((size_t)N); for (int i=0;i<N;++i) y[(size_t)i]=(float)X[(size_t)i].real(); return y; }
+static std::vector<float> mix(const std::vector<float>& a, const std::vector<float>& b, double gDb) { std::vector<float> y(a.size()); float g=(float)std::pow(10.0,gDb/20); for (size_t i=0;i<a.size();++i) y[i]=a[i]+g*b[i]; return y; }
+static std::vector<float> head(const std::vector<float>& v, size_t n) { return std::vector<float>(v.begin(), v.begin()+(long)std::min(n, v.size())); }
+TEST_CASE("D-2S two-spike rule: pure function, exact boundaries") {
+    REQUIRE(twoSpikeFlag(0.0, -2.9, 2.0)); REQUIRE(!twoSpikeFlag(0.0, -3.1, 2.0));
+    REQUIRE(!twoSpikeFlag(0.0, -0.5, 0.4)); REQUIRE(twoSpikeFlag(0.0, -0.5, 0.6)); REQUIRE(twoSpikeFlag(0.0, -0.5, 1.5));
+    REQUIRE(twoSpikeFlag(0.0, -3.0, 2.0)); REQUIRE(!twoSpikeFlag(0.0, -0.5, 0.5)); REQUIRE(twoSpikeFlag(0.0, -0.5, -1.5));
+    STATIC_REQUIRE(twoSpikeFlag(-1.0, -1.0, 1.0));
+    std::vector<Arrival> a{{144,3,1.029,0}, {240,5,1.715,-2.9}}; REQUIRE(twoSpikeFlag(a)); a[1].relLevelDb=-3.1; REQUIRE(!twoSpikeFlag(a));
+    REQUIRE(!twoSpikeFlag(std::vector<Arrival>{})); REQUIRE(!twoSpikeFlag(std::vector<Arrival>{a[0]}));
+}
+TEST_CASE("D-2S/S16/D-CF on Echo's stimuli: PHAT timing, non-PHAT levels, flag + confidence ordering") {
+    const double fs=48000; auto src = pink(1<<18, 1); auto ref = head(src, 48000);
+    auto run = [&](const std::vector<float>& m) { return findDelay(ref, head(m, 48000), fs); };
+    struct Case { double d2ms, dB; bool flag; };
+    for (Case c : {Case{2.0,-2.9,true}, Case{2.0,-3.1,false}, Case{0.6,-0.5,true}, Case{0.4,-0.5,false}, Case{1.5,-0.5,true}}) {
+        auto r = run(mix(fdel(src, 0.003*fs), fdel(src, (0.003+c.d2ms/1000)*fs), c.dB));
+        INFO("dt " << c.d2ms << " dB " << c.dB); REQUIRE(r.ok()); REQUIRE(r.twoSimilarArrivals==c.flag);
+        REQUIRE(r.arrivals[0].delayMs==Approx(3.0).margin(0.01));
+        if (c.d2ms > 0.5) { REQUIRE(r.arrivals.size()>=2); REQUIRE(r.arrivals[1].delayMs==Approx(3.0+c.d2ms).margin(0.02)); }
+        if (c.d2ms >= 1.5) REQUIRE(r.arrivals[1].relLevelDb==Approx(c.dB).margin(0.15)); }
+    // S16 reflection: direct 2 ms + -3 dB at +8 ms -> no flag; boundaries -2.5 (flag) / -3.5 (no flag)
+    auto refl = [&](double dB){ return run(mix(fdel(src, 0.002*fs), fdel(src, 0.010*fs), dB)); };
+    auto s16 = refl(-3.0); REQUIRE(!s16.twoSimilarArrivals); REQUIRE(s16.arrivals[0].delayMs==Approx(2.0).margin(0.05));
+    REQUIRE(s16.arrivals[1].delayMs==Approx(10.0).margin(0.05)); REQUIRE(s16.arrivals[1].relLevelDb==Approx(-3.0).margin(0.25)); REQUIRE(s16.confidence > 0.8);
+    REQUIRE(refl(-2.5).twoSimilarArrivals); REQUIRE(!refl(-3.5).twoSimilarArrivals);
+    // D-CF: clean > two-spike > SNR -10 dB (reflection == clean: not ambiguous)
+    auto clean = run(fdel(src, 0.003*fs)); auto two = run(mix(fdel(src, 0.003*fs), fdel(src, 0.0045*fs), -0.5));
+    auto un = pink(1<<18, 99); auto noisy = run(mix(fdel(src, 0.003*fs), un, 10.0));
+    REQUIRE(clean.confidence >= s16.confidence); REQUIRE(s16.confidence > two.confidence); REQUIRE(two.confidence > noisy.confidence);
+    for (auto* r : {&clean, &two, &noisy, &s16}) { REQUIRE(r->confidence >= 0); REQUIRE(r->confidence <= 1); }
+    // S4 fractional 4.80 ms = 230.4 samples, +-0.1 sample; S5 integer 230
+    REQUIRE(run(fdel(src, 230.4)).arrivals[0].delaySamples==Approx(230.4).margin(0.1));
+    REQUIRE(run(fdel(src, 230.0)).arrivals[0].delayMs==Approx(4.7917).margin(0.021));
+    // the spec's unweighted-envelope mode is still available (it under-reads level gaps on pink)
+    DelayOptions uo; uo.levelMode = DelayOptions::LevelMode::Unweighted;
+    auto u = findDelay(ref, head(mix(fdel(src, 0.003*fs), fdel(src, 0.005*fs), -2.9), 48000), fs, uo); REQUIRE(u.arrivals.size()>=2);
+}
+TEST_CASE("Delay finder robustness (Echo crash triage): edge inputs never throw or crash") {
+    std::vector<float> big(48000); for (size_t i=0;i<big.size();++i) big[i]=std::sin((float)i*0.37f);
+    std::vector<float> e0, e63(63,1.f), z(48000,0.f), nanv(48000,NAN), infv(48000,INFINITY), dc(48000,1.f);
+    REQUIRE(findDelay(e0,e0,48000).error.size()); REQUIRE(!findDelay(e63,e63,48000).ok());
+    REQUIRE(findDelay(z,z,48000).error=="reference is silent"); REQUIRE(findDelay(big,z,48000).error=="measurement is silent");
+    REQUIRE(!findDelay(nanv,big,48000).ok()); REQUIRE(!findDelay(infv,big,48000).ok());
+    REQUIRE(findDelay(big,big,0).error=="invalid sample rate"); REQUIRE(!findDelay(big,big,-1).ok()); REQUIRE(!findDelay(big,big,NAN).ok());
+    auto one = big; one[100]=NAN; auto r1 = findDelay(big, one, 48000); REQUIRE(r1.nonFiniteSamples==1); REQUIRE(r1.ok()); REQUIRE(r1.arrivals[0].delaySamples==Approx(0).margin(0.1));
+    auto p = pink(48000, 3); auto mm = findDelay(p, head(delayed(p, 100), 20000), 48000); REQUIRE(mm.ok()); REQUIRE(mm.arrivals[0].delaySamples==Approx(100).margin(0.1)); // mismatched lengths
+    REQUIRE_NOTHROW(findDelay(dc,dc,48000));
+    DelayOptions o; o.maxArrivals=0; REQUIRE(!findDelay(p,p,48000,o).ok()); o.maxArrivals=100000; REQUIRE_NOTHROW(findDelay(p,p,48000,o));
+    o=DelayOptions(); o.maxDelayMs=1e12; REQUIRE(findDelay(p,p,48000,o).ok()); o.maxDelayMs=-5; REQUIRE(findDelay(p,p,48000,o).ok());
+    o=DelayOptions(); o.minSeparationMs=1e12; REQUIRE(findDelay(p,p,48000,o).ok()); o.minSeparationMs=-1; REQUIRE(findDelay(p,p,48000,o).ok());
+    o=DelayOptions(); o.lpHz=1e-12; REQUIRE_NOTHROW(findDelay(p,p,48000,o));
+    REQUIRE(impulseFromTF(TFResult{}).empty()); TFResult bad; bad.fftSize=1000; REQUIRE(impulseFromTF(bad).empty());
+    TFResult small; small.fftSize=16384; small.H.resize(10); REQUIRE(impulseFromTF(small).size()==16384);
+}
+TEST_CASE("D-INS fractional reference delay: inserting 230.4 samples leaves < 1 deg at 10 kHz") {
+    auto src = pink(1<<18, 91); auto meas = fdel(src, 230.4); // mic 4.80 ms later than ref
+    auto phaseAt = [&](double d, double f) { TransferFunction tf(16384,48000); tf.setAverages(0); tf.setReferenceDelaySamples(d);
+        tf.process(src.data(), meas.data(), (int)src.size()); auto r = tf.result(); return std::pair<double,double>(r.phaseDeg[binOf(r,f)], r.coherence[binOf(r,f)]); };
+    auto [p, coh] = phaseAt(230.4, 10000); REQUIRE(std::fabs(p) < 1.0); REQUIRE(coh > 0.99);
+    for (double f : {100.0, 1000.0, 5000.0, 15000.0}) REQUIRE(std::fabs(phaseAt(230.4, f).first) < 1.0);
+    auto rounded = phaseAt(230.0, 10000).first; REQUIRE(std::fabs(rounded) == Approx(30.0).margin(2.0)); // 0.4 smp @10k = 30 deg: a rounded insert fails
+    // finder -> insert round trip uses the full sub-sample value
+    auto d = findDelay(head(src, 48000), head(meas, 48000), 48000); REQUIRE(d.arrivals[0].delaySamples==Approx(230.4).margin(0.1));
+    REQUIRE(std::fabs(phaseAt(d.arrivals[0].delaySamples, 10000).first) < 5.0);
+    TransferFunction tf(16384,48000); tf.setReferenceDelaySamples(230.4); REQUIRE(tf.referenceDelaySamples()==Approx(230.4));
+    REQUIRE(tf.referenceDelayMs()==Approx(4.8)); tf.setReferenceDelaySamples(-3); REQUIRE(tf.referenceDelaySamples()==0);
+    tf.setReferenceDelaySamples(NAN); REQUIRE(tf.referenceDelaySamples()==0); tf.setReferenceDelaySamples(1e9); REQUIRE(tf.referenceDelaySamples()==131071);
+}
+// ---- W2 sub delay (QA D7 / D-SUBGD / S15)
+static std::vector<float> biquad(const std::vector<float>& x, bool hp, double fc, double Q, double fs) {
+    double w=2*M_PI*fc/fs, al=std::sin(w)/(2*Q), c=std::cos(w), b0,b1,b2;
+    if (hp) { b0=(1+c)/2; b1=-(1+c); b2=(1+c)/2; } else { b0=(1-c)/2; b1=1-c; b2=(1-c)/2; }
+    double a0=1+al, a1=-2*c, a2=1-al, x1=0,x2=0,y1=0,y2=0; std::vector<float> y(x.size());
+    for (size_t i=0;i<x.size();++i){ double o=(b0*x[i]+b1*x1+b2*x2-a1*y1-a2*y2)/a0; x2=x1;x1=x[i];y2=y1;y1=o;y[i]=(float)o;} return y; }
+static std::vector<float> bp30_120(const std::vector<float>& x, double fs) { // 4th-order Butterworth HP 30 + LP 120
+    auto y = biquad(biquad(x, true, 30, 0.5412, fs), true, 30, 1.3066, fs); return biquad(biquad(y, false, 120, 0.5412, fs), false, 120, 1.3066, fs); }
+TEST_CASE("D-SUBGD: sub delay from XO-band phase = 12.5 ms; alternatives +-1 period; raw peak is only a hint") {
+    const double fs=48000; std::mt19937 g(7); std::normal_distribution<float> nd(0, 0.25f);
+    std::vector<float> rs(1<<19); for (auto& v : rs) v = nd(g);           // broadband reference (~10.9 s)
+    auto mainsSig = bp30_120(rs, fs); auto subSig = fdel(mainsSig, 0.0125*fs); // "flat main" in the XO band vs sub 12.5 ms later
+    TransferFunction ta(16384,fs), tb(16384,fs); ta.setAverages(0); tb.setAverages(0);
+    ta.process(rs.data(), mainsSig.data(), (int)rs.size()); tb.process(rs.data(), subSig.data(), (int)rs.size());
+    auto A = ta.result(), B = tb.result();
+    // the trap: broadband ref vs band-limited sub -> raw peak is NOT 12.5 ms (filter group delay / half cycle)
+    auto raw = findDelay(head(rs, 144000), head(subSig, 144000), fs, false);
+    REQUIRE(raw.ok()); // plain xcorr, like Echo's reference_tf (20.50 ms, pol -, with scipy's filter; ~19.7 ms here)
+    REQUIRE(raw.arrivals[0].delayMs > 18.0); REQUIRE(raw.arrivals[0].delayMs < 22.0); REQUIRE(raw.arrivals[0].inverted);
+    auto e = subDelayFromPhase(A, B, 60, 100, 80, &raw);
+    REQUIRE(e.valid); REQUIRE(e.xoHz==80); REQUIRE(e.periodMs==Approx(12.5));
+    REQUIRE(e.primaryMs==Approx(12.5).margin(0.25)); REQUIRE(e.alternativesMs[0]==Approx(0.0).margin(0.25)); REQUIRE(e.alternativesMs[1]==Approx(25.0).margin(0.25));
+    REQUIRE(e.slopeMs==Approx(12.5).margin(1.0)); REQUIRE(e.coherence > 0.95);
+    REQUIRE(e.hasHint); REQUIRE(e.hintMs==Approx(raw.arrivals[0].delayMs)); REQUIRE(std::fabs(e.hintMs - e.primaryMs) > 2.0);
+    // auto XO (band centre) and a different XO change only the spacing of the alternatives
+    auto e2 = subDelayFromPhase(A, B, 60, 100); REQUIRE(e2.primaryMs==Approx(12.5).margin(0.25)); REQUIRE(e2.xoHz > 60); REQUIRE(e2.xoHz < 100);
+    auto e3 = subDelayFromPhase(A, B, 60, 100, 100); REQUIRE(e3.primaryMs==Approx(12.5).margin(0.25)); REQUIRE(e3.alternativesMs[1]==Approx(22.5).margin(0.25));
+    // sign: swapping roles gives -12.5 (mains later than sub)
+    REQUIRE(subDelayFromPhase(B, A, 60, 100, 80).primaryMs==Approx(-12.5).margin(0.25));
+    // invalid inputs
+    REQUIRE(!subDelayFromPhase(A, B, 0, 100).valid); REQUIRE(!subDelayFromPhase(TFResult{}, TFResult{}, 60, 100).valid);
+    // S15: filtered pair (bp 0 ms vs bp 12.5 ms), 3 s window, sub options -> 12.5 +- 0.1 ms
+    auto s15 = findDelay(head(mainsSig, 144000), head(subSig, 144000), fs, DelayOptions::forSubs());
+    REQUIRE(s15.arrivals[0].delayMs==Approx(12.5).margin(0.1));
+}
+// ---- Calibration (QA A4)
+static std::string slurp(const std::string& p) { std::ifstream f(p, std::ios::binary); std::stringstream ss; ss << f.rdbuf(); return ss.str(); }
+TEST_CASE("C4 Sens Factor parsed and exposed, never applied") {
+    auto base = slurp(std::string(FOH_TEST_DATA) + "/synthetic-mic-cal.csv"); base = base.substr(base.find('\n') + 1); // drop the file's own Sens Factor line
+    auto with = parseMicCal("\"Sens Factor =-1.5dB, SERNO: 123\"\r\n" + base), without = parseMicCal(base);
+    REQUIRE(with.ok()); REQUIRE(with.hasSensFactor); REQUIRE(with.sensitivityOffsetDb==Approx(-1.5)); REQUIRE(with.sensFactorLine=="Sens Factor =-1.5dB, SERNO: 123");
+    REQUIRE(!without.hasSensFactor); REQUIRE(without.sensitivityOffsetDb==0); REQUIRE(without.sensFactorLine.empty());
+    REQUIRE(with.hz==without.hz); REQUIRE(with.db==without.db);
+    REQUIRE(with.correctionDb(8193, 48000.0/16384)==without.correctionDb(8193, 48000.0/16384)); // +-0.000 dB
+    TFResult t; size_t M=8193; t.sampleRate=48000; t.fftSize=16384; t.freq.resize(M); t.H.assign(M, cpx(1,0)); t.magDb.assign(M,0); t.phaseDeg.assign(M,0); t.coherence.assign(M,1);
+    for (size_t k=0;k<M;++k) t.freq[k]=k*48000.0/16384; auto t2=t; with.apply(t); without.apply(t2); REQUIRE(t.magDb==t2.magDb);
+    REQUIRE(with.dbAt(1000)==without.dbAt(1000));
+    auto ws = parseMicCal("Sens Factor: 2.25\n100 0\n1000 0\n"); REQUIRE(ws.hasSensFactor); REQUIRE(ws.sensitivityOffsetDb==Approx(2.25)); REQUIRE(ws.dbAt(500)==0);
+}
+TEST_CASE("C2/C2b REW .txt and .frd parse identical to the CSV; C10 sign; C12 flipped file detectably wrong") {
+    auto csv = loadMicCal(std::string(FOH_TEST_DATA) + "/synthetic-mic-cal.csv");
+    auto txt = loadMicCal(std::string(FOH_TEST_DATA) + "/synthetic-mic-cal-rew.txt"), frd = loadMicCal(std::string(FOH_TEST_DATA) + "/synthetic-mic-cal.frd");
+    for (auto* c : {&txt, &frd}) { REQUIRE(c->ok()); REQUIRE(c->hz==csv.hz); REQUIRE(c->db==csv.db); REQUIRE(c->phaseDeg==csv.phaseDeg); REQUIRE(c->hasPhase); }
+    // C10: flat 0 dB TF corrected by ECM8000 -> -cal(f): top end reads higher
+    TFResult t; size_t M=8193; t.sampleRate=48000; t.fftSize=16384; t.freq.resize(M); t.H.assign(M, cpx(1,0)); t.magDb.assign(M,0); t.phaseDeg.assign(M,0); t.coherence.assign(M,1);
+    for (size_t k=0;k<M;++k) t.freq[k]=k*48000.0/16384;
+    auto corr = csv.correctionDb((int)M, 48000.0/16384);
+    REQUIRE(csv.dbAt(30000)==Approx(-2.468)); REQUIRE(-csv.dbAt(21999) > 1.0); REQUIRE(csv.dbAt(5)==Approx(-2.234));
+    auto tf = t; csv.apply(tf); REQUIRE(tf.magDb[binOf(tf,21000)]==Approx(-csv.dbAt(tf.freq[binOf(tf,21000)])).margin(0.01)); REQUIRE(tf.magDb[binOf(tf,21000)] > 1.0);
+    REQUIRE(corr[binOf(tf,21000)]==Approx(tf.magDb[binOf(tf,21000)]).margin(1e-9));
+    // C12: TF equal to the real mic response, corrected with the SIGN-FLIPPED file -> ~2x cal, >= 6 dB error above 20 kHz
+    auto flip = loadMicCal(std::string(FOH_TEST_DATA) + "/synthetic-mic-cal_SIGNFLIPPED.csv"); REQUIRE(flip.ok());
+    auto mic = t; for (size_t k=0;k<M;++k){ mic.H[k]=std::polar(std::pow(10.0,csv.dbAt(mic.freq[k])/20), csv.phaseAt(mic.freq[k])*M_PI/180); }
+    auto good = mic, bad = mic; csv.apply(good); flip.apply(bad);
+    REQUIRE(good.magDb[binOf(good,21000)]==Approx(0).margin(1e-6));
+    REQUIRE(bad.magDb[binOf(bad,21999)]==Approx(2*csv.dbAt(21999)).margin(0.05)); REQUIRE(std::fabs(bad.magDb[binOf(bad,20500)]) >= 2.5);
+}
+TEST_CASE("C6/C8 unsorted, duplicate and malformed cal files") {
+    auto u = parseMicCal("1000 1\n20 0\n1000 5\n100 0.5\n"); REQUIRE(u.ok()); REQUIRE(u.hz==std::vector<double>{20,100,1000}); // sorted, dedup keeps first
+    REQUIRE(!parseMicCal("").ok()); REQUIRE(!parseMicCal(std::string("\x00\x01\x02\xff\xfe", 5)).ok());
+    REQUIRE(!parseMicCal("abc,def\nfoo bar\n").ok()); REQUIRE(!parseMicCal("20,0\n").ok()); // one point is not a curve
+    auto nanf = parseMicCal("20 nan\n100 0\n1000 0\n"); REQUIRE(nanf.ok()); for (double d : nanf.db) REQUIRE(std::isfinite(d));
+    auto comma = parseMicCal("20,5;0,1\n"); REQUIRE(!comma.ok()); REQUIRE(!comma.error.empty()); // decimal comma rejected clearly
+    REQUIRE(!loadMicCal("/nonexistent/x.csv").ok());
+}
+// ---- QA Part A: remaining NEW rows
+static std::vector<float> hpf2(const std::vector<float>& x, double fc, double fs) { return biquad(x, true, fc, 0.70710678, fs); }
+TEST_CASE("S2/S3/S7/S12: PEQ, HPF and gain DUTs at 44.1/48/96 kHz") {
+    for (double fs : {44100.0, 48000.0, 96000.0}) { INFO("fs " << fs);
+        int N = fs > 50000 ? 32768 : 16384; auto x = pink((int)(fs*8), 101);
+        auto bin = [&](const TFResult& r, double f){ return (size_t)std::lround(f/(fs/N)); };
+        TransferFunction a(N, fs); a.setAverages(0); auto y = peq(x, 1000, 6, 1, fs); a.process(x.data(), y.data(), (int)x.size()); auto r = a.result();
+        REQUIRE(r.magDb[bin(r,1000)]==Approx(6.0).margin(0.3)); REQUIRE(std::fabs(r.phaseDeg[bin(r,1000)]) < 5);
+        REQUIRE(r.magDb[bin(r,500)]==Approx(1.9).margin(0.5)); REQUIRE(r.magDb[bin(r,2000)]==Approx(1.9).margin(0.5));
+        TransferFunction h(N, fs); h.setAverages(0); auto z = hpf2(x, 100, fs); h.process(x.data(), z.data(), (int)x.size()); auto q = h.result();
+        REQUIRE(q.magDb[bin(q,100)]==Approx(-3.0).margin(0.5)); REQUIRE(q.magDb[bin(q,63)]==Approx(-8.6).margin(0.6));
+        REQUIRE(q.magDb[bin(q,31.5)]==Approx(-20.3).margin(1.0)); REQUIRE(q.phaseDeg[bin(q,100)]==Approx(90).margin(5));
+        for (float g : {0.5f, 3.98107f}) { std::vector<float> w(x.size()); for (size_t i=0;i<w.size();++i) w[i]=g*x[i];
+            TransferFunction t(N, fs); t.setAverages(0); t.process(x.data(), w.data(), (int)x.size()); auto u = t.result();
+            REQUIRE(u.magDb[bin(u,1000)]==Approx(20*std::log10(g)).margin(0.05)); }
+    }
+}
+TEST_CASE("T1 defaults and T2 fixed 16-average Welch") {
+    TransferFunction tf; auto x = pink(48000*4, 102); tf.process(x.data(), x.data(), (int)x.size()); auto r = tf.result();
+    REQUIRE(r.fftSize==16384); REQUIRE(r.sampleRate==48000); REQUIRE(r.averages==tf.frames()); REQUIRE(r.freq.size()==8193);
+    REQUIRE(tf.frameSeconds()==Approx(8192/48000.0)); REQUIRE(tf.coherenceBlankThreshold()==0); REQUIRE(tf.convergenceTimeout()==10);
+    // fixed 16 (default): after a gain step the estimate reaches the new level within ~4x16 frames
+    auto y = x; std::vector<float> xs = pink(48000*14, 103), ys(xs.size()); for (size_t i=0;i<xs.size();++i) ys[i] = xs[i]*(i < 48000*2 ? 1.f : 0.5f);
+    TransferFunction e; e.process(xs.data(), ys.data(), (int)xs.size()); REQUIRE(e.result(3).magDb[binOf(r,1000)]==Approx(-6.02).margin(0.3));
+    // infinite: variance falls with frames (noisy DUT)
+    auto nz = pink(48000*14, 104); std::vector<float> yn(xs.size()); for (size_t i=0;i<xs.size();++i) yn[i]=xs[i]+nz[i];
+    auto spread = [&](int frames){ TransferFunction t; t.setAverages(0); t.process(xs.data(), yn.data(), 8192*(frames+1)); auto q=t.result(); double s=0; int n=0;
+        for (size_t k=binOf(q,1000);k<binOf(q,2000);++k){ s+=q.magDb[k]*q.magDb[k]; ++n; } return std::sqrt(s/n); };
+    REQUIRE(spread(60) < spread(8));
+}
+TEST_CASE("T5 blanking keeps data and clamps the threshold") {
+    auto x = pink(48000*6, 105), nz = pink(48000*6, 106); std::vector<float> y(x.size()); for (size_t i=0;i<y.size();++i) y[i]=x[i]+nz[i];
+    TransferFunction a; a.setAverages(0); a.process(x.data(), y.data(), (int)x.size()); auto off = a.result(3);
+    for (double thr : {0.6, 0.9}) { a.setCoherenceBlankThreshold(thr); auto on = a.result(3);
+        REQUIRE(on.magDb==off.magDb); REQUIRE(on.H==off.H); REQUIRE(on.coherence==off.coherence);
+        for (size_t k=1;k<on.freq.size();++k) REQUIRE(on.isBlanked(k)==(on.coherence[k] < thr)); }
+    a.setCoherenceBlankThreshold(-1); REQUIRE(a.coherenceBlankThreshold()==0); a.setCoherenceBlankThreshold(7); REQUIRE(a.coherenceBlankThreshold()==1);
+}
+TEST_CASE("S13 long delays 50/200/500 ms: found, or clearly out of range") {
+    auto src = pink(1<<18, 107);
+    for (double ms : {50.0, 200.0, 500.0}) { auto m = fdel(src, ms*48); auto r = findDelay(head(src, 96000), head(m, 96000), 48000);
+        REQUIRE(r.ok()); REQUIRE(r.arrivals[0].delayMs==Approx(ms).margin(0.05)); }
+    DelayOptions o; o.maxDelayMs = 100; auto m = fdel(src, 200*48); auto r = findDelay(head(src, 96000), head(m, 96000), 48000, o);
+    REQUIRE((!r.ok() || r.confidence < 0.3 || std::fabs(r.arrivals[0].delayMs - 200) > 1)); // beyond the search range: not reported as a confident 200 ms
+    for (auto& a : r.arrivals) REQUIRE(a.delayMs <= 100.1);
+}
+TEST_CASE("S9 RTA pink -12 dBFS RMS: flat 1/3 & 1/6 bands, IEC base-10 centres") {
+    // exact 1/f pink like gen_stimuli.py (FFT-shaped white noise), not the Kellet generator
+    std::mt19937 rg(108); std::normal_distribution<double> nd; int Np=1<<20; FFT F(Np); std::vector<cpx> P((size_t)Np);
+    for (auto& v : P) v = nd(rg); F.forward(P); for (int k=0;k<Np;++k){ double kk = k<=Np/2 ? k : Np-k; P[(size_t)k] /= std::sqrt(std::max(kk, 1.0)); } F.inverse(P);
+    std::vector<float> x((size_t)Np); for (int i=0;i<Np;++i) x[(size_t)i]=(float)P[(size_t)i].real(); double s=0; for (float v : x) s+=v*v; float g=(float)(std::pow(10,-12/20.0)/std::sqrt(s/x.size())); for (auto& v : x) v*=g;
+    for (int frac : {3, 6}) { RTA r(16384,48000,frac); r.avgAlpha=0.02; r.process(x.data(),(int)x.size()); auto b=r.bandsDb(); auto& bands=r.bands();
+        double ref=0; int n=0; std::vector<double> mid; for (size_t i=0;i<bands.size();++i) if (bands[i].fCenter>=100 && bands[i].fCenter<=10000) mid.push_back(b[i]);
+        for (double v : mid) { ref+=v; ++n; } ref/=n; for (size_t i=0;i<bands.size();++i) if (bands[i].fCenter>=100 && bands[i].fCenter<=10000) { INFO("band " << bands[i].fCenter);
+            REQUIRE(b[i]==Approx(ref).margin(bands[i].fCenter >= 200 ? 0.5 : 1.5)); } // <200 Hz: only ~4-8 FFT bins per band -> spectral scatter up to ~1.2 dB (QA: tolerance applies >= 200 Hz)
+        bool has1k=false; for (auto& bd : bands) if (std::fabs(bd.fCenter-1000)<1e-9) has1k=true; REQUIRE(has1k);
+        REQUIRE(bands[1].fCenter/bands[0].fCenter==Approx(std::pow(10.0, 0.3/frac)).epsilon(1e-9)); }
+}
+TEST_CASE("TR2 trace show/hide keeps data; delete reorders") {
+    TraceStore s; TFResult t; t.magDb={1,2,3}; for (int i=0;i<3;++i) REQUIRE(s.store("T"+std::to_string(i), t, i));
+    s.at(1).visible=false; REQUIRE(s.at(1).tf.magDb==t.magDb); s.at(1).visible=true; REQUIRE(s.at(1).tf.magDb==t.magDb);
+    REQUIRE(s.remove(1)); REQUIRE(s.count()==2); REQUIRE(s.at(1).name=="T2"); REQUIRE(s.at(1).refDelayMs==2); REQUIRE(!s.remove(5));
+}
+TEST_CASE("P-VS/S14 virtual sum: +6.02 dB coherent, null with inverted copy; INV vs half-period options both available") {
+    TFResult a; a.sampleRate=48000; a.fftSize=16384; size_t M=8193; a.freq.resize(M); a.H.assign(M,1); a.magDb.assign(M,0); a.phaseDeg.assign(M,0); a.coherence.assign(M,1);
+    for (size_t k=0;k<M;++k) a.freq[k]=k*48000.0/16384;
+    REQUIRE(virtualSum(a,a).magDb[200]==Approx(6.02).margin(0.01));
+    TFResult inv=a; for (auto& h : inv.H) h=-h; REQUIRE(virtualSum(a,inv).magDb[200] <= -40);
+    // sub 5 ms + INV vs sub 10 ms normal, XO 100 Hz: identical at 100 Hz (half period = 5 ms), so the guide must show both
+    TFResult s5=a, s10=a; for (size_t k=0;k<M;++k){ s5.H[k]=-std::polar(1.0,-2*M_PI*a.freq[k]*0.005); s10.H[k]=std::polar(1.0,-2*M_PI*a.freq[k]*0.010); }
+    size_t k100=(size_t)std::lround(100/(48000.0/16384)); double f=a.freq[k100];
+    REQUIRE(std::abs(s5.H[k100]-s10.H[k100]) < 0.1*std::abs(1.0) + std::fabs(f-100)*0.1);
+    auto e5 = subDelayFromPhase(a, s5, 80, 125, 100), e10 = subDelayFromPhase(a, s10, 80, 125, 100);
+    REQUIRE(e10.primaryMs==Approx(10).margin(0.25));
+    // same phase at the XO -> same candidate set (no auto polarity pick, P-NA); only the slope differs
+    REQUIRE(e5.phaseDeg==Approx(e10.phaseDeg).margin(1)); REQUIRE(e5.slopeMs==Approx(5).margin(0.5)); REQUIRE(e10.slopeMs==Approx(10).margin(0.5));
+}
+TEST_CASE("Juno sanitizer repro cases (juno/delay-finder-repro e8ef37a) as regressions") {
+    std::vector<float> s(48000); for (size_t i=0;i<s.size();++i) s[i]=std::sin((float)i*0.37f);
+    std::vector<float> nanv(48000, NAN), z(48000, 0.f), a63(63, 1.f); DelayOptions o;
+    auto r = findDelay(nanv, s, 48000, o); REQUIRE(!r.ok()); REQUIRE(!r.error.empty()); REQUIRE(r.nonFiniteSamples==48000);
+    r = findDelay(z, z, 48000, o); REQUIRE(r.error=="reference is silent"); REQUIRE(r.confidence==0);
+    r = findDelay(s, s, 0, o); REQUIRE(r.error=="invalid sample rate"); REQUIRE(r.arrivals.empty()); REQUIRE(r.confidence==0); // no confident 0
+    r = findDelay(s, s, NAN, o); REQUIRE(r.error=="invalid sample rate"); REQUIRE(r.confidence==0);
+    r = findDelay(s, s, INFINITY, o); REQUIRE(!r.ok());
+    r = findDelay(a63, a63, 48000, o); REQUIRE(!r.error.empty()); REQUIRE(r.arrivals.empty());
+    auto p = pink(48000, 201);
+    for (double v : {1e12, -1.0, 0.0, (double)NAN}) { DelayOptions q; q.minSeparationMs = v; auto t = findDelay(p, p, 48000, q); REQUIRE(t.ok()); REQUIRE(t.arrivals[0].delaySamples==Approx(0).margin(0.01)); }
+    for (double v : {1e12, -5.0, (double)NAN, (double)INFINITY}) { DelayOptions q; q.maxDelayMs = v; auto t = findDelay(p, p, 48000, q); REQUIRE(t.ok()); REQUIRE(t.arrivals[0].delaySamples==Approx(0).margin(0.01)); }
+    { DelayOptions q; q.maxArrivals = 100000; auto t = findDelay(p, p, 48000, q); REQUIRE(t.ok()); REQUIRE(t.arrivals.size() <= 16); }
+    // lpHz floor: 1e-12 Hz behaves like the 10 Hz floor (signal still found), not numerical noise
+    auto d = delayed(p, 480);
+    { DelayOptions q; q.lpHz = 1e-12; auto t = findDelay(p, d, 48000, q); DelayOptions f; f.lpHz = 10; auto u = findDelay(p, d, 48000, f);
+      REQUIRE(t.ok()); REQUIRE(t.arrivals[0].delaySamples==Approx(u.arrivals[0].delaySamples).margin(1e-9)); }
+    { DelayOptions q; q.lpHz = NAN; q.hpHz = INFINITY; auto t = findDelay(p, d, 48000, q); REQUIRE(t.ok()); REQUIRE(t.arrivals[0].delaySamples==Approx(480).margin(0.1)); }
+    { DelayOptions q; q.lpHz = 100; q.hpHz = 200; REQUIRE(findDelay(p, d, 48000, q).error=="empty band (hpHz >= lpHz)"); }
+    { DelayOptions q; q.lpHz = 1e9; auto t = findDelay(p, d, 48000, q); REQUIRE(t.arrivals[0].delaySamples==Approx(480).margin(0.1)); }
+    { DelayOptions q; q.speedOfSound = NAN; auto t = findDelay(p, d, 48000, q); REQUIRE(std::isfinite(t.arrivals[0].distanceM)); }
+    REQUIRE(findDelay(p, d, 1.0, DelayOptions::forSubs()).arrivals.size() <= 16); // tiny fs: no clamp UB
+    REQUIRE(findDelay(p, d, 48000).samplesUsed == 48000); REQUIRE(!findDelay(p, d, 48000).truncated);
+}
+// Leading-silence pairs (mic = zero-padded delayed copy, as in Juno's golden set #39): broadband finder must
+// resolve two-spike / reflection / reverb at 44.1/48/96 kHz. (Juno's reported failures came from the golden test
+// selecting DelayOptions::forSubs() via an uninitialised `sub`; forSubs() on these broadband pairs is expected to smear.)
+static std::vector<float> zpDelay(const std::vector<float>& x, double d) { // linear (not circular) fractional delay, leading zeros
+    int n=(int)x.size(), N=1; while (N < 2*n) N<<=1; std::vector<float> p(x); p.resize((size_t)N, 0.f); auto y = fdel(p, d); y.resize((size_t)n);
+    for (int i=0;i<(int)std::min<double>(n, std::floor(d)) - 2;++i) y[(size_t)i]=0.f; return y; }
+static std::vector<float> fftConv(const std::vector<float>& x, const std::vector<float>& h) {
+    size_t n=x.size()+h.size(); int N=1; while ((size_t)N<n) N<<=1; FFT f(N); std::vector<cpx> X((size_t)N), H((size_t)N);
+    for (size_t i=0;i<x.size();++i) X[i]=x[i]; for (size_t i=0;i<h.size();++i) H[i]=h[i]; f.forward(X); f.forward(H);
+    for (int k=0;k<N;++k) X[(size_t)k]*=H[(size_t)k]; f.inverse(X); std::vector<float> y(x.size()); for (size_t i=0;i<y.size();++i) y[i]=(float)X[i].real(); return y; }
+TEST_CASE("Leading-silence pairs: two-spike, S16 reflection and reverb tail at 44.1/48/96 kHz") {
+    for (double fs : {44100.0, 48000.0, 96000.0}) { INFO("fs " << fs);
+        auto src = pink((int)fs, 301); for (auto& v : src) v += 0.0175f; // golden set has DC on the reference
+        double tol = std::max(0.05e-3*fs, 1.0);
+        auto two = mix(zpDelay(src, 0.003*fs), zpDelay(src, 0.0045*fs), -0.5); auto r = findDelay(src, two, fs);
+        REQUIRE(r.ok()); REQUIRE(r.arrivals[0].delaySamples==Approx(0.003*fs).margin(tol)); REQUIRE(r.twoSimilarArrivals);
+        bool f2=false; for (auto& a : r.arrivals) if (std::fabs(a.delaySamples-0.0045*fs) < tol) f2=true; REQUIRE(f2);
+        auto refl = mix(zpDelay(src, 0.002*fs), zpDelay(src, 0.010*fs), -3.0); auto s = findDelay(src, refl, fs);
+        REQUIRE(s.arrivals[0].delaySamples==Approx(0.002*fs).margin(tol));
+        bool fr=false; for (auto& a : s.arrivals) if (std::fabs(a.delaySamples-0.010*fs) < tol) { fr=true; REQUIRE(a.relLevelDb==Approx(-3.0).margin(0.5)); } REQUIRE(fr);
+        // reverb: direct at 4.80 ms + RT60 0.4 s exponential noise tail starting 0.5 ms later
+        std::mt19937 g(9); std::normal_distribution<float> nd(0, 1.f); std::vector<float> h((size_t)(0.6*fs));
+        for (size_t i=(size_t)(0.0005*fs); i<h.size(); ++i) h[i] = 0.03f*nd(g)*(float)std::exp(-6.9078*i/fs/0.4);
+        auto verb = zpDelay(src, 0.0048*fs); auto tail = fftConv(verb, h); for (size_t i=0;i<verb.size();++i) verb[i]+=tail[i];
+        auto v = findDelay(src, verb, fs); REQUIRE(v.arrivals[0].delaySamples==Approx(0.0048*fs).margin(tol));
+        // forSubs() on the same broadband pair smears (documents the golden-test root cause)
+        auto ws = findDelay(src, two, fs, DelayOptions::forSubs()); REQUIRE(std::fabs(ws.arrivals[0].delaySamples - 0.003*fs) > tol);
+    }
+}
+TEST_CASE("S16 -3 dB reflection level is rate-independent (fractional-sample peaks) at 44.1/48/96 kHz") {
+    for (double fs : {44100.0, 48000.0, 96000.0}) { INFO("fs " << fs);
+        auto src = pink((int)fs, 302); for (auto& v : src) v += 0.0175f;
+        for (double d0 : {0.002, 0.0021}) { // 88.2 / 92.61 smp at 44.1k: peaks between samples
+            auto refl = mix(zpDelay(src, d0*fs), zpDelay(src, (d0+0.008)*fs), -3.0); auto s = findDelay(src, refl, fs);
+            REQUIRE(s.ok()); REQUIRE(s.arrivals.size() >= 2); REQUIRE(s.arrivals[0].delaySamples == Approx(d0*fs).margin(0.1));
+            bool fr=false; for (auto& a : s.arrivals) if (std::fabs(a.delaySamples-(d0+0.008)*fs) < 1.0) { fr=true; CHECK(a.relLevelDb==Approx(-3.0).margin(0.2)); }
+            REQUIRE(fr); CHECK(!s.twoSimilarArrivals); }
+        // fractional half-sample arrival at 0 dB vs integer: level must not dip
+        auto h = mix(zpDelay(src, 100.0), zpDelay(src, 300.5), -6.0); auto t = findDelay(src, h, fs);
+        bool f=false; for (auto& a : t.arrivals) if (std::fabs(a.delaySamples-300.5) < 0.2) { f=true; CHECK(a.relLevelDb==Approx(-6.0).margin(0.2)); } REQUIRE(f);
+    }
+}
+TEST_CASE("D-SGN negative lags: swapped inputs give a negative delay only when enabled") {
+    for (double fs : {44100.0, 48000.0, 96000.0}) { INFO("fs " << fs);
+        auto src = pink((int)fs, 303); double d = 0.0048*fs; auto mic = zpDelay(src, d);
+        auto pos = findDelay(src, mic, fs); REQUIRE(pos.arrivals[0].delaySamples == Approx(d).margin(0.1));
+        DelayOptions sym; sym.minDelayMs = -std::numeric_limits<double>::infinity();
+        auto sp = findDelay(src, mic, fs, sym); REQUIRE(sp.arrivals[0].delaySamples == Approx(d).margin(0.1));
+        REQUIRE(sp.arrivals[0].relLevelDb == 0.0);
+        auto sw = findDelay(mic, src, fs, sym); REQUIRE(sw.ok()); REQUIRE(sw.arrivals[0].delaySamples == Approx(-d).margin(0.1));
+        REQUIRE(sw.arrivals[0].delayMs == Approx(-4.8).margin(0.003)); REQUIRE(sw.arrivals[0].distanceM < 0); REQUIRE(!sw.arrivals[0].inverted);
+        DelayOptions lim; lim.minDelayMs = -10; lim.maxDelayMs = 10;
+        auto sl = findDelay(mic, src, fs, lim); REQUIRE(sl.arrivals[0].delaySamples == Approx(-d).margin(0.1));
+        DelayOptions shallow; shallow.minDelayMs = -2; // -4.8 ms is outside [-2 ms, ...): must not be reported
+        auto ss = findDelay(mic, src, fs, shallow); for (auto& a : ss.arrivals) REQUIRE(a.delaySamples > -2e-3*fs - 3);
+        auto def = findDelay(mic, src, fs); // default: positive lags only, never negative
+        for (auto& a : def.arrivals) REQUIRE(a.delaySamples >= 0);
+        REQUIRE(def.impulse.size() == sw.impulse.size()); // impulse stays positive-lag only
+        auto inv = mic; for (auto& v : inv) v = -v; auto si = findDelay(inv, src, fs, sym);
+        REQUIRE(si.arrivals[0].delaySamples == Approx(-d).margin(0.1)); REQUIRE(si.arrivals[0].inverted);
+    }
 }

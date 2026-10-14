@@ -5,14 +5,19 @@ concurrency:
 on:
   push:
     branches: [master]
+    tags: ['v*']
   pull_request:
     branches: [master]
   workflow_dispatch:
 jobs:
   build:
-    runs-on: macos-14
+    # macOS minutes are 10x Linux: only master pushes, v* tags, manual runs.
+    if: github.event_name != 'pull_request'
+    runs-on: macos-26   # arm64, Xcode 26.x default (macos-14 is EOL Nov 2 2026)
     steps:
       - uses: actions/checkout@v4
+      - name: Toolchain
+        run: xcodebuild -version && xcrun --show-sdk-version
       - name: Configure
         run: cmake -S . -B build -G Xcode -DCMAKE_OSX_ARCHITECTURES=arm64 -DCMAKE_BUILD_TYPE=Release
       - name: Build
@@ -23,12 +28,16 @@ jobs:
         run: |
           APP=$(find build -name "FOH Gauge.app" -type d -path "*Release*" | head -1)
           echo "Found $APP"; file "$APP/Contents/MacOS/"*
+          MIN=$(/usr/libexec/PlistBuddy -c 'Print :LSMinimumSystemVersion' "$APP/Contents/Info.plist"); echo "LSMinimumSystemVersion=$MIN"
+          [ "$MIN" = "26.0" ] || { echo "::error::LSMinimumSystemVersion is $MIN, expected 26.0"; exit 1; }
+          vtool -show-build "$APP/Contents/MacOS/"* | tee /dev/stderr | grep -q "minos 26.0" || { echo "::error::binary minos is not 26.0"; exit 1; }
           ditto -c -k --keepParent "$APP" FOH-Gauge-macOS-arm64.zip
       - uses: actions/upload-artifact@v4
         with:
           name: FOH-Gauge-macOS-arm64
           path: FOH-Gauge-macOS-arm64.zip
   linux-tests:
+    # Core-only (FOH_BUILD_APP=OFF, no JUCE fetch); this is the PR gate.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

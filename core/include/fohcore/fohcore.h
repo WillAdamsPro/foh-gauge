@@ -4,6 +4,7 @@
 #include <atomic>
 #include <complex>
 #include <cstdint>
+#include <limits>
 #include <string>
 #include <type_traits>
 #include <vector>
@@ -105,6 +106,15 @@ std::vector<double> smoothPower(const std::vector<double>& power, double binHz, 
 std::vector<cpx> smoothComplex(const std::vector<cpx>& h, double binHz, int fraction);
 
 // ---------- Dual-channel transfer function, Welch averaged ----------
+// ---------- Coherence traffic light ----------
+// Green: coherence >= 0.9. Amber: 0.6 <= coherence < 0.9. Red: < 0.6 (also NaN).
+enum class TrafficLight : uint8_t { Red = 0, Amber = 1, Green = 2 };
+constexpr double kCoherenceGreen = 0.9, kCoherenceAmber = 0.6;
+constexpr TrafficLight classifyCoherence(double c) {
+    return c >= kCoherenceGreen ? TrafficLight::Green : (c >= kCoherenceAmber ? TrafficLight::Amber : TrafficLight::Red);
+}
+inline const char* trafficLightName(TrafficLight t) { return t == TrafficLight::Green ? "green" : t == TrafficLight::Amber ? "amber" : "red"; }
+
 struct TFResult {
     double sampleRate = 48000; int fftSize = 0;
     std::vector<double> freq, magDb, phaseDeg, coherence;
@@ -115,23 +125,73 @@ struct TFResult {
     double blankThreshold = 0.0;
     int averages = 0;
     bool isBlanked(size_t k) const { return k < blanked.size() && blanked[k] != 0; }
+    TrafficLight light(size_t k) const { return k < coherence.size() ? classifyCoherence(coherence[k]) : TrafficLight::Red; }
 };
+// Band summary for the status pill: mean coherence over [lo, hi] Hz and its light.
+struct CoherenceSummary {
+    double meanCoherence = 0; TrafficLight light = TrafficLight::Red; int bins = 0;
+    // QaAdapters.h compatibility: state 0 good (green), 1 fair (amber), 2 poor (red); mean = meanCoherence
+    int state() const { return light == TrafficLight::Green ? 0 : light == TrafficLight::Amber ? 1 : 2; }
+    double mean() const { return meanCoherence; }
+};
+CoherenceSummary coherenceSummary(const TFResult& tf, double lo = 100.0, double hi = 10000.0);
+// Band traffic light (replaces qa::coherenceLight). Default band 200 Hz-10 kHz as in the UI.
+inline CoherenceSummary classifyCoherence(const TFResult& tf, double lo = 200.0, double hi = 10000.0) { return coherenceSummary(tf, lo, hi); }
 
-// "Wait until the average settles": after every Welch frame the TF is summarised on a
-// 1/3-oct grid (fLo..fHi); delta = coherence-weighted mean |change in dB| vs the previous
-// frame. Settled when delta < toleranceDb for holdFrames consecutive frames (and at least
-// minFrames frames). maxFrames > 0 is a timeout (settled=false, timedOut=true).
-// At 16k/48k with 50% overlap one frame = 170.7 ms.
+// ---------- Settle rule (QA D5) ----------
+// An "update" is one Welch frame (16k @ 48k, 50% overlap = 170.7 ms of audio).
+// deltaDb = RMS over bins with coherence >= minCoherence and fLo <= f <= fHi of the
+// change in |H| dB since the previous update. Settled when deltaDb < toleranceDb (strict)
+// for `consecutive` updates in a row. If not settled after maxSeconds of audio, the
+// capture proceeds with unsettled = true. No coherent bins => delta is NaN (never
+// counts as stable, never divides by zero). Same if fewer than minCoherentFraction of the
+// in-band bins are coherent.
 struct ConvergenceSettings {
-    double toleranceDb = 0.1; int minFrames = 8; int holdFrames = 6; int maxFrames = 0;
-    double fLo = 40.0, fHi = 16000.0;
+    double toleranceDb = 0.5; int consecutive = 3; double maxSeconds = 10.0;
+    double minCoherence = 0.6; double fLo = 100.0, fHi = 10000.0;
+    // Guard (Orion, pending QA sign-off): at least this fraction of the in-band bins must be
+    // coherent, else delta is NaN. Stops a handful of chance-coherent bins (low SNR) or a
+    // narrow surviving LF region (drifting DUT) from declaring "settled". 0 disables.
+    double minCoherentFraction = 0.25;
+    int maxFrames = 0;   // optional override of maxSeconds (frames); 0 = use maxSeconds
+};
+// RMS dB change over coherent in-band bins. Returns NaN when no bin qualifies.
+double settleDeltaDb(const std::vector<double>& prevDb, const std::vector<double>& curDb,
+                     const std::vector<double>& coherence, const std::vector<double>& freqHz,
+                     const ConvergenceSettings& s = {}, int* binsUsed = nullptr);
+// Pure streak counter: feed one delta per update (NaN allowed). Mirrors QA CAP0 exactly.
+class SettleDetector {
+public:
+    explicit SettleDetector(const ConvergenceSettings& s = {}) : cfg(s) {}
+    // Returns settled. elapsedSeconds is the audio time measured so far.
+    bool update(double deltaDb, double elapsedSeconds = 0.0) {
+        ++n; streak = (deltaDb == deltaDb && deltaDb < cfg.toleranceDb) ? streak + 1 : 0;
+        if (!done && streak >= cfg.consecutive) { done = true; isSettled = true; }
+        bool timeout = cfg.maxFrames > 0 ? n >= cfg.maxFrames : (cfg.maxSeconds > 0 && elapsedSeconds >= cfg.maxSeconds);
+        if (!done && timeout) { done = true; isUnsettled = true; }
+        return isSettled;
+    }
+    void reset() { n = streak = 0; done = isSettled = isUnsettled = false; }
+    bool settled() const { return isSettled; }
+    bool unsettled() const { return isUnsettled; } // timed out without settling
+    bool finished() const { return done; }         // capture may proceed
+    int streakCount() const { return streak; }
+    int updates() const { return n; }
+    const ConvergenceSettings& settings() const { return cfg; }
+private:
+    ConvergenceSettings cfg; int n = 0, streak = 0; bool done = false, isSettled = false, isUnsettled = false;
 };
 struct ConvergenceState {
-    bool settled = false, timedOut = false;
-    double deltaDb = 1e9;      // last frame-to-frame change
-    double meanCoherence = 0;  // over the grid
+    bool settled = false;
+    bool unsettled = false;    // hit maxSeconds without settling: proceed, show warning
+    bool timedOut = false;     // == unsettled (kept for older callers)
+    bool finished = false;     // settled || unsettled
+    double deltaDb = std::numeric_limits<double>::quiet_NaN(); // last RMS change (NaN: no coherent bins)
+    int coherentBins = 0;
+    double meanCoherence = 0;  // over fLo..fHi
     int frames = 0, stableFrames = 0;
-    double progress = 0;       // 0..1 for a UI bar: stableFrames/holdFrames gated by minFrames
+    double elapsedSeconds = 0;
+    double progress = 0;       // 0..1 for a UI bar (streak/consecutive; 1 when finished)
 };
 
 class TransferFunction {
@@ -140,8 +200,12 @@ public:
     // Feed blocks of reference (x) and measurement (y) samples; 50% overlap Welch.
     void process(const float* ref, const float* meas, int n);
     // Delay applied to the reference (positive = ref delayed, compensating acoustic delay).
-    void setReferenceDelaySamples(int d);
-    int referenceDelaySamples() const { return refDelay; }
+    // Fractional (sub-sample) delay applied to the reference: positive = mic later than ref.
+    // Integer part: sample history; fractional part: linear phase e^{-j w frac} on the
+    // reference spectrum of every frame. Clamped to [0, 131071]. Resets the averages.
+    void setReferenceDelaySamples(double d);
+    double referenceDelaySamples() const { return refDelayInt + refDelayFrac; }
+    double referenceDelayMs() const { return referenceDelaySamples() * 1000.0 / fs; }
     // averages: 0 = infinite (cumulative); otherwise exponential with ~N frame memory
     void setAverages(int n) { avgN = n; }
     // Bins with coherence below t (0..1) are flagged in TFResult::blanked. 0 disables.
@@ -152,6 +216,10 @@ public:
     int frames() const { return frameCount; }
     void setConvergence(const ConvergenceSettings& c) { conv = c; resetConvergence(); }
     const ConvergenceSettings& convergenceSettings() const { return conv; }
+    // Max audio time to wait for the settle rule before proceeding "unsettled" (default 10 s).
+    // Restarts the rule. <= 0 disables the timeout.
+    void setConvergenceTimeout(double seconds) { conv.maxSeconds = seconds; conv.maxFrames = 0; resetConvergence(); }
+    double convergenceTimeout() const { return conv.maxSeconds; }
     ConvergenceState convergence() const { return cstate; }
     bool settled() const { return cstate.settled; }
     double frameSeconds() const { return (N / 2) / fs; }
@@ -160,8 +228,9 @@ private:
     void updateConvergence();
     void resetConvergence();
     ConvergenceSettings conv; ConvergenceState cstate;
-    std::vector<std::pair<int,int>> gridBins; std::vector<double> gridPrevDb; bool gridHavePrev = false;
-    FFT fft; int N; double fs; int avgN = 16; int refDelay = 0; double blankThr = 0.0;
+    SettleDetector settle; int convLo = 1, convHi = 0; std::vector<double> convPrevDb; bool convHavePrev = false;
+    FFT fft; int N; double fs; int avgN = 16; int refDelayInt = 0; double refDelayFrac = 0; double blankThr = 0.0;
+    std::vector<cpx> fracRot; // per-bin e^{-j 2 pi k frac / N}, k = 0..N/2
     std::vector<double> win; std::vector<float> xbuf, ybuf; int fill = 0;
     std::vector<float> refHistory; int histPos = 0;
     std::vector<double> Sxx, Syy; std::vector<cpx> Sxy; int frameCount = 0;
@@ -169,8 +238,28 @@ private:
 };
 
 // ---------- Delay finder ----------
-struct Arrival { double delaySamples; double delayMs; double distanceM; double relLevelDb; bool inverted = false; }; // inverted: correlation peak negative (polarity flip)
-struct DelayResult { std::vector<Arrival> arrivals; double confidence = 0; std::vector<double> impulse; };
+// Sign convention: positive delay = mic (meas) later than reference.
+// Timing comes from the chosen weighting (GCC-PHAT by default), refined to sub-sample
+// precision on the band-limited correlation. relLevelDb is measured on a NON-PHAT
+// correlation envelope (|analytic signal|) at each arrival's lag, relative to arrival #1
+// (DelayOptions::levelMode), so levels are not distorted by PHAT whitening. Arrivals more
+// than 26 dB below #1 on that envelope are dropped (PHAT artefacts).
+struct Arrival { double delaySamples; double delayMs; double distanceM; double relLevelDb; bool inverted = false; // inverted: correlation peak negative (polarity flip)
+                 double weightedRelLevelDb = 0; }; // level on the timing (PHAT) correlation, for diagnostics
+// Two-spike rule (QA D4): flag <=> (#1 dB - #2 dB) <= 3 dB AND |t2 - t1| > 0.5 ms.
+constexpr double kTwoSpikeWithinDb = 3.0, kTwoSpikeMinSeparationMs = 0.5;
+constexpr bool twoSpikeFlag(double level1Db, double level2Db, double dtMs) {
+    return (level1Db - level2Db) <= kTwoSpikeWithinDb && (dtMs < 0 ? -dtMs : dtMs) > kTwoSpikeMinSeparationMs;
+}
+struct DelayResult {
+    std::vector<Arrival> arrivals; double confidence = 0; std::vector<double> impulse;
+    bool twoSimilarArrivals = false;          // "Two similar spikes: is only one speaker on?" (confidence x0.75)
+    int nonFiniteSamples = 0;       // NaN/Inf input samples, replaced by 0
+    int samplesUsed = 0; bool truncated = false; // window is capped at 2^23 samples (~175 s @ 48k)
+    std::string error;              // empty on success; set for unusable input (too short, bad rate, silent, all-NaN)
+    bool ok() const { return error.empty() && !arrivals.empty(); }
+};
+bool twoSpikeFlag(const std::vector<Arrival>& arrivals); // applies the rule to arrivals[0] vs arrivals[1]
 // Cross-correlation of meas vs ref (meas = ref delayed). Returns top 3 peaks with
 // sub-sample (parabolic) interpolation. phat = GCC-PHAT weighting.
 DelayResult findDelay(const std::vector<float>& ref, const std::vector<float>& meas, double sampleRate,
@@ -182,6 +271,15 @@ DelayResult findDelay(const std::vector<float>& ref, const std::vector<float>& m
 struct DelayOptions {
     bool phat = true; int maxArrivals = 3; double minSeparationMs = 0.5;
     double speedOfSound = 343.0; double hpHz = 0, lpHz = 0; double maxDelayMs = 0;
+    // minDelayMs < 0 also searches negative lags (mic earlier than ref, e.g. swapped inputs) down to
+    // minDelayMs; NaN or -Inf = symmetric (-window). Default 0 = positive lags only (unchanged).
+    double minDelayMs = 0;
+    // lpHz (if > 0) is floored at 10 Hz and both edges are clamped to Nyquist; hpHz >= lpHz is an error.
+    // Level measurement for relLevelDb / two-spike: Unweighted = envelope of the plain
+    // cross-correlation (Vega spec); RefWhitened = envelope of Y X* / |X|^2 (impulse-response
+    // estimate; immune to the source spectrum, e.g. pink noise's broad autocorrelation).
+    enum class LevelMode : uint8_t { Unweighted, RefWhitened };
+    LevelMode levelMode = LevelMode::RefWhitened; // see PR notes: Unweighted mis-reads pink-noise spikes by ~2 dB
     static DelayOptions forSubs() { DelayOptions o; o.hpHz = 20; o.lpHz = 150; o.minSeparationMs = 10; o.maxDelayMs = 500; return o; }
 };
 DelayResult findDelay(const std::vector<float>& ref, const std::vector<float>& meas, double sampleRate,
@@ -193,7 +291,7 @@ inline int recommendedDelayWindowSamples(double sampleRate, bool sub, double sec
     if (sub) s = s < 2.0 ? 2.0 : (s > 4.0 ? 4.0 : s);
     return (int) (s * sampleRate);
 }
-// Impulse response from an averaged TF (IFFT of H).
+// Impulse response from an averaged TF (IFFT of H). Empty if fftSize is not a power of two.
 std::vector<double> impulseFromTF(const TFResult& tf);
 
 // ---------- RTA (FFT-banded) ----------
@@ -221,7 +319,11 @@ private:
 // ---------- Mic calibration ----------
 struct MicCal {
     std::vector<double> hz, db, phaseDeg; bool hasPhase = false;
-    double sensitivityOffsetDb = 0; // e.g. from "Sens Factor" header line
+    // "Sens Factor" header line (miniDSP UMIK/REW style), e.g. "Sens Factor =-1.5dB, SERNO: 123".
+    // Parsed and exposed for display ONLY: never applied by dbAt/correctionDb/apply (QA D8,
+    // no SPL calibration in build #1). UI: "Sens Factor -1.5 dB (not applied)".
+    double sensitivityOffsetDb = 0; bool hasSensFactor = false;
+    std::string sensFactorLine;     // the raw header line, trimmed
     std::string error;
     bool ok() const { return hz.size() >= 2 && error.empty(); }
     double dbAt(double f) const;     // log-freq interpolation, clamped at ends
@@ -360,6 +462,25 @@ Band2 acousticCrossover(const TFResult& a, const TFResult& b, double withinDb = 
 // Mean phase difference (b - a, wrapped, degrees) over band, coherence-weighted, and implied delay.
 struct PhaseOffset { double meanDeg = 0; double centerHz = 0; double impliedMs = 0; };
 PhaseOffset phaseOffset(const TFResult& a, const TFResult& b, double lo, double hi);
+// W2 sub delay from the crossover-band phase offset (QA D7). Positive = sub later than mains.
+// primaryMs = wrapped phase-offset delay at xoHz, moved by whole periods to the candidate
+// nearest the phase-slope (group-delay) estimate over [lo, hi]. alternativesMs = primary
+// -/+ one period of xoHz (the guide shows all three; nothing is auto-picked). The raw
+// impulse/xcorr peak is carried only as a hint (it includes filter group delay and can sit
+// half a cycle away with flipped polarity, e.g. 20.5 ms "inverted" for a 12.5 ms sub).
+struct SubDelayEstimate {
+    bool valid = false;
+    double xoHz = 0, periodMs = 0;     // crossover frequency used for the alternatives (N4: recorded)
+    double phaseDeg = 0;               // sub - mains, wrapped, coherence weighted, at xoHz
+    double wrappedMs = 0;              // -phase/360/xo, in (-period/2, period/2]
+    double slopeMs = 0;                // group delay from the phase slope over the band
+    double primaryMs = 0;
+    double alternativesMs[2] = {0, 0}; // primary - period, primary + period
+    double coherence = 0;              // mean min(coh_a, coh_b) over the band
+    bool hasHint = false; double hintMs = 0; bool hintInverted = false; // raw peak, display only
+};
+SubDelayEstimate subDelayFromPhase(const TFResult& mains, const TFResult& sub, double lo, double hi,
+                                   double xoHz = 0, const DelayResult* rawPeakHint = nullptr);
 // Virtual (complex) sum of two traces.
 TFResult virtualSum(const TFResult& a, const TFResult& b);
 double wrapDeg(double d);

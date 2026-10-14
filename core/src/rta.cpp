@@ -1,4 +1,5 @@
 #include "fohcore/fohcore.h"
+#include <algorithm>
 #include <cmath>
 namespace foh {
 std::vector<Band> octaveBands(int fraction, double fmin, double fmax) {
@@ -30,9 +31,14 @@ void RTA::frame() {
 std::vector<double> RTA::bandsDb() const {
     std::vector<double> out; double bin = fs / N;
     // ENBW of Hann = 1.5 bins: divide summed power accordingly
+    // each bin covers [(k-0.5), (k+0.5)] * bin; bins straddling a band edge contribute by overlap
+    // fraction, so narrow LF bands are not quantised to whole bins (S9: +-0.5 dB on pink)
     for (auto& b : bandList) { double s = 0;
-        for (size_t k = 1; k < power.size(); ++k) { double f = k * bin; if (f >= b.fLo && f < b.fHi) {
-            double p = power[k]; if (k < calDb.size()) p *= std::pow(10.0, calDb[k] / 10.0); s += p; } }
+        long k0 = std::max(1L, (long) std::floor(b.fLo / bin - 0.5)), k1 = std::min((long) power.size() - 1, (long) std::ceil(b.fHi / bin + 0.5));
+        for (long k = k0; k <= k1; ++k) {
+            double lo = (k - 0.5) * bin, hi = (k + 0.5) * bin, ov = std::min(hi, b.fHi) - std::max(lo, b.fLo);
+            if (ov <= 0) continue; double p = power[(size_t) k] * (ov / bin);
+            if ((size_t) k < calDb.size()) p *= std::pow(10.0, calDb[(size_t) k] / 10.0); s += p; }
         out.push_back(10.0 * std::log10(s / 1.5 + 1e-20) + 3.0103); } // +3 dB: sine RMS -> peak-referenced dBFS
     return out;
 }

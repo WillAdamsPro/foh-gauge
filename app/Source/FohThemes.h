@@ -12,13 +12,13 @@ namespace foh::theme
         struct { juce::Colour primary, secondary, axis, onAccent; } text;
         juce::Colour accent;
         struct { juce::Colour good, caution, poor; } status;          // always paired with circle / triangle / square + label
-        struct { juce::Colour magnitude, phase; float width = 2.0f; bool glow = false; float lowCoherenceHatchAlpha = 0.35f; } trace;
+        struct { juce::Colour magnitude, phase; float width = 2.0f; bool glow = false; float lowCoherenceHatchAlpha = 0.35f; juce::Colour secondary; } trace; // secondary: sub trace (added by Lyra)
         struct { juce::String ui, numeric; float base, title, readout; } type;
         float cornerRadius = 6.0f, borderWidth = 1.0f;
         int navWidth = 200, helperWidth = 320;
     };
 
-    inline Theme studioInstrument()
+    [[deprecated ("Superseded by applePro themes (Oct 2026)")]] inline Theme studioInstrument()
     {
         Theme t; t.id = "a"; t.displayName = "Studio Instrument";
         t.surfaces = { juce::Colour (0xff17191C), juce::Colour (0xff1B1E22), juce::Colour (0xff202328), juce::Colour (0xff272B31), juce::Colour (0xff33373E), juce::Colour (0xff2C3036) };
@@ -31,7 +31,7 @@ namespace foh::theme
         return t;
     }
 
-    inline Theme nightOps()
+    [[deprecated ("Superseded by applePro themes (Oct 2026)")]] inline Theme nightOps()
     {
         Theme t; t.id = "b"; t.displayName = "Night Ops";
         t.surfaces = { juce::Colour (0xff070605), juce::Colour (0xff0C0A08), juce::Colour (0xff110E0B), juce::Colour (0xff1A1510), juce::Colour (0xff2A2018), juce::Colour (0xff211A13) };
@@ -44,7 +44,7 @@ namespace foh::theme
         return t;
     }
 
-    inline Theme friendlyGuide()
+    [[deprecated ("Superseded by applePro themes (Oct 2026)")]] inline Theme friendlyGuide()
     {
         Theme t; t.id = "c"; t.displayName = "Friendly Guide";
         t.surfaces = { juce::Colour (0xff1A1714), juce::Colour (0xff211D19), juce::Colour (0xff28231E), juce::Colour (0xff332C25), juce::Colour (0xff40372E), juce::Colour (0xff3A322A) };
@@ -57,9 +57,9 @@ namespace foh::theme
         return t;
     }
 
-    inline Theme friendlyGuideSunlight()
+    [[deprecated ("Superseded by applePro themes (Oct 2026)")]] inline Theme friendlyGuideSunlight()
     {
-        Theme t = friendlyGuide(); t.id = "c-sunlight"; t.displayName = "Friendly Guide (Sunlight)"; t.isLight = true;
+        Theme t; { _Pragma("GCC diagnostic push") _Pragma("GCC diagnostic ignored \"-Wdeprecated-declarations\"") t = friendlyGuide(); _Pragma("GCC diagnostic pop") } t.id = "c-sunlight"; t.displayName = "Friendly Guide (Sunlight)"; t.isLight = true;
         t.surfaces = { juce::Colour (0xffF7F4EE), juce::Colour (0xffECE6DC), juce::Colour (0xffFFFFFF), juce::Colour (0xffF1ECE3), juce::Colour (0xff6B6258), juce::Colour (0xffD6CFC4) };
         t.text = { juce::Colour (0xff14110E), juce::Colour (0xff3A332C), juce::Colour (0xff3A332C), juce::Colour (0xffFFFFFF) };
         t.accent = juce::Colour (0xff00594C);
@@ -68,6 +68,96 @@ namespace foh::theme
         t.type = { "Atkinson Hyperlegible", "Atkinson Hyperlegible", 18.0f, 30.0f, 60.0f };
         t.borderWidth = 2.0f;
         return t;
+    }
+
+
+    // ---- Apple-pro (current). UI font = macOS system font (SF Pro) at runtime; "Inter" was only the mockup stand-in.
+    // Alpha label colours are pre-composited over windowBackground for JUCE (labelColor 85%, secondary 55%, tertiary 30%).
+    inline Theme appleProDark()
+    {
+        Theme t; t.id = "apple-pro-dark"; t.displayName = "Pro Dark";
+        t.surfaces = { juce::Colour (0xff1E1E1E),   // windowBackground (plot area #161616 drawn by plot)
+                       juce::Colour (0xb82C2C2E),   // sidebar: rgba(44,44,46,0.72), vibrancy fallback
+                       juce::Colour (0xff2B2B2B),   // toolbar / inspector
+                       juce::Colour (0x1aFFFFFF),   // controlBackground: white 10%
+                       juce::Colour (0x1aFFFFFF),   // separator: white 10%
+                       juce::Colour (0x12FFFFFF) }; // grid: white 7%
+        t.text = { juce::Colour (0xd9FFFFFF), juce::Colour (0x8cFFFFFF), juce::Colour (0x4dFFFFFF), juce::Colour (0xffFFFFFF) };
+        t.accent = juce::Colour (0xff0A84FF);
+        t.status = { juce::Colour (0xff30D158), juce::Colour (0xffFFD60A), juce::Colour (0xffFF453A) };
+        t.trace = { juce::Colour (0xff0A84FF), juce::Colour (0xffBF5AF2), 1.75f, false, 0.10f, juce::Colour (0xffFF9F0A) };
+        t.type = { "", "", 13.0f, 14.0f, 34.0f };   // "" = system font, see systemFontName()
+        t.cornerRadius = 6.0f; t.borderWidth = 0.5f; t.navWidth = 220; t.helperWidth = 300;
+        return t;
+    }
+
+    inline Theme appleProSunlight()
+    {
+        Theme t = appleProDark(); t.id = "apple-pro-sunlight"; t.displayName = "Pro Sunlight"; t.isLight = true;
+        t.surfaces = { juce::Colour (0xffFFFFFF), juce::Colour (0xffE8E8EA), juce::Colour (0xffF2F2F2), juce::Colour (0xffFFFFFF), juce::Colour (0xff8E8E93), juce::Colour (0xffD1D1D6) };
+        t.text = { juce::Colour (0xff000000), juce::Colour (0xff2C2C2E), juce::Colour (0xff48484A), juce::Colour (0xffFFFFFF) };
+        t.accent = juce::Colour (0xff0040DD);
+        t.status = { juce::Colour (0xff006B1F), juce::Colour (0xff7A5A00), juce::Colour (0xffB0000A) };
+        t.trace = { juce::Colour (0xff0040DD), juce::Colour (0xff7A1FA2), 3.5f, false, 0.22f, juce::Colour (0xff9A4A00) };
+        t.type = { "", "", 15.0f, 16.0f, 42.0f };
+        t.borderWidth = 1.0f;
+        return t;
+    }
+
+    inline juce::String systemFontName()
+    {
+       #if JUCE_MAC
+        return juce::Font::getDefaultSansSerifFontName();   // resolves to the system UI font (SF Pro)
+       #elif JUCE_WINDOWS
+        return "Segoe UI";
+       #else
+        return juce::Font::getDefaultSansSerifFontName();
+       #endif
+    }
+
+
+    // ---- Workspace / docking tokens (A2). 1x px. Overlay colours are composited over the element's surface.
+    namespace ws
+    {
+        inline constexpr int   panelHeaderHeight   = 28;
+        inline constexpr float panelTitleSize      = 12.0f;  // semibold, text.secondary; active panel = text.primary
+        inline constexpr int   headerButtonSize    = 20;     // float / close hit box
+        inline constexpr int   headerGlyphSize     = 12;
+        inline constexpr int   headerButtonGap     = 2;
+        inline constexpr int   headerPaddingX      = 8;
+        inline constexpr int   tabHeight           = 26;
+        inline constexpr int   tabPaddingX         = 12;
+        inline constexpr int   tabMinWidth         = 72, tabMaxWidth = 200;
+        inline constexpr int   tabCloseSize        = 14;
+        inline constexpr int   tabIndicatorHeight  = 2;      // accent underline on active tab
+        inline constexpr int   overflowButtonWidth = 24;
+        inline constexpr int   splitterHitArea     = 8;      // invisible grab zone
+        inline constexpr float splitterLine        = 1.0f;   // visible line (0.5 on Retina dark)
+        inline constexpr float splitterLineActive  = 2.0f;   // hover / drag
+        inline constexpr int   panelMinWidth       = 240, panelMinHeight = 140;
+        inline constexpr int   plotPanelMinWidth   = 420, plotPanelMinHeight = 220;
+        inline constexpr int   inspectorMinWidth   = 260, inspectorMaxWidth = 420;
+        inline constexpr int   switcherHeight      = 30;     // segmented control in toolbar
+        inline constexpr int   switcherSegmentPadX = 12;
+        inline constexpr float shortcutHintSize    = 11.0f;  // text.tertiary
+        inline constexpr int   floatTitleBarHeight = 28;
+        inline constexpr int   floatMinWidth       = 320, floatMinHeight = 200;
+        inline constexpr int   snapDistance        = 24;     // drag within this of a dock edge to snap
+        inline constexpr int   dropZoneInset       = 6;
+        inline constexpr float dropZoneAlpha       = 0.20f;  // accent fill for dock-target preview
+        inline constexpr int   menuItemHeight      = 22, menuPaddingX = 10;
+        inline constexpr float menuRadius          = 6.0f;
+        inline constexpr int   animMs              = 120;    // hover/snap transitions
+
+        // Interaction overlays (white on dark, black on light)
+        inline juce::Colour hoverOverlay   (const Theme& t) { return t.isLight ? juce::Colour (0x14000000) : juce::Colour (0x14FFFFFF); } // 8%
+        inline juce::Colour pressedOverlay (const Theme& t) { return t.isLight ? juce::Colour (0x29000000) : juce::Colour (0x29FFFFFF); } // 16%
+        inline juce::Colour splitterIdle   (const Theme& t) { return t.surfaces.border; }
+        inline juce::Colour splitterActive (const Theme& t) { return t.accent; }
+        inline juce::Colour closeHover     (const Theme& t) { return t.status.poor; }   // glyph only, with the × shape
+        inline juce::Colour panelHeaderBg  (const Theme& t) { return t.isLight ? juce::Colour (0xffEDEDEF) : juce::Colour (0xff252526); }
+        inline juce::Colour tabActiveBg    (const Theme& t) { return t.surfaces.background; }  // tab merges with panel body
+        inline juce::Colour tabInactiveBg  (const Theme& t) { return panelHeaderBg (t); }
     }
 
     // Single source of truth; components call ThemeManager::get().current() in paint()
@@ -84,9 +174,9 @@ namespace foh::theme
                 if (themes[i].id == id && (int) i != index) { index = (int) i; sendChangeMessage(); return; }
         }
     private:
-        ThemeManager() : themes { studioInstrument(), nightOps(), friendlyGuide(), friendlyGuideSunlight() } {}
+        ThemeManager() : themes { appleProDark(), appleProSunlight() } {}   // deprecated themes intentionally not registered
         std::vector<Theme> themes;
-        int index = 2; // Friendly Guide default
+        int index = 0; // Pro Dark default
     };
 }
 
