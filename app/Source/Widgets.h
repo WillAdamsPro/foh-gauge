@@ -23,6 +23,7 @@ class AudioEngine : public juce::AudioIODeviceCallback {
 public:
     AudioEngine(); // Synthesizes the immutable chime before the audio callback is registered.
     // Message-thread commands; one atomic packet keeps channel selection and request together.
+    // Setup defaults to the console/PA output; chimes never mirror to outB.
     void playChime() noexcept { playChime(outA.load()); }
     void playChime(int output) noexcept;
     void testConnection(int output, int expectedInput) noexcept;

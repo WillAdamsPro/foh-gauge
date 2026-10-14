@@ -213,7 +213,7 @@ TEST_CASE("Output chime is bounded, routed and stops at each sample rate", "[app
     for (double fs : {44100.0, 48000.0, 96000.0}) {
         AudioEngine engine;
         engine.sampleRate = fs;
-        engine.outA = 1; engine.outB = -1;
+        engine.outA = 1; engine.outB = 0; // Both generator routes are enabled.
         engine.captureEpoch = 1; // Playback must work even during an analysis restart.
         constexpr int block = 256;
         float unused[block], selected[block]; float* outputs[] {unused, selected};
@@ -232,11 +232,20 @@ TEST_CASE("Output chime is bounded, routed and stops at each sample rate", "[app
         REQUIRE(peak <= expectedPeak + 1e-6f);
         REQUIRE(peak > expectedPeak * 0.99f);
         for (float s : selected) REQUIRE(s == 0.f);
-        engine.outB = 0; engine.playChime();
+        engine.gen = AudioEngine::Pink;
+        engine.playChime();
         engine.audioDeviceIOCallbackWithContext(nullptr, 0, outputs, 2, block, {});
         REQUIRE(selected[0] == 0.f); // Retrigger starts with the attack ramp.
         REQUIRE(selected[100] != 0.f);
         for (int i = 0; i < block; ++i) REQUIRE(unused[i] == 0.f);
+
+        // The wizard can test the loopback output independently of the PA route,
+        // even while the measurement generator is enabled on both outputs.
+        engine.playChime(0);
+        engine.audioDeviceIOCallbackWithContext(nullptr, 0, outputs, 2, block, {});
+        REQUIRE(unused[0] == 0.f);
+        REQUIRE(unused[100] != 0.f);
+        for (float s : selected) REQUIRE(s == 0.f);
     }
 }
 

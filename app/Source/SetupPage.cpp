@@ -37,7 +37,7 @@ SetupPage::SetupPage(AppModel& m, bool showDone) : model(m) {
     };
     clearSpl.onClick = [this] { model.clearSpl(); };
     addAndMakeVisible(chime); chime.setTooltip("Short chime at -18 dBFS on the selected generator output");
-    chime.onClick = [this] { model.engine.playChime(); };
+    chime.onClick = [this] { model.engine.playChime(model.engine.outA.load()); };
     addChildComponent(done); done.setVisible(showDone); makePrimary(done);
     done.onClick = [this] {
         if (auto* prefs = model.settings.getUserSettings()) {
