@@ -11,7 +11,11 @@ static constexpr int kMaxWindow = 1 << 23;
 static constexpr double kMinLpHz = 10.0; // ~175 s @ 48k; keeps FFT size within int
 
 bool twoSpikeFlag(const std::vector<Arrival>& a) {
-    return a.size() >= 2 && twoSpikeFlag(0.0, a[1].relLevelDb - a[0].relLevelDb, a[1].delayMs - a[0].delayMs);
+    if (a.empty()) return false;
+    // A close secondary lobe must not hide a comparable, later arrival.
+    for (size_t i = 1; i < a.size(); ++i)
+        if (twoSpikeFlag(a[0].relLevelDb, a[i].relLevelDb, a[i].delayMs - a[0].delayMs)) return true;
+    return false;
 }
 DelayResult findDelay(const std::vector<float>& ref, const std::vector<float>& meas, double fs,
                       bool phat, int maxArr, double minSepMs, double c) {
@@ -41,6 +45,19 @@ DelayResult findDelay(const std::vector<float>& ref, const std::vector<float>& m
         x = detail::cleanSample(x); y = detail::cleanSample(y);
         anyX |= x != 0; anyY |= y != 0; X[(size_t) i] = x; Y[(size_t) i] = y; }
     if (!anyX || !anyY) { res.error = !anyX ? "reference is silent" : "measurement is silent"; return res; }
+    // Remove DC before zero padding: a constant capture has no timing information.
+    double meanX = 0, meanY = 0;
+    for (int i = 0; i < L; ++i) { meanX += X[(size_t)i].real(); meanY += Y[(size_t)i].real(); }
+    meanX /= L; meanY /= L;
+    double energyX = 0, energyY = 0;
+    for (int i = 0; i < L; ++i) {
+        X[(size_t)i] -= meanX; Y[(size_t)i] -= meanY;
+        energyX += std::norm(X[(size_t)i]); energyY += std::norm(Y[(size_t)i]);
+    }
+    if (energyX / L <= 1e-20 || energyY / L <= 1e-20) {
+        res.error = energyX / L <= 1e-20 ? "reference is silent" : "measurement is silent";
+        return res;
+    }
     fft.forward(X); fft.forward(Y);
     // Y <- unweighted (band-weighted only) cross spectrum, X <- timing (PHAT) cross spectrum
     double meanPx = 0; if (opt.levelMode == DelayOptions::LevelMode::RefWhitened) { for (auto& v : X) meanPx += std::norm(v); meanPx /= N; }
@@ -118,7 +135,8 @@ DelayResult findDelay(const std::vector<float>& ref, const std::vector<float>& m
     double s = 0; size_t cnt = 0;
     for (size_t i = 0; i < a.size(); ++i) if (std::abs((int) i - b0) > excl) { s += a[i] * a[i]; ++cnt; }
     double rms = cnt ? std::sqrt(s / cnt) : 0;
-    double pnr = rms > 0 ? peak0 / rms : 1e9;
+    // With no samples outside the lobe, peak-to-noise confidence is unmeasurable.
+    double pnr = !cnt ? 0 : (rms > 0 ? peak0 / rms : 1e9);
     // log map: 14 dB peak-to-noise -> 0, 54 dB -> 1 (does not saturate for moderate SNR,
     // so a -10 dB SNR capture ranks below a clean one even with GCC-PHAT)
     res.confidence = std::clamp((20.0 * std::log10(std::max(pnr, 1e-9)) - 14.0) / 40.0, 0.0, 1.0);

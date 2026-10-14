@@ -3,13 +3,24 @@
 
 namespace foh {
 ImpulsePolarity polarityFromImpulse(const std::vector<double>& impulse) {
-    double peak = 0;
+    if (impulse.size() < 3) return ImpulsePolarity::Unknown;
+    // Online mean avoids overflow for finite, very large samples.
+    double mean = 0; size_t count = 0;
     for (double sample : impulse) {
         if (!std::isfinite(sample)) return ImpulsePolarity::Unknown;
-        if (std::abs(sample) > std::abs(peak)) peak = sample;
+        ++count; mean = mean * (double(count - 1) / count) + sample / count;
     }
-    if (std::abs(peak) <= 1e-12) return ImpulsePolarity::Unknown;
-    return peak < 0 ? ImpulsePolarity::Inverted : ImpulsePolarity::Normal;
+    double positive = 0, negative = 0;
+    for (double sample : impulse) {
+        const double centered = sample - mean;
+        if (!std::isfinite(centered)) return ImpulsePolarity::Unknown;
+        positive = std::max(positive, centered); negative = std::max(negative, -centered);
+    }
+    const double peak = std::max(positive, negative);
+    if (peak <= 1e-12) return ImpulsePolarity::Unknown;
+    if (std::min(positive, negative) / peak >= std::pow(10.0, -3.0 / 20.0))
+        return ImpulsePolarity::Unknown;
+    return negative > positive ? ImpulsePolarity::Inverted : ImpulsePolarity::Normal;
 }
 
 SweepResult deconvolveSweep(const std::vector<float>& ref, const std::vector<float>& mic, double fs) {
