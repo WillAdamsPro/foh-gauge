@@ -25,7 +25,7 @@ juce_add_gui_app(FOHGauge
     BUNDLE_ID "com.willadams.fohgauge"
     MICROPHONE_PERMISSION_ENABLED TRUE
     MICROPHONE_PERMISSION_TEXT "FOH Gauge needs audio input to measure your sound system."
-    PLIST_TO_MERGE "<plist><dict><key>LSMinimumSystemVersion</key><string>26.0</string></dict></plist>")
+    PLIST_TO_MERGE "<plist><dict><key>LSMinimumSystemVersion</key><string>26.0</string><key>CFBundleIconFile</key><string>AppIcon</string></dict></plist>")
 target_sources(FOHGauge PRIVATE Source/console/ConsoleWindow.cpp Source/Main.cpp Source/MainComponent.cpp Source/SetupPage.cpp Source/EasySetup.cpp Source/RoutingWizard.cpp Source/SessionFiles.cpp Source/AudioEngine.cpp Source/AnalysisEngine.cpp Source/AppModelMeasurement.cpp Source/Widgets.cpp Source/AppModel.cpp Source/LayoutModel.cpp Source/Panels.cpp Source/GuidePanel.cpp Source/WorkspaceView.cpp Source/WorkspaceManager.cpp Source/FloatingPanels.cpp Source/Diagrams.cpp)
 # Console network control (X32 writes) is experimental: off by default, so release builds do not expose it.
 option(FOH_ENABLE_CONSOLE_CONTROL "Expose File > Console Control (experimental)" OFF)
@@ -44,7 +44,23 @@ if(APPLE)
 endif()
 juce_add_binary_data(FOHGaugeData SOURCES Resources/Fonts/Inter-Regular.ttf Resources/Fonts/Inter-SemiBold.ttf Resources/Fonts/Inter-Bold.ttf
     ../resources/targets/target-plus6.txt ../resources/targets/target-plus9.txt ../resources/targets/target-plus12.txt
-    ../THIRD_PARTY_NOTICES.md Resources/Fonts/Inter-OFL-LICENSE.txt)
+    ../THIRD_PARTY_NOTICES.md Resources/Fonts/Inter-OFL-LICENSE.txt
+    Resources/Brand/splash.png Resources/Brand/about-logo.png
+    Resources/Brand/toolbar-lockup-dark.png Resources/Brand/toolbar-lockup-light.png)
+# App icon: build AppIcon.icns from the iconset with Apple's iconutil (not a checked-in .icns).
+if(APPLE)
+    find_program(FOH_ICONUTIL iconutil REQUIRED)
+    set(foh_icns "${CMAKE_CURRENT_BINARY_DIR}/AppIcon.icns")
+    execute_process(COMMAND "${FOH_ICONUTIL}" -c icns "${CMAKE_CURRENT_SOURCE_DIR}/Resources/Brand/AppIcon.iconset" -o "${foh_icns}"
+                    RESULT_VARIABLE foh_iconutil_result ERROR_VARIABLE foh_iconutil_error)
+    if(NOT foh_iconutil_result EQUAL 0)
+        message(FATAL_ERROR "iconutil failed: ${foh_iconutil_error}")
+    endif()
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+        "${CMAKE_CURRENT_SOURCE_DIR}/Resources/Brand/AppIcon.iconset/icon_512x512@2x.png")
+    target_sources(FOHGauge PRIVATE "${foh_icns}")
+    set_source_files_properties("${foh_icns}" PROPERTIES MACOSX_PACKAGE_LOCATION Resources)
+endif()
 # Also ship human-readable files in Contents/Resources, outside the executable.
 set(foh_notices "${CMAKE_CURRENT_SOURCE_DIR}/../THIRD_PARTY_NOTICES.md"
     "${CMAKE_CURRENT_SOURCE_DIR}/Resources/Fonts/Inter-OFL-LICENSE.txt")

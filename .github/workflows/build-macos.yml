@@ -37,6 +37,11 @@ jobs:
           MIN=$(/usr/libexec/PlistBuddy -c 'Print :LSMinimumSystemVersion' "$APP/Contents/Info.plist"); echo "LSMinimumSystemVersion=$MIN"
           [ "$MIN" = "26.0" ] || { echo "::error::LSMinimumSystemVersion is $MIN, expected 26.0"; exit 1; }
           vtool -show-build "$APP/Contents/MacOS/"* | tee /dev/stderr | grep -q "minos 26.0" || { echo "::error::binary minos is not 26.0"; exit 1; }
+          ICON=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIconFile' "$APP/Contents/Info.plist"); echo "CFBundleIconFile=$ICON"
+          [ "${ICON%.icns}" = "AppIcon" ] || { echo "::error::CFBundleIconFile is '$ICON', expected AppIcon"; exit 1; }
+          ICNS="$APP/Contents/Resources/AppIcon.icns"; test -s "$ICNS" || { echo "::error::AppIcon.icns missing from bundle"; exit 1; }
+          iconutil -c iconset "$ICNS" -o /tmp/AppIcon-check.iconset && ls -l /tmp/AppIcon-check.iconset
+          [ "$(ls /tmp/AppIcon-check.iconset | wc -l)" -ge 10 ] || { echo "::error::AppIcon.icns is incomplete"; exit 1; }
           codesign --force --deep -s - "$APP"
           codesign --verify --deep --strict "$APP"
           codesign -dv "$APP"

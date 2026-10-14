@@ -138,6 +138,33 @@
         "tools/gen_golden.py"
       ],
       "description": "Generated WAVs live only in the ignored build tree."
+    },
+    {
+      "name": "FOH Gauge brand assets",
+      "version": "1",
+      "license": "LicenseRef-FOH-proprietary",
+      "source": "THIRD_PARTY_NOTICES.md",
+      "ships": true,
+      "ownership": "Will Adams",
+      "files": [
+        "app/Resources/Brand/AppIcon.iconset/icon_128x128.png",
+        "app/Resources/Brand/AppIcon.iconset/icon_128x128@2x.png",
+        "app/Resources/Brand/AppIcon.iconset/icon_16x16.png",
+        "app/Resources/Brand/AppIcon.iconset/icon_16x16@2x.png",
+        "app/Resources/Brand/AppIcon.iconset/icon_256x256.png",
+        "app/Resources/Brand/AppIcon.iconset/icon_256x256@2x.png",
+        "app/Resources/Brand/AppIcon.iconset/icon_32x32.png",
+        "app/Resources/Brand/AppIcon.iconset/icon_32x32@2x.png",
+        "app/Resources/Brand/AppIcon.iconset/icon_512x512.png",
+        "app/Resources/Brand/AppIcon.iconset/icon_512x512@2x.png",
+        "app/Resources/Brand/about-logo.png",
+        "app/Resources/Brand/menubar-template-16.png",
+        "app/Resources/Brand/menubar-template-16.svg",
+        "app/Resources/Brand/splash.png",
+        "app/Resources/Brand/toolbar-lockup-dark.png",
+        "app/Resources/Brand/toolbar-lockup-light.png"
+      ],
+      "description": "App icon, toolbar lockup, About logo, splash and menu-bar template; original artwork."
     }
   ]
 }
