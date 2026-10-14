@@ -215,6 +215,33 @@ TEST_CASE("Verify rejects reference-delay changes and stale completion after gui
     CHECK(panel->saveState()["step"].asInt() == 0);
 }
 
+TEST_CASE("Pending Store and Verify completions expire when a guide is destroyed", "[app][guide][lifetime]") {
+    juce::ScopedJuceInitialiser_GUI gui;
+    for (int guide = 0; guide < 5; ++guide) {
+        for (bool verify : {false, true}) {
+            AppModel model; CaptureStub capture;
+            auto panel = makeGuidePanel(model); panel->setSize(260, 780);
+            auto state = fohws::Json::object(); state.set("guide", guide); state.set("step", 100);
+            panel->loadState(state);
+            button(*panel, "Measure before change").onClick();
+            if (verify) {
+                capture.finish(model);
+                button(*panel, guide == 4 ? "DSP state confirmed" : "I entered the change").onClick();
+                button(*panel, "Re-measure to verify").onClick();
+            }
+            REQUIRE(capture.pending);
+            panel.reset();
+            CHECK_FALSE(model.overlayBuilder);
+            // A replacement guide must remain untouched by its predecessor's callback.
+            auto replacement = makeGuidePanel(model);
+            const auto replacementState = replacement->saveState().dump();
+            capture.finish(model);
+            CHECK(replacement->saveState().dump() == replacementState);
+            CHECK(model.engine.gen.load() == AudioEngine::Off);
+        }
+    }
+}
+
 TEST_CASE("Guide requires a settled baseline and rejects captures with no comparable coherent bins", "[app][guide]") {
     juce::ScopedJuceInitialiser_GUI gui;
     AppModel model; CaptureStub capture;

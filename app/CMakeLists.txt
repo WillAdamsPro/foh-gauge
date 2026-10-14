@@ -10,6 +10,7 @@ target_sources(FOHGauge PRIVATE Source/Main.cpp Source/MainComponent.cpp Source/
 if(APPLE)
     enable_language(OBJCXX)
     set_source_files_properties(Source/Main.cpp PROPERTIES LANGUAGE OBJCXX)
+    set_source_files_properties(Source/FloatingPanels.cpp PROPERTIES LANGUAGE OBJCXX)
     target_link_libraries(FOHGauge PRIVATE "-framework AVFoundation")
 endif()
 juce_add_binary_data(FOHGaugeData SOURCES Resources/Fonts/Inter-Regular.ttf Resources/Fonts/Inter-SemiBold.ttf Resources/Fonts/Inter-Bold.ttf

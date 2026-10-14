@@ -619,8 +619,14 @@ private:
                 engine.audioDeviceAboutToStart(&device);
                 runningRate.store(rate);
             }
-            capture(engine, signal, signal, 1024);
-            blocks.fetch_add(1);
+            // Exercise handoffs, not worker throughput: an instrumented Debug
+            // FFT can be slower than this synthetic producer. Bound the backlog
+            // so repeated overflow resets cannot starve snapshot publication.
+            // This pacing belongs only to the test producer, never the callback.
+            if (engine.micRing.available() < 4096 && engine.refRing.available() < 4096) {
+                capture(engine, signal, signal, 1024);
+                blocks.fetch_add(1);
+            }
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
         }
         engine.audioDeviceStopped();
