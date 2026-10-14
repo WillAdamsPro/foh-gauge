@@ -76,7 +76,8 @@ TEST_CASE("Trace manager controls edit traces and display a +6.02 dB self sum", 
     CHECK(model.traces.at(0).name == "Edited");
     auto combos = children<juce::ComboBox>(*panel); REQUIRE(combos.size() == 3);
     combos[0]->setSelectedId(1, juce::dontSendNotification); combos[0]->onChange();
-    CHECK(model.traceColour(0) == juce::Colour::fromHSV(0, 0.7f, 0.9f, 1));
+    CHECK(model.traceColour(0) == foh::ui::theme().traceSlots[0].colour);
+    for (int i = 0; i < 8; ++i) CHECK(combos[0]->getItemText(i) == foh::ui::theme().traceSlots[(size_t) i].name);
     auto magnitude = PanelRegistry::standard().create("TransferFunction", model);
     auto phase = PanelRegistry::standard().create("Phase", model);
     // Plot panels refresh only while showing, as they do in a workspace.

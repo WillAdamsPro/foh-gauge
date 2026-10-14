@@ -26,7 +26,7 @@ void MicPlacementDiagram::paint(juce::Graphics& g) {
         (getWidth() - 232.f * scale) / 2, (getHeight() - 104.f * scale) / 2));
     g.setColour(C::divider());
     g.drawRoundedRectangle(0.5f, 0.5f, 231.f, 103.f, 6.f, 1.f);
-    g.setFont(FohLookAndFeel::font(12.f));
+    g.setFont(FohLookAndFeel::font(foh::theme::type::label));
     auto label = [&](const char* text, int x, int y, int w) {
         g.setColour(C::textPrimary());
         g.drawText(text, x, y, w, 18, juce::Justification::centred);

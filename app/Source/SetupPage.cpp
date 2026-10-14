@@ -4,7 +4,7 @@ using namespace juce;
 
 SetupPage::SetupPage(AppModel& m, bool showDone) : model(m) {
     title.setText("Audio Setup", dontSendNotification);
-    title.setFont(FohLookAndFeel::font(20, true)); addAndMakeVisible(title);
+    title.setFont(FohLookAndFeel::font(foh::theme::type::heading, false, true)); addAndMakeVisible(title);
     for (auto* box : { &deviceType, &input, &output, &rate, &mic, &ref, &generator, &loopback }) addAndMakeVisible(box);
     deviceType.setTextWhenNothingSelected("Audio system"); input.setTextWhenNothingSelected("Input device");
     output.setTextWhenNothingSelected("Output device"); rate.setTextWhenNothingSelected("Sample rate");

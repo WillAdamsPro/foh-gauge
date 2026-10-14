@@ -105,11 +105,11 @@ public:
 
     void restyle() {
         stepLabel.setFont(FohLookAndFeel::font(T::label, true)); stepLabel.setColour(Label::textColourId, C::accent());
-        titleLabel.setFont(FohLookAndFeel::font(T::cardTitle - 2, true)); titleLabel.setColour(Label::textColourId, C::textPrimary());
+        titleLabel.setFont(FohLookAndFeel::font(T::heading, true)); titleLabel.setColour(Label::textColourId, C::textPrimary());
         body.setFont(FohLookAndFeel::font(T::body)); body.setJustificationType(Justification::topLeft); body.setColour(Label::textColourId, C::textBody());
-        result.setFont(FohLookAndFeel::font(T::small)); result.setJustificationType(Justification::topLeft); result.setColour(Label::textColourId, C::textBody());
+        result.setFont(FohLookAndFeel::font(T::body)); result.setJustificationType(Justification::topLeft); result.setColour(Label::textColourId, C::textBody());
         readout.setFont(FohLookAndFeel::numeric(T::body)); readout.setColour(Label::textColourId, C::textPrimary()); readout.setJustificationType(Justification::topLeft);
-        polarity.setFont(FohLookAndFeel::font(T::small)); polarity.setColour(Label::textColourId, C::textSecondary()); polarity.setJustificationType(Justification::topLeft);
+        polarity.setFont(FohLookAndFeel::font(T::body)); polarity.setColour(Label::textColourId, C::textSecondary()); polarity.setJustificationType(Justification::topLeft);
         makePrimary(act);
     }
     void modelChanged(int w) override {
@@ -157,14 +157,14 @@ public:
             auto d = r.removeFromLeft(r.getHeight()).reduced(3);
             g.setColour(cur ? C::accent() : done ? C::ok() : C::textAxis());
             if (cur || done) g.fillEllipse(d); else g.drawEllipse(d.reduced(0.5f), 1.f);
-            g.setColour(cur || done ? C::textOnAccent() : C::textAxis()); g.setFont(FohLookAndFeel::font(T::axisTick, true));
+            g.setColour(cur || done ? C::textOnAccent() : C::textAxis()); g.setFont(FohLookAndFeel::font(T::caption, true));
             g.drawText(done ? u8("\xe2\x9c\x93") : String((int) i + 1), d, Justification::centred);
-            g.setColour(cur ? C::textPrimary() : C::textSecondary()); g.setFont(FohLookAndFeel::font(T::small, cur));
+            g.setColour(cur ? C::textPrimary() : C::textSecondary()); g.setFont(FohLookAndFeel::font(T::body, cur));
             g.drawText(u8(steps[i].progress), r.withTrimmedLeft(8), Justification::centredLeft); }
         if (model.capture.active && !progress.isEmpty()) { // convergence-settled capture
             auto b = progress.toFloat(); g.setColour(C::divider()); g.fillRoundedRectangle(b.withHeight(4), 2.f);
             g.setColour(C::accent()); g.fillRoundedRectangle(b.withHeight(4).withWidth(b.getWidth() * (float) jlimit(0.0, 1.0, model.conv.progress)), 2.f);
-            g.setColour(C::textSecondary()); g.setFont(FohLookAndFeel::font(T::axisTick));
+            g.setColour(C::textSecondary()); g.setFont(FohLookAndFeel::font(T::caption));
             g.drawText("Averaging " + model.capture.name + u8(" \xc2\xb7 ") + String((int) (model.conv.progress * 100)) + "%", b.withTrimmedTop(6), Justification::centredLeft); }
 
     }
