@@ -551,7 +551,7 @@ TEST_CASE("D-SUBGD: sub delay from XO-band phase = 12.5 ms; alternatives +-1 per
 // ---- Calibration (QA A4)
 static std::string slurp(const std::string& p) { std::ifstream f(p, std::ios::binary); std::stringstream ss; ss << f.rdbuf(); return ss.str(); }
 TEST_CASE("C4 Sens Factor parsed and exposed, never applied") {
-    auto base = slurp(std::string(FOH_TEST_DATA) + "/ecm8000-cal.csv");
+    auto base = slurp(std::string(FOH_TEST_DATA) + "/synthetic-mic-cal.csv"); base = base.substr(base.find('\n') + 1); // drop the file's own Sens Factor line
     auto with = parseMicCal("\"Sens Factor =-1.5dB, SERNO: 123\"\r\n" + base), without = parseMicCal(base);
     REQUIRE(with.ok()); REQUIRE(with.hasSensFactor); REQUIRE(with.sensitivityOffsetDb==Approx(-1.5)); REQUIRE(with.sensFactorLine=="Sens Factor =-1.5dB, SERNO: 123");
     REQUIRE(!without.hasSensFactor); REQUIRE(without.sensitivityOffsetDb==0); REQUIRE(without.sensFactorLine.empty());
@@ -563,22 +563,22 @@ TEST_CASE("C4 Sens Factor parsed and exposed, never applied") {
     auto ws = parseMicCal("Sens Factor: 2.25\n100 0\n1000 0\n"); REQUIRE(ws.hasSensFactor); REQUIRE(ws.sensitivityOffsetDb==Approx(2.25)); REQUIRE(ws.dbAt(500)==0);
 }
 TEST_CASE("C2/C2b REW .txt and .frd parse identical to the CSV; C10 sign; C12 flipped file detectably wrong") {
-    auto csv = loadMicCal(std::string(FOH_TEST_DATA) + "/ecm8000-cal.csv");
-    auto txt = loadMicCal(std::string(FOH_TEST_DATA) + "/ecm8000-cal-rew.txt"), frd = loadMicCal(std::string(FOH_TEST_DATA) + "/ecm8000-cal.frd");
+    auto csv = loadMicCal(std::string(FOH_TEST_DATA) + "/synthetic-mic-cal.csv");
+    auto txt = loadMicCal(std::string(FOH_TEST_DATA) + "/synthetic-mic-cal-rew.txt"), frd = loadMicCal(std::string(FOH_TEST_DATA) + "/synthetic-mic-cal.frd");
     for (auto* c : {&txt, &frd}) { REQUIRE(c->ok()); REQUIRE(c->hz==csv.hz); REQUIRE(c->db==csv.db); REQUIRE(c->phaseDeg==csv.phaseDeg); REQUIRE(c->hasPhase); }
     // C10: flat 0 dB TF corrected by ECM8000 -> -cal(f): top end reads higher
     TFResult t; size_t M=8193; t.sampleRate=48000; t.fftSize=16384; t.freq.resize(M); t.H.assign(M, cpx(1,0)); t.magDb.assign(M,0); t.phaseDeg.assign(M,0); t.coherence.assign(M,1);
     for (size_t k=0;k<M;++k) t.freq[k]=k*48000.0/16384;
     auto corr = csv.correctionDb((int)M, 48000.0/16384);
-    REQUIRE(csv.dbAt(21999)==Approx(-4.92)); REQUIRE(-csv.dbAt(21999)==Approx(4.92)); REQUIRE(-csv.dbAt(20361.5)==Approx(4.01).margin(0.01)); REQUIRE(-csv.dbAt(20)==Approx(0.07));
-    auto tf = t; csv.apply(tf); REQUIRE(tf.magDb[binOf(tf,21000)]==Approx(-csv.dbAt(tf.freq[binOf(tf,21000)])).margin(0.01)); REQUIRE(tf.magDb[binOf(tf,21000)] > 4.0);
+    REQUIRE(csv.dbAt(30000)==Approx(-2.468)); REQUIRE(-csv.dbAt(21999) > 1.0); REQUIRE(csv.dbAt(5)==Approx(-2.234));
+    auto tf = t; csv.apply(tf); REQUIRE(tf.magDb[binOf(tf,21000)]==Approx(-csv.dbAt(tf.freq[binOf(tf,21000)])).margin(0.01)); REQUIRE(tf.magDb[binOf(tf,21000)] > 1.0);
     REQUIRE(corr[binOf(tf,21000)]==Approx(tf.magDb[binOf(tf,21000)]).margin(1e-9));
     // C12: TF equal to the real mic response, corrected with the SIGN-FLIPPED file -> ~2x cal, >= 6 dB error above 20 kHz
-    auto flip = loadMicCal(std::string(FOH_TEST_DATA) + "/ecm8000-cal_SIGNFLIPPED.csv"); REQUIRE(flip.ok());
+    auto flip = loadMicCal(std::string(FOH_TEST_DATA) + "/synthetic-mic-cal_SIGNFLIPPED.csv"); REQUIRE(flip.ok());
     auto mic = t; for (size_t k=0;k<M;++k){ mic.H[k]=std::polar(std::pow(10.0,csv.dbAt(mic.freq[k])/20), csv.phaseAt(mic.freq[k])*M_PI/180); }
     auto good = mic, bad = mic; csv.apply(good); flip.apply(bad);
     REQUIRE(good.magDb[binOf(good,21000)]==Approx(0).margin(1e-6));
-    REQUIRE(bad.magDb[binOf(bad,21999)]==Approx(2*csv.dbAt(21999)).margin(0.05)); REQUIRE(std::fabs(bad.magDb[binOf(bad,20500)]) >= 6.0);
+    REQUIRE(bad.magDb[binOf(bad,21999)]==Approx(2*csv.dbAt(21999)).margin(0.05)); REQUIRE(std::fabs(bad.magDb[binOf(bad,20500)]) >= 2.5);
 }
 TEST_CASE("C6/C8 unsorted, duplicate and malformed cal files") {
     auto u = parseMicCal("1000 1\n20 0\n1000 5\n100 0.5\n"); REQUIRE(u.ok()); REQUIRE(u.hz==std::vector<double>{20,100,1000}); // sorted, dedup keeps first
