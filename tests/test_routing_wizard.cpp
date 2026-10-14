@@ -77,6 +77,19 @@ TEST_CASE("Skip discards draft choices from every routing step", "[app][routing]
         CHECK(engine.outA.load() == 0); CHECK(engine.outB.load() == 1);
     }
     CHECK(applied == 0); CHECK(closed == 4);
+    wizard.begin();
+    CHECK_FALSE(button(wizard, "Back").isEnabled());
+    CHECK(choice(wizard).getSelectedId() == 2);
+    select(wizard, 1); button(wizard, "Next").onClick();
+    select(wizard, 0); button(wizard, "Back").onClick();
+    CHECK(choice(wizard).getSelectedId() == 3);
+    select(wizard, -1); button(wizard, "Next").onClick();
+    CHECK(choice(wizard).getSelectedId() == 2);
+    button(wizard, "Skip").onClick(); wizard.begin();
+    CHECK(choice(wizard).getSelectedId() == 2);
+    CHECK_FALSE(button(wizard, "Back").isEnabled());
+    CHECK(button(wizard, "Test connection").isEnabled());
+    CHECK(applied == 0); CHECK(engine.micCh.load() == 0); CHECK(engine.refCh.load() == 1);
 }
 
 TEST_CASE("Routing handles missing channels and Setup opens it only on request", "[app][routing]") {

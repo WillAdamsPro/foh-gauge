@@ -115,7 +115,12 @@ public:
         if (w & AppModel::Session) {
             resetVerification(); step = 0; say("Session changed. Restart the guide with fresh measurements."); refresh();
         }
-        if (w & AppModel::Rig) { updateGuides(); refresh(); }
+        if (w & AppModel::Rig) {
+            // Even when the same W guides remain available, new answers (or
+            // Skip) invalidate work measured for the previous rig configuration.
+            resetVerification(); step = 0; updateGuides();
+            say("Rig answers changed. Restart the guide with fresh measurements."); refresh();
+        }
         if (guide == 5 && (boxSweepPending || boxBaseline != foh::ImpulsePolarity::Unknown)
             && (w & (AppModel::Snapshot | AppModel::Settings | AppModel::Capture | AppModel::Levels)) && boxContextChanged()) {
             resetVerification(); step = 1;
