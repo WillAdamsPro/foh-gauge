@@ -34,6 +34,115 @@ public:
 void drainMessages() { juce::MessageManager::getInstance()->runDispatchLoopUntil(30); }
 }
 
+TEST_CASE("Docking accepts an ID borrowed from the floating state being erased", "[app][lifetime][regression]") {
+    juce::ScopedJuceInitialiser_GUI initialise;
+    TemporaryWorkspaces temporary;
+    TestMain main(temporary.folder);
+    main.setShowMode(false); main.selectWorkspace("tuning"); main.showWorkspace();
+    main.floatPanel("RTA"); main.floatPanel("TransferFunction");
+    REQUIRE(main.floatingCount() == 2);
+    // Erasing the first element moves the next panel's ID into its storage.
+    main.dockPanel(main.workspace().floating.front().panel);
+    CHECK(main.workspace().root.contains("RTA"));
+    CHECK_FALSE(main.workspace().root.contains("TransferFunction"));
+    REQUIRE(main.floatingCount() == 1);
+    CHECK(main.floating(0)->panel.panelId() == "TransferFunction");
+    // Erasing the last element also destroys the borrowed string itself.
+    main.dockPanel(main.workspace().floating.front().panel);
+    CHECK(main.workspace().root.contains("TransferFunction"));
+    CHECK(main.floatingCount() == 0);
+}
+
+TEST_CASE("Rapid floating close and recreate expires actions for the old window", "[app][lifetime][regression][stress]") {
+    juce::ScopedJuceInitialiser_GUI initialise;
+    TemporaryWorkspaces temporary;
+    const auto peers = juce::Desktop::getInstance().getNumComponents();
+    {
+        TestMain main(temporary.folder);
+        main.setShowMode(false); main.selectWorkspace("tuning"); main.showWorkspace();
+        auto* panel = main.workspaceView().panel("RTA");
+        for (int cycle = 0; cycle < 24; ++cycle) {
+            main.floatPanel("RTA");
+            REQUIRE(main.floatingCount() == 1);
+            juce::Component::SafePointer<FloatingPanelWindow> old = main.floating(0);
+            main.floating(0)->closeButtonPressed();
+            main.floating(0)->onDock();
+            main.dockPanel("RTA");
+            CHECK(old == nullptr);
+            main.floatPanel("RTA");
+            drainMessages();
+            REQUIRE(main.floatingCount() == 1);
+            CHECK(main.floating(0)->getContentComponent() == panel);
+            CHECK_FALSE(main.workspace().root.contains("RTA"));
+            main.dockPanel("RTA");
+            CHECK(main.workspace().root.contains("RTA"));
+        }
+    }
+    drainMessages();
+    CHECK(juce::Desktop::getInstance().getNumComponents() == peers);
+}
+
+TEST_CASE("Show mode releases multiple floats and restores missing-display state on Escape", "[app][lifetime][show][regression]") {
+    juce::ScopedJuceInitialiser_GUI initialise;
+    TemporaryWorkspaces temporary;
+    const auto peers = juce::Desktop::getInstance().getNumComponents();
+    {
+        TestMain main(temporary.folder);
+        main.setShowMode(false); main.selectWorkspace("rta-show"); main.showWorkspace();
+        for (const auto* id : {"RTA", "SPLNumbers", "ShowMonitoring"}) main.floatPanel(id);
+        REQUIRE(main.floatingCount() == 3);
+        auto* monitoring = main.workspaceView().panel("ShowMonitoring");
+        std::vector<juce::Component::SafePointer<FloatingPanelWindow>> old;
+        for (int i = 0; i < main.floatingCount(); ++i) {
+            old.emplace_back(main.floating(i));
+            main.floating(i)->setPinned(true);
+            main.floating(i)->onClose(); main.floating(i)->onDock();
+        }
+        // All windows must be gone before their borrowed states can be edited.
+        main.setShowMode(true);
+        for (const auto& window : old) CHECK(window == nullptr);
+        CHECK(main.floatingCount() == 0);
+        CHECK(monitoring->getParentComponent() != nullptr);
+        const auto root = main.workspace().root;
+        for (auto& state : main.workspace().floating) {
+            state.displayId = "synthetic-disconnected-display";
+            state.bounds = {-10000, -10000, 700, 400};
+        }
+        const auto saved = fohws::toJson(main.workspace()).dump();
+        for (int modifiers : {int(juce::ModifierKeys::ctrlModifier),
+             juce::ModifierKeys::ctrlModifier | juce::ModifierKeys::shiftModifier}) {
+            CHECK_FALSE(main.keyPressed(juce::KeyPress(juce::KeyPress::tabKey, modifiers, 0)));
+            CHECK(main.selectedWorkspace() == 3);
+        }
+        drainMessages();
+        CHECK(fohws::toJson(main.workspace()).dump() == saved);
+        REQUIRE(main.keyPressed(juce::KeyPress(juce::KeyPress::escapeKey)));
+        REQUIRE(main.floatingCount() == 3);
+        CHECK(main.workspace().root == root);
+        const auto displays = currentDisplays();
+        REQUIRE_FALSE(displays.empty());
+        for (int i = 0; i < main.floatingCount(); ++i) {
+            auto* window = main.floating(i);
+            const auto& state = main.workspace().floating[(size_t) i];
+            CHECK(state.displayId != "synthetic-disconnected-display");
+            CHECK(state.alwaysOnTop);
+            CHECK(window->getContentComponent() == &window->panel);
+            CHECK(window->panel.getParentComponent() == window);
+            window->parentSizeChanged();
+            auto copy = state;
+            CHECK(fohws::clampToDisplays(copy, displays,
+                foh::theme::ws::floatMinWidth, foh::theme::ws::floatMinHeight) == state.bounds);
+        }
+        CHECK(main.workspaceView().panel("ShowMonitoring") == monitoring);
+    }
+    drainMessages();
+    CHECK(juce::Desktop::getInstance().getNumComponents() == peers);
+    WorkspaceManager relaunched(temporary.folder);
+    REQUIRE(relaunched.at(3).floating.size() == 3);
+    for (const auto& state : relaunched.at(3).floating)
+        CHECK(state.displayId != "synthetic-disconnected-display");
+}
+
 TEST_CASE("Workspace switching and presentation changes preserve live analysis and window ownership", "[app][lifetime][stress][concurrent]") {
     juce::ScopedJuceInitialiser_GUI initialise;
     TemporaryWorkspaces temporary;
