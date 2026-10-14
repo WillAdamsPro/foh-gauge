@@ -50,4 +50,6 @@ jobs:
         run: bash scripts/check-cal-files.sh
       - name: Check public strings
         run: scripts/check-strings.sh
+      - name: Test PR gate scans
+        run: bash scripts/test-pr-gate-scans.sh
       - run: cmake -S . -B build -DFOH_BUILD_APP=OFF -DCMAKE_BUILD_TYPE=Release && cmake --build build --parallel && ctest --test-dir build --output-on-failure
