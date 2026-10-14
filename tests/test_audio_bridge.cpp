@@ -10,6 +10,23 @@
 #include <string_view>
 #include <thread>
 
+// Sole consumer in synchronous bridge tests; never start the analysis worker.
+class AnalysisEngineTestAccess {
+public:
+    explicit AnalysisEngineTestAccess(AnalysisEngine& engine)
+        : analysis(engine), mic(size_t(engine.fftN)), ref(size_t(engine.fftN)),
+          silence(size_t(engine.fftN), 0.f) {}
+    void step() {
+        foh::ScopedFlushDenormals ftz;
+        analysis.processPendingAudio(mic, ref, silence, epoch);
+        analysis.publish();
+    }
+private:
+    AnalysisEngine& analysis;
+    std::vector<float> mic, ref, silence;
+    uint64_t epoch = 0;
+};
+
 namespace {
 void capture(AudioEngine& engine, const float* mic, const float* ref, int n) {
     const float* inputs[] { mic, ref };
@@ -253,47 +270,90 @@ TEST_CASE("Output chime is bounded, routed and stops at each sample rate", "[app
 }
 
 TEST_CASE("SPL level snapshots measure the selected input and reset on routing changes", "[app][audio][splcal]") {
-    AudioEngine engine; AnalysisEngine analysis(engine); analysis.start();
+    AudioEngine engine;
+    AnalysisEngine analysis(engine);
+    AnalysisEngineTestAccess worker(analysis);
     REQUIRE(analysis.send(foh::Command::resetAverages(1)));
-    REQUIRE(waitFor([&] { return analysis.latest().resetSeq == 1; }));
-    std::vector<float> mic(4800), ref(4800);
+    worker.step();
+    REQUIRE(analysis.latest().resetSeq == 1);
+    REQUIRE_FALSE(analysis.latest().micLevelValid);
+
+    // Five fixed 20 ms blocks, with an integral number of 1 kHz cycles per block.
+    // Publish only after all 4800 samples have been consumed: no timer or thread.
+    constexpr int blockSamples = 960, blocks = 5;
+    std::vector<float> mic(blockSamples), ref(blockSamples);
     for (size_t i = 0; i < mic.size(); ++i) {
         mic[i] = float(0.1 * std::sin(2 * juce::MathConstants<double>::pi * 1000 * double(i) / 48000));
         ref[i] = mic[i] * 0.5f;
     }
-    capture(engine, mic.data(), ref.data(), int(mic.size()));
-    REQUIRE(waitFor([&] { return analysis.latest().micLevelValid; }));
-    auto first = analysis.latest();
+    auto feed = [&] {
+        for (int i = 0; i < blocks; ++i)
+            capture(engine, mic.data(), ref.data(), blockSamples);
+        REQUIRE(engine.micRing.available() == blockSamples * blocks);
+        REQUIRE(engine.refRing.available() == blockSamples * blocks);
+        worker.step();
+        REQUIRE(engine.micRing.available() == 0);
+        REQUIRE(engine.refRing.available() == 0);
+    };
+    feed();
+    const auto first = analysis.latest();
+    REQUIRE(first.micLevelValid);
     REQUIRE(first.micChannel == 0);
+    REQUIRE(first.inputEpoch == engine.captureEpoch.load());
     REQUIRE(first.micLevelDbfs == Catch::Approx(-20).margin(0.01));
     foh::SplCal cal; REQUIRE(cal.calibrate(first.micLevelDbfs, 94));
     REQUIRE(cal.level(first.micLevelDbfs) == Catch::Approx(94).margin(0.1));
-    REQUIRE(first.leq.seconds == Catch::Approx(0.1));
+    REQUIRE(first.leq.seconds == Catch::Approx(0.1).margin(1e-9));
     for (int w : {0, 1, 2}) {
         REQUIRE(cal.level(first.leq.level[w]) == Catch::Approx(94).margin(0.1));
         REQUIRE(cal.level(first.leq.session[w]) == Catch::Approx(94).margin(0.1));
     }
     analysis.paused = true;
-    capture(engine, mic.data(), ref.data(), int(mic.size()));
-    REQUIRE(waitFor([&] { return engine.micRing.available() == 0; }));
-    REQUIRE(waitFor([&] { return !analysis.latest().micLevelValid; }));
-    REQUIRE(analysis.latest().leq.seconds == Catch::Approx(0.1));
+    feed();
+    REQUIRE_FALSE(analysis.latest().micLevelValid);
+    REQUIRE(analysis.latest().leq.seconds == Catch::Approx(0.1).margin(1e-9));
     ++analysis.leqRevision;
-    REQUIRE(waitFor([&] { return analysis.latest().leqRevision == 1; }));
+    worker.step();
+    REQUIRE(analysis.latest().leqRevision == 1);
     REQUIRE(analysis.latest().leq.seconds == 0);
     analysis.paused = false;
+    feed(); // Routing must clear a populated meter, independently of leqRevision.
+    REQUIRE(analysis.latest().micLevelValid);
+    REQUIRE(analysis.latest().leq.seconds == Catch::Approx(0.1).margin(1e-9));
+
+    // Leave old-route audio queued to verify the reset drains it before ack.
+    capture(engine, mic.data(), ref.data(), blockSamples);
+    REQUIRE(engine.micRing.available() == blockSamples);
     engine.micCh = 1;
-    capture(engine, mic.data(), ref.data(), int(mic.size())); // Discard while routing restart is acknowledged.
-    REQUIRE(waitFor([&] { return engine.analysisEpoch.load() == engine.captureEpoch.load(); }));
-    capture(engine, mic.data(), ref.data(), int(mic.size()));
-    REQUIRE(waitFor([&] { const auto& s = analysis.latest(); return s.micLevelValid && s.micChannel == 1; }));
+    capture(engine, mic.data(), ref.data(), blockSamples);
+    REQUIRE(engine.captureEpoch.load() == first.inputEpoch + 1);
+    REQUIRE(engine.analysisEpoch.load() == first.inputEpoch);
+    REQUIRE(engine.micRing.available() == blockSamples); // New-route block was discarded.
+    REQUIRE(engine.refRing.available() == blockSamples);
+    worker.step();
+    REQUIRE(engine.analysisEpoch.load() == engine.captureEpoch.load());
+    REQUIRE(engine.micRing.available() == 0);
+    REQUIRE(engine.refRing.available() == 0);
+    const auto reset = analysis.latest();
+    REQUIRE(reset.inputEpoch == first.inputEpoch + 1);
+    REQUIRE(reset.micChannel == 1);
+    REQUIRE_FALSE(reset.micLevelValid);
+    REQUIRE(reset.micLevelDbfs == -120);
+    REQUIRE(reset.leq.seconds == 0);
+    for (int w : {0, 1, 2}) REQUIRE(reset.leq.session[w] == -120);
+
+    feed();
     const auto second = analysis.latest();
-    REQUIRE(second.inputEpoch != first.inputEpoch);
-    REQUIRE(second.leq.seconds == Catch::Approx(0.1));
+    REQUIRE(second.micLevelValid);
+    REQUIRE(second.micChannel == 1);
+    REQUIRE(second.inputEpoch == first.inputEpoch + 1);
+    REQUIRE(second.leq.seconds == Catch::Approx(0.1).margin(1e-9));
     REQUIRE(second.leq.session[2] == Catch::Approx(-26.0206).margin(0.01));
     REQUIRE(second.micLevelDbfs == Catch::Approx(-26.0206).margin(0.01));
-    REQUIRE(waitFor([&] { return !analysis.latest().micLevelValid; })); // Never calibrate a stale snapshot.
-    analysis.stop();
+    worker.step(); // An explicit publication with no new audio invalidates the level.
+    REQUIRE_FALSE(analysis.latest().micLevelValid); // Never calibrate a stale snapshot.
+    REQUIRE(analysis.latest().micLevelDbfs == -120);
+    REQUIRE(analysis.latest().leq.seconds == Catch::Approx(0.1).margin(1e-9));
 }
 
 TEST_CASE("Connection tests isolate output and report synthetic input routing", "[app][audio][routing]") {
