@@ -131,6 +131,7 @@ TEST_CASE("floating panel peers release ownership on repeated open and close", "
         CHECK(panel.getParentComponent() == nullptr);
         CHECK(juce::Desktop::getInstance().getNumComponents() == peers);
     }
+}
 TEST_CASE("Corrupt current workspace falls back to the previous saved layout", "[app][workspace][files]") {
     TemporaryWorkspaces temp;
     fohws::Json saved;

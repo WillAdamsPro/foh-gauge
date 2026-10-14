@@ -131,7 +131,7 @@ TEST_CASE("workspace restore rejects multiple owners of the same panel") {
     const auto before = toJson(restored).dump();
     std::string error;
     CHECK_FALSE(fromJson(toJson(w), restored, error));
-    CHECK(error == "duplicate panel 'RTA'");
+    CHECK(error == "Duplicate panel in workspace");
     CHECK(toJson(restored).dump() == before);
 }
 
@@ -147,6 +147,7 @@ TEST_CASE("display refresh ignores empty work areas and preserves state until re
     for (int i = 0; i < 1000; ++i)
         CHECK(clampToDisplays(panel, {{"usable", {-1440, 25, 1440, 875}, true}})
               == Rect {-1400, 65, 500, 300});
+}
 TEST_CASE("Damaged layouts are rejected transactionally", "[layout][files]") {
     auto w = builtInPresets()[1]; const auto before = toJson(w); auto j = before; std::string err;
     SECTION("absurd active tab") { auto root = toJson(LayoutNode::tabs({"RTA", "Phase"})); root.set("active", 1e100); j.set("root", root); }
