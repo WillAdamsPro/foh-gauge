@@ -48,6 +48,11 @@ jobs:
           BIN=$(find "$APP/Contents/MacOS" -type f -perm -u+x | head -1)
           lipo -info "$BIN"
           vtool -show-build "$BIN" | grep -E 'minos|platform' || otool -l "$BIN" | grep -A4 LC_BUILD_VERSION
+      - name: Ad-hoc sign app
+        run: |
+          codesign --force --deep -s - "$APP"
+          codesign --verify --deep --strict "$APP"
+          codesign -dv "$APP"
       - name: Package zip and DMG
         run: |
           OUT="FOH-Gauge-$TAG-macOS"
@@ -62,7 +67,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          NOTES="Unsigned test build. Requires macOS 26."
+          NOTES="Ad-hoc signed test build. Requires macOS 26."
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release edit "$TAG" --title "FOH Gauge $TAG" --notes "$NOTES" --prerelease
             gh release upload "$TAG" "$OUT.zip" "$OUT.dmg" SHA256SUMS --clobber
