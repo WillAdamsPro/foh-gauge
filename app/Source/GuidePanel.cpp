@@ -1,6 +1,7 @@
 // Guide / inspector panel: a narrow stepper. Its charts are drawn as an overlay in the Transfer
 // Function and Phase panels (AppModel::overlay), so the guide works inside any workspace layout.
 #include "Panels.h"
+#include "Diagrams.h"
 using namespace juce;
 namespace C = foh::ui::col;
 namespace D = foh::ui::dim;
@@ -36,7 +37,7 @@ public:
         for (int i = 0; i < 5; ++i) guideBox.addItem(String("W") + String(i + 1) + ": " + kGuideNames[i], i + 1);
         guideBox.setSelectedId(guide + 1, dontSendNotification);
         guideBox.onChange = [this] { guide = guideBox.getSelectedId() - 1; step = 0; resetVerification(); result.setText({}, dontSendNotification); refresh(); };
-        for (auto* c : std::initializer_list<Component*>{&guideBox, &stepLabel, &titleLabel, &body, &result, &readout, &polarity, &prev, &act, &note, &pass, &fail}) addChildComponent(c);
+        for (auto* c : std::initializer_list<Component*>{&guideBox, &stepLabel, &titleLabel, &body, &result, &readout, &polarity, &prev, &act, &note, &pass, &fail, &micDiagram}) addChildComponent(c);
         for (size_t i = 0; i < delayChoices.size(); ++i) {
             auto& row = delayChoices[i];
             addChildComponent(row);
@@ -59,7 +60,7 @@ public:
         refresh();
     }
     ~GuidePanel() override { model.overlayBuilder = {}; model.overlay = {}; }
-    fohws::Size minSize() const override { return { foh::theme::ws::inspectorMinWidth, 660 }; }
+    fohws::Size minSize() const override { return { foh::theme::ws::inspectorMinWidth, 780 }; }
     int priority() const override { return 60; }
     fohws::Json saveState() const override { auto j = fohws::Json::object(); j.set("guide", guide); j.set("step", step); j.set("verificationNote", verificationRecord.toStdString()); return j; }
     void loadState(const fohws::Json& j) override {
@@ -122,6 +123,16 @@ private:
             note.setBounds(c.removeFromBottom(60)); c.removeFromBottom(6);
         }
         updateVerdictButtons();
+        // W4/W5 currently contain only the shared frame and prescribe no mic move.
+        // Retain the W1-W3 placement through Store / Apply / Verify.
+        using Placement = MicPlacementDiagram::Placement;
+        const auto placement = st.chart == 3 ? Placement::None : guide == 0 && step > 0 ? Placement::OnAxis
+            : guide == 1 ? Placement::SubMainCrossover
+            : guide == 2 ? Placement::Seam : Placement::None;
+        micDiagram.setPlacement(placement);
+        if (placement != Placement::None) {
+            micDiagram.setBounds(c.removeFromTop(104)); c.removeFromTop(6);
+        }
         body.setVisible(true); body.setText(u8(st.body) + (verifying && guide == 1 ? "\nThe sum should rise in the crossover band rather than dip. Walk a few seats and listen." : String())
             + (verifying && guide == 2 ? "\nCheck phase overlap through the seam and listen from mains-only to fill-only positions." : String()) + (st.act == 21 && suggestedChange.isNotEmpty() ? "\n" + suggestedChange : String()), dontSendNotification);
         int bodyH = jmin(jmax(0, c.getHeight() - 80), roundToInt(body.getFont().getHeight() * 1.25f * (2 + body.getFont().getStringWidthFloat(body.getText()) / jmax(1, c.getWidth() - 8))));
@@ -326,6 +337,7 @@ private:
         });
     }
 
+    MicPlacementDiagram micDiagram;
     ComboBox guideBox; Label stepLabel, titleLabel, body, result, readout, polarity; TextButton prev {"Back"}, act {"Do it"};
     TextEditor note; TextButton pass {"Pass"}, fail {"Fail"};
     foh::TFResult baseline, after; String suggestedChange, verificationRecord;

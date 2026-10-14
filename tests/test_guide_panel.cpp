@@ -1,5 +1,6 @@
 #include <catch2/catch_test_macros.hpp>
 #include "Panels.h"
+#include "Diagrams.h"
 #include <stdexcept>
 
 std::unique_ptr<Panel> makeGuidePanel(AppModel&);
@@ -237,5 +238,76 @@ TEST_CASE("Guide requires a settled baseline and rejects captures with no compar
     for (int i = 0; i < panel->getNumChildComponents(); ++i) {
         auto* child = panel->getChildComponent(i);
         if (child->isVisible()) CHECK(panel->getLocalBounds().contains(child->getBounds()));
+    }
+}
+
+namespace {
+MicPlacementDiagram& diagram(Panel& panel) {
+    for (int i = 0; i < panel.getNumChildComponents(); ++i)
+        if (auto* d = dynamic_cast<MicPlacementDiagram*>(panel.getChildComponent(i))) return *d;
+    throw std::logic_error("Missing mic placement diagram");
+}
+}
+
+TEST_CASE("Mic moves in W1-W3 show the appropriate vector diagram", "[app][guide][diagrams]") {
+    juce::ScopedJuceInitialiser_GUI gui;
+    AppModel model;
+    auto panel = makeGuidePanel(model);
+    using P = MicPlacementDiagram::Placement;
+    const P expected[] = {P::OnAxis, P::SubMainCrossover, P::Seam};
+    for (int guide = 0; guide < 5; ++guide) {
+        CAPTURE(guide);
+        auto state = fohws::Json::object(); state.set("guide", guide);
+        state.set("step", guide == 0 ? 1 : 0);
+        panel->loadState(state);
+        auto& d = diagram(*panel);
+        CHECK(d.isVisible() == (guide < 3));
+        CHECK(d.getPlacement() == (guide < 3 ? expected[guide] : P::None));
+        for (int width : {260, 400}) {
+            panel->setSize(width, panel->minSize().h);
+            if (d.isVisible()) {
+                CHECK(panel->getLocalBounds().contains(d.getBounds()));
+                CHECK(d.getWidth() > 0);
+                CHECK(d.getHeight() == 104);
+                CHECK(d.getDescription().contains("Mic"));
+                // Exercise the paint path at both narrow and expanded inspector widths.
+                auto image = d.createComponentSnapshot(d.getLocalBounds());
+                CHECK(image.isValid());
+            }
+            for (int i = 0; i < panel->getNumChildComponents(); ++i) {
+                auto* child = panel->getChildComponent(i);
+                if (child->isVisible()) CHECK(panel->getLocalBounds().contains(child->getBounds()));
+            }
+        }
+    }
+    // Connect prescribes routing only; switching back must hide the old diagram.
+    auto state = fohws::Json::object(); state.set("guide", 0); state.set("step", 0);
+    panel->loadState(state);
+    CHECK_FALSE(diagram(*panel).isVisible());
+}
+
+TEST_CASE("Placement stays fixed through Store Apply and Verify", "[app][guide][diagrams]") {
+    juce::ScopedJuceInitialiser_GUI gui;
+    using P = MicPlacementDiagram::Placement;
+    const P expected[] = {P::OnAxis, P::SubMainCrossover, P::Seam};
+    for (int guide = 0; guide < 3; ++guide) {
+        CAPTURE(guide);
+        AppModel model; CaptureStub capture;
+        auto panel = makeGuidePanel(model); panel->setSize(260, panel->minSize().h);
+        auto state = fohws::Json::object(); state.set("guide", guide); state.set("step", 100);
+        panel->loadState(state);
+        auto checkDiagram = [&] {
+            auto& d = diagram(*panel);
+            CHECK(d.isVisible()); CHECK(d.getPlacement() == expected[guide]);
+            CHECK(panel->getLocalBounds().contains(d.getBounds()));
+            for (int i = 0; i < panel->getNumChildComponents(); ++i) {
+                auto* child = panel->getChildComponent(i);
+                if (child->isVisible() && child != &d) CHECK_FALSE(d.getBounds().intersects(child->getBounds()));
+            }
+        };
+        checkDiagram();
+        button(*panel, "Measure before change").onClick(); capture.finish(model); checkDiagram();
+        button(*panel, "I entered the change").onClick(); checkDiagram();
+        button(*panel, "Re-measure to verify").onClick(); capture.finish(model); checkDiagram();
     }
 }
