@@ -12,7 +12,8 @@ if(APPLE)
     set_source_files_properties(Source/Main.cpp PROPERTIES LANGUAGE OBJCXX)
     target_link_libraries(FOHGauge PRIVATE "-framework AVFoundation")
 endif()
-juce_add_binary_data(FOHGaugeData SOURCES Resources/Fonts/Inter-Regular.ttf Resources/Fonts/Inter-SemiBold.ttf Resources/Fonts/Inter-Bold.ttf)
+juce_add_binary_data(FOHGaugeData SOURCES Resources/Fonts/Inter-Regular.ttf Resources/Fonts/Inter-SemiBold.ttf Resources/Fonts/Inter-Bold.ttf
+    ../resources/targets/target-plus6.txt ../resources/targets/target-plus9.txt ../resources/targets/target-plus12.txt)
 set_target_properties(FOHGaugeData PROPERTIES POSITION_INDEPENDENT_CODE ON)
 target_compile_definitions(FOHGauge PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JUCE_APPLICATION_NAME_STRING="$<TARGET_PROPERTY:FOHGauge,JUCE_PRODUCT_NAME>" JUCE_APPLICATION_VERSION_STRING="$<TARGET_PROPERTY:FOHGauge,JUCE_VERSION>")
 target_link_libraries(FOHGauge PRIVATE fohcore FOHGaugeData juce::juce_audio_utils juce::juce_audio_devices juce::juce_gui_extra
