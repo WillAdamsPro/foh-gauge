@@ -1,4 +1,4 @@
-add_executable(fohcore_tests test_core.cpp)
+add_executable(fohcore_tests test_core.cpp test_format.cpp)
 find_package(Threads REQUIRED)
 target_link_libraries(fohcore_tests PRIVATE fohcore Catch2::Catch2WithMain Threads::Threads)
 target_compile_definitions(fohcore_tests PRIVATE FOH_TEST_DATA="${CMAKE_CURRENT_SOURCE_DIR}/data")
