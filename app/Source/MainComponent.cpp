@@ -182,6 +182,8 @@ bool MainComponent::keyPressed(const KeyPress& k) {
         if (code == '0') { setUiScale(100); return true; }
         if (code == '=' || code == '+') { stepUiScale(1); return true; }
         if (code == '-') { stepUiScale(-1); return true; }
+        if (code == 'S' || code == 's') { saveSession(m.isShiftDown()); return true; }
+        if (code == 'O' || code == 'o') { openSession(); return true; }
     }
     if (code == KeyPress::tabKey
         && m.withoutFlags(ModifierKeys::shiftModifier).getRawFlags() == ModifierKeys::ctrlModifier) {

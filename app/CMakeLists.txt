@@ -6,7 +6,7 @@ juce_add_gui_app(FOHGauge
     MICROPHONE_PERMISSION_ENABLED TRUE
     MICROPHONE_PERMISSION_TEXT "FOH Gauge needs audio input to measure your sound system."
     PLIST_TO_MERGE "<plist><dict><key>LSMinimumSystemVersion</key><string>26.0</string></dict></plist>")
-target_sources(FOHGauge PRIVATE Source/Main.cpp Source/MainComponent.cpp Source/SetupPage.cpp Source/AudioEngine.cpp Source/AnalysisEngine.cpp Source/Widgets.cpp Source/AppModel.cpp Source/LayoutModel.cpp Source/Panels.cpp Source/GuidePanel.cpp Source/WorkspaceView.cpp Source/WorkspaceManager.cpp Source/FloatingPanels.cpp)
+target_sources(FOHGauge PRIVATE Source/Main.cpp Source/MainComponent.cpp Source/SetupPage.cpp Source/SessionFiles.cpp Source/AudioEngine.cpp Source/AnalysisEngine.cpp Source/Widgets.cpp Source/AppModel.cpp Source/LayoutModel.cpp Source/Panels.cpp Source/GuidePanel.cpp Source/WorkspaceView.cpp Source/WorkspaceManager.cpp Source/FloatingPanels.cpp)
 if(APPLE)
     enable_language(OBJCXX)
     set_source_files_properties(Source/Main.cpp PROPERTIES LANGUAGE OBJCXX)
