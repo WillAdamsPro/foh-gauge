@@ -34,7 +34,7 @@ public:
     const Entry* find(const std::string& id) const { for (auto& e : entries) if (e.id == id) return &e; return nullptr; }
     std::unique_ptr<Panel> create(const std::string& id, AppModel& m) const { if (auto* e = find(id)) return e->make(m); return nullptr; }
     const std::vector<Entry>& all() const { return entries; }
-    static PanelRegistry& standard(); // all build #1 panels
+    static PanelRegistry& standard(); // all registered panels
 private:
     std::vector<Entry> entries;
 };

@@ -1,3 +1,4 @@
+#include "Strings.h"
 // MainComponent: window frame only. Toolbar (title, workspace switcher, status pills, Stop), sidebar
 // (appearance, UI scale) and the WorkspaceView that hosts the panels.
 #pragma once
@@ -72,7 +73,7 @@ protected:
     void setShowMode(bool enabled);
     void openSetup();
     SetupPage setup { model };
-    juce::TextButton setupBtn { "Audio Setup" }, splBtn { "SPL Cal" };
+    juce::TextButton setupBtn { "Audio Setup" }, splBtn { foh::str::splCalibration };
     juce::TextButton wsMenuBtn, showModeBtn, expertBtn;
     void openFloatingWindows(); void closeFloatingWindows();
     void showWorkspaceMenu(); void updateSwitcher(); void leaveWorkspace();
@@ -84,5 +85,5 @@ protected:
     juce::TextButton microphoneSettingsBtn { "Open System Settings" };
     juce::Label toolbarTitle; SegmentedControl switcher {{"Setup", "Alignment", "Tuning", "RTA/Show"}};
     StatusPills status; juce::TextButton pauseBtn, outputOn;
-    SegmentedControl appearance {{"Dark", "Sunlight"}}; juce::ComboBox scaleBox;
+    SegmentedControl appearance {{foh::str::dark, foh::str::sunlight}}; juce::ComboBox scaleBox;
 };

@@ -53,23 +53,23 @@ TEST_CASE("TF settle wording warns only on timeout or a completed unsettled capt
     auto text = [&](bool active = false, bool captureUnsettled = false) {
         return std::string_view(fohui::settleStatusText(convergence, active, captureUnsettled));
     };
-    REQUIRE(text() == "averaging...");
-    REQUIRE(text(true) == "averaging...");
+    REQUIRE(text() == "Averaging…");
+    REQUIRE(text(true) == "Averaging…");
     convergence.unsettled = true;
     convergence.elapsedSeconds = 9.99;
-    REQUIRE(text(true) == "averaging...");
-    REQUIRE(text(true, true) == "averaging..."); // An active capture has not ended.
+    REQUIRE(text(true) == "Averaging…");
+    REQUIRE(text(true, true) == "Averaging…"); // An active capture has not ended.
     convergence.timedOut = true;
     convergence.elapsedSeconds = 10.0;
-    REQUIRE(text() == "\xe2\x96\xb2 unsettled");
-    REQUIRE(text(true) == "\xe2\x96\xb2 unsettled");
+    REQUIRE(text() == "\xe2\x96\xb2 Unsettled");
+    REQUIRE(text(true) == "\xe2\x96\xb2 Unsettled");
     convergence = {};
-    REQUIRE(text(false, true) == "\xe2\x96\xb2 unsettled");
+    REQUIRE(text(false, true) == "\xe2\x96\xb2 Unsettled");
     convergence.settled = true;
-    REQUIRE(text() == "settled");
-    REQUIRE(text(false, true) == "\xe2\x96\xb2 unsettled");
+    REQUIRE(text() == "Settled");
+    REQUIRE(text(false, true) == "\xe2\x96\xb2 Unsettled");
     convergence = {}; // Starting a new capture resets its warning and settle state.
-    REQUIRE(text(true) == "averaging...");
+    REQUIRE(text(true) == "Averaging…");
 }
 
 TEST_CASE("Capture waits for the analysis restart acknowledgement", "[app][audio]") {
@@ -145,7 +145,7 @@ TEST_CASE("Capture snapshots acknowledge reset and carry the QA settle decision"
     REQUIRE(analysis.send(foh::Command::resetAverages(1)));
     REQUIRE(waitFor([&] { return analysis.latest().resetSeq == 1; }));
     REQUIRE_FALSE(analysis.latest().convergence.finished);
-    REQUIRE(std::string_view(fohui::settleStatusText(analysis.latest().convergence, true, false)) == "averaging...");
+    REQUIRE(std::string_view(fohui::settleStatusText(analysis.latest().convergence, true, false)) == "Averaging…");
 
     // Synthetic identical broadband channels: coherent, stable transfer function.
     foh::PinkNoise noise(42);
@@ -163,7 +163,7 @@ TEST_CASE("Capture snapshots acknowledge reset and carry the QA settle decision"
     REQUIRE_FALSE(settled.convergence.unsettled);
     REQUIRE(settled.convergence.stableFrames == 3);
     REQUIRE(settled.convergence.deltaDb < 0.5);
-    REQUIRE(std::string_view(fohui::settleStatusText(settled.convergence, false, false)) == "settled");
+    REQUIRE(std::string_view(fohui::settleStatusText(settled.convergence, false, false)) == "Settled");
     REQUIRE(foh::classifyCoherence(settled.tf).light == foh::TrafficLight::Green);
 
     // A new capture must not reuse that finished result. Silence cannot settle,
@@ -177,7 +177,7 @@ TEST_CASE("Capture snapshots acknowledge reset and carry the QA settle decision"
     const auto averaging = analysis.latest().convergence;
     REQUIRE(averaging.elapsedSeconds < 10.0);
     REQUIRE_FALSE(averaging.finished);
-    REQUIRE(std::string_view(fohui::settleStatusText(averaging, true, false)) == "averaging...");
+    REQUIRE(std::string_view(fohui::settleStatusText(averaging, true, false)) == "Averaging…");
     for (int i = 0; i < 3; ++i) feed();
     REQUIRE(waitFor([&] { return analysis.latest().convergence.finished; }));
     const auto timedOut = analysis.latest();
@@ -186,7 +186,7 @@ TEST_CASE("Capture snapshots acknowledge reset and carry the QA settle decision"
     REQUIRE_FALSE(timedOut.convergence.settled);
     REQUIRE(timedOut.convergence.elapsedSeconds >= 10.0);
     REQUIRE(timedOut.convergence.coherentBins == 0);
-    REQUIRE(std::string_view(fohui::settleStatusText(timedOut.convergence, false, true)) == "\xe2\x96\xb2 unsettled");
+    REQUIRE(std::string_view(fohui::settleStatusText(timedOut.convergence, false, true)) == "\xe2\x96\xb2 Unsettled");
     REQUIRE(foh::classifyCoherence(timedOut.tf).light == foh::TrafficLight::Red);
     analysis.stop();
 }
@@ -1234,7 +1234,7 @@ TEST_CASE("Multi-mic TF average overlays the target with controls reachable", "[
         if (auto* p = dynamic_cast<PlotComponent*>(child)) plot = p;
         if (auto* b = dynamic_cast<juce::ToggleButton*>(child); b && b->getButtonText() == "Multi-mic") show = b;
         if (auto* b = dynamic_cast<juce::TextButton*>(child)) {
-            if (b->getButtonText() == "Use found" || b->getButtonText() == "Capture" || b->getButtonText() == "Clear") {
+            if (b->getButtonText() == "Lock delay" || b->getButtonText() == "Capture position" || b->getButtonText() == "Clear") {
                 REQUIRE(panel->getLocalBounds().contains(b->getBounds()));
                 REQUIRE(b->getWidth() > 40);
             }

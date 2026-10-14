@@ -1,3 +1,4 @@
+#include "Strings.h"
 // Guide / inspector panel: a narrow stepper. Its charts are drawn as an overlay in the Transfer
 // Function and Phase panels (AppModel::overlay), so the guide works inside any workspace layout.
 #include "Panels.h"
@@ -10,26 +11,26 @@ namespace T = foh::theme::type;
 namespace ST = foh::theme::stroke;
 struct Step { const char* progress; const char* title; const char* body; const char* action; int act; int chart; };
 // The shared ending is deliberately manual: this panel has no DSP write action.
-static const Step kStore = {"Store", "Store the before trace", "Before changing the DSP, measure the system in the configuration you will verify (both speakers on for alignment). Keep the mic and reference delay fixed. The guide reuses its 'Guide before' and 'Guide after' traces.", "Measure before change", 20, 6};
+static const Step kStore = {foh::str::storeTrace, "Store the before trace", "Before changing the DSP, measure the system in the configuration you will verify (both speakers on for alignment). Keep the mic and reference delay fixed. The guide reuses its 'Guide before' and 'Guide after' traces.", "Measure before change", 20, 6};
 static const Step kApply = {"Apply", "Apply in your DSP", "Enter the change yourself in your DSP. FOH Gauge never applies it. Keep the same mic position, routing and speaker configuration, then confirm below.", "I entered the change", 21, 6};
 static const Step kVerify = {"Verify", "Verify against the stored trace", "Re-measure with the same mic position and reference delay. Compare the before and after traces, listen, then record Pass or Fail with a note describing whether the intended change worked. An unsettled measurement must be repeated.", "Re-measure to verify", 22, 6};
 static const std::vector<std::vector<Step>> kGuides = {
  { {"Connect", "Connect your gear", "UMC404HD: Out 1 to the console. Out 2 to In 2 with a 1/4\" TRS cable (reference loopback; TRS keeps it off phantom). ECM8000 to In 1 (XLR, +48 V on). Pick the device and channels on Setup at 48 kHz.", "Open Setup", 1, 0},
-   {"Signal", "Signal check", "Start pink noise and bring the console up to a comfortable level. Both inputs should sit near -20 dBFS (top bar), never clipping. Mic 1-3 m on-axis from ONE main, ear height, away from walls.", "Start pink noise", 2, 6},
-   {"Delay", "Find the reference delay", "The tallest spike is the direct sound; smaller later spikes are reflections. If two spikes are similar, check only one speaker is on.", "Find + lock delay", 3, 7},
+   {"Signal", "Signal check", "Start pink noise and bring the console up to a comfortable level. Both inputs should sit near -20 dBFS (top bar), never clipping. Mic 1-3 m on-axis from one main, ear height, away from walls.", "Start pink noise", 2, 6},
+   {"Delay", "Find the reference delay", "The tallest spike is the direct sound; smaller later spikes are reflections. If two spikes are similar, check only one speaker is on.", foh::str::lockDelay, 3, 7},
    {"Check", "Check the trace", "Phase should be fairly flat and coherence high (above ~0.8) above 200 Hz. Low coherence = don't trust that region.", "Open transfer function", 4, 6},
    kStore, kApply, kVerify },
- { {"Measure mains", "Measure the mains alone", "Mute the subs. Mic where sub and mains are about equally loud (often FOH). Pink noise on. This finds and locks the delay to the mains, then stores 'Main'.", "Capture mains \xe2\x97\x8f", 12, 1},
-   {"Measure sub", "Measure the sub alone", "Mute the mains, unmute the subs. Don't find the delay again: the comparison depends on the same timing. The dashed line is your stored mains.", "Capture sub \xe2\x97\x8f", 7, 2},
-   {"Find delay", "Find the delay", "Compare phase across the shaded crossover band (up to 250 Hz). Choose matching slopes and the least delay. Judge polarity from phase, not the impulse.", "Use this delay", 8, 3},
+ { {"Measure mains", "Measure the mains alone", "Mute the subs. Mic where sub and mains are about equally loud (often FOH). Pink noise on. This finds and locks the delay to the mains, then stores 'Main'.", "Store mains trace", 12, 1},
+   {"Measure sub", "Measure the sub alone", "Mute the mains, unmute the subs. Don't find the delay again: the comparison depends on the same timing. The dashed line is your stored mains.", "Store sub trace", 7, 2},
+   {foh::str::findDelay, "Find the delay", "Compare phase across the shaded crossover band (up to 250 Hz). Choose matching slopes and the least delay. Judge polarity from phase, not the impulse.", foh::str::lockDelay, 8, 3},
    kStore, kApply, kVerify },
- { {"Mains", "Measure the mains", "Mains already tuned. Mic in the seam: where main and fill are about equally loud, inside the fill's area. Fill muted. This finds and locks the delay to the mains.", "Find + lock delay", 3, 6},
+ { {"Mains", "Measure the mains", "Mains already tuned. Mic in the seam: where main and fill are about equally loud, inside the fill's area. Fill muted. This finds and locks the delay to the mains.", foh::str::lockDelay, 3, 6},
    {"Fill", "Measure the fill", "Mute the mains, unmute the fill. The app finds the fill's arrival and compares it with the locked mains time.", "Find fill arrival", 10, 7},
    {"Review", "Review the fill delay", "Review the suggested fill delay before changing the DSP. Many engineers add a few ms more so the mains arrive first and the image stays on stage (rule of thumb; trust your ears). Fill only as loud as needed.", "Open transfer function", 4, 6},
    kStore, kApply, kVerify },
- { {"SPL cal", "Calibrate SPL first", "Use SPL Cal on the toolbar or Setup: calibrator at 94 or 114 dB, or a known level. Confirm the selected mic input and gain; changing either requires a calibration check. Without calibration, levels are dBFS, not dB SPL. Remove the calibrator before measuring.", "Calibration checked", 23, 0},
-   {"Time alignment", "Align before EQ", "Complete W1 reference delay, W2 sub-to-mains, then W3 fills if present, including each Verify. Fix routing, polarity and coverage problems first. At each new mic position, establish reference delay; keep it fixed for before/after comparisons. Trust only settled, coherent measurements.", "Alignment checked", 23, 6},
-   {"Tuning order", "Tune one change at a time", "Check mains alone, then mains + subs, then fills and the full system. Check representative listening positions: fix aiming and relative levels before broad EQ. Compare with your target; avoid boosting deep cancellations or chasing low-coherence bins. Choose one change, then Store, Apply in DSP and Verify. Repeat W4 for further changes.", "Ready to store", 23, 6},
+ { {foh::str::splCalibration, "Calibrate SPL first", "Use SPL calibration on the toolbar or Setup: calibrator at 94 or 114 dB, or a known level. Confirm the selected mic input and gain; changing either requires a calibration check. Without calibration, levels are dBFS, not dB SPL. Remove the calibrator before measuring.", "Calibration checked", 23, 0},
+   {"Time alignment", "Align before EQ", "Complete reference delay, sub-to-mains alignment, then fill alignment if present, including each Verify. Fix routing, polarity and coverage problems first. At each new mic position, establish reference delay; keep it fixed for before/after comparisons. Trust only settled, coherent measurements.", "Alignment checked", 23, 6},
+   {"Tuning order", "Tune one change at a time", "Check mains alone, then mains and subs, then fills and the full system. Check representative listening positions: fix aiming and relative levels before broad EQ. Compare with your target; avoid boosting deep cancellations or chasing low-coherence bins. Choose one change, then Store, Apply in DSP and Verify. Repeat the tuning guide for further changes.", "Ready to store", 23, 6},
    kStore, kApply, kVerify },
  { {"0-1 min", "Five-minute check: signal path", "Use the last verified tuning as your baseline. Confirm device, mic/ref channels, sample rate, mic gain and SPL calibration. Check console/DSP preset, mutes and routing. At low level, confirm each main, sub and fill passes signal; watch mic/ref meters for missing signal or clipping.", "Signal path checked", 23, 0},
    {"1-3 min", "Check response and timing", "Return to the tuning mic position and speaker configuration. Use brief pink noise, check reference delay, then compare the live TF with the stored tuning trace. Check settled response, coherence and crossover summation; listen through main/fill transitions. Stop noise after measuring. Investigate changes before adding EQ.", "Response checked", 23, 6},
@@ -43,7 +44,7 @@ static const std::vector<std::vector<Step>> kGuides = {
    {"Verify", "Verify impulse direction", "Run a fresh sweep after confirming the DSP state. Check that the direction now matches the expected box/driver response. Record Pass or Fail with a note. An inconclusive result requires another measurement.", "Verify box sweep", 26, 0},
    {"Next box", "Repeat for the next box", "Mute the checked box, select the next box/driver, and move the mic near-field to it. Repeat the same check for every box. Restore the intended speaker configuration when finished.", "Check next box", 27, 0} },
 };
-static const char* kGuideNames[] = {"Setup + reference delay", "Align sub to mains", "Align fills to mains", "Tuning", "Pre-doors check", "Per-box polarity"};
+static const char* kGuideNames[] = {"Setup and reference delay", "Align sub to mains", "Align fills to mains", "Tuning", "Pre-doors check", "Per-box polarity"};
 class GuidePanel : public Panel {
 public:
     explicit GuidePanel(AppModel& m) : Panel(m, "GuideInspector", "Guide") {
@@ -52,7 +53,7 @@ public:
         helpText = "Step-by-step guides. The charts for each step appear in the Transfer Function and Phase panels.";
         updateGuides();
         guideBox.setSelectedId(guide + 1, dontSendNotification);
-        guideBox.onChange = [this] { const bool interrupted = frameCapturePending; guide = guideBox.getSelectedId() - 1; step = 0; resetVerification(); say(interrupted ? "Guide measurement interrupted by navigation. Repeat the measurement; no verdict recorded." : String()); refresh(); };
+        guideBox.onChange = [this] { const bool interrupted = frameCapturePending; guide = guideBox.getSelectedId() - 1; step = 0; resetVerification(); say(interrupted ? foh::str::guideInterrupted : String()); refresh(); };
         for (auto* c : std::initializer_list<Component*>{&guideBox, &stepLabel, &titleLabel, &body, &result, &readout, &polarity, &prev, &act, &note, &pass, &fail, &micDiagram}) form.canvas.addChildComponent(c);
         for (size_t i = 0; i < delayChoices.size(); ++i) {
             auto& row = delayChoices[i];
@@ -65,8 +66,8 @@ public:
         note.setMultiLine(true);
         note.setTextToShowWhenEmpty("Verification note: what changed and what you heard", C::textSecondary());
         note.onTextChange = [this] { updateVerdictButtons(); };
-        pass.onClick = [this] { recordVerdict("PASS"); };
-        fail.onClick = [this] { recordVerdict("FAIL"); };
+        pass.onClick = [this] { recordVerdict("Pass"); };
+        fail.onClick = [this] { recordVerdict("Fail"); };
         delayChoices[0].setToggleState(true, dontSendNotification);
         guideBox.setVisible(true);
         prev.onClick = [this] { if (step > 0) {
@@ -92,7 +93,7 @@ public:
         if (guide != 5 && step >= (int) kGuides[(size_t) guide].size() - 2) step = std::max(0, (int) kGuides[(size_t) guide].size() - 3);
         if (guide == 5) step = std::min(step, 1); // A restored box always needs a fresh impulse.
         verificationRecord = String(j["verificationNote"].asString());
-        say(interrupted ? "Guide measurement interrupted by workspace navigation. Repeat the measurement; no verdict recorded."
+        say(interrupted ? foh::str::guideInterrupted
             : verificationRecord.isEmpty() ? "Store a new before trace before Apply and Verify." : "Previous verification: " + verificationRecord);
         refresh(); }
     void setGuide(int g, int s) {
@@ -143,7 +144,7 @@ public:
     void visibilityChanged() override {
         if (!isShowing() && (frameCapturePending || boxSweepPending)) {
             ++frameGeneration; frameCapturePending = false; retireBoxSweep(); verified = false;
-            say("Guide measurement interrupted while hidden. Repeat the measurement; no verdict recorded.");
+            say(foh::str::guideInterrupted);
             refresh();
         }
         buildOverlay(); model.notify(AppModel::Overlay);
@@ -188,9 +189,9 @@ private:
         guideBox.clear(dontSendNotification);
         for (auto id : foh::rigSteps(model.rigProfile)) {
             int i = static_cast<int>(id) - 1;
-            guideBox.addItem(String("W") + String(i + 1) + ": " + kGuideNames[i], i + 1);
+            guideBox.addItem(kGuideNames[i], i + 1);
         }
-        for (int i = 3; i < 6; ++i) guideBox.addItem(String("W") + String(i + 1) + ": " + kGuideNames[i], i + 1);
+        for (int i = 3; i < 6; ++i) guideBox.addItem(kGuideNames[i], i + 1);
         int selected = availableGuide(guide);
         if (selected != guide) { resetVerification(); guide = selected; step = 0; result.setText({}, dontSendNotification); }
         guideBox.setSelectedId(guide + 1, dontSendNotification);
@@ -204,13 +205,13 @@ private:
             model.rigProfile->clusterCabinets.end(), [](int n) { return n > 1; });
         String stepBody = u8(st.body);
         if (mainArray && guide == 0 && step == 1)
-            stepBody = "Start pink noise at a comfortable level. Both inputs should sit near -20 dBFS, never clipping. Place the mic on-axis in ONE main cluster's coverage, where its cabinets combine, away from walls. Mute the other clusters.";
+            stepBody = "Start pink noise at a comfortable level. Both inputs should sit near -20 dBFS, never clipping. Place the mic on-axis in one main cluster's coverage, where its cabinets combine, away from walls. Mute the other clusters.";
         if (model.rigProfile && guide == 3 && step == 1)
-            stepBody = String("Complete W1 reference delay") + (model.rigProfile->subCount ? ", W2 sub-to-mains" : "")
-                + (model.rigProfile->frontFillCount ? ", W3 fills" : "")
+            stepBody = String("Complete reference delay") + (model.rigProfile->subCount ? ", sub-to-mains alignment" : "")
+                + (model.rigProfile->frontFillCount ? ", fill alignment" : "")
                 + ", including each Verify. Fix routing, polarity and coverage first. Establish reference delay at each new mic position and keep it fixed for before/after comparisons. Trust settled, coherent measurements.";
         if (model.rigProfile && guide == 3 && step == 2)
-            stepBody = "Fix aiming and relative levels before broad EQ. Compare with your target; avoid boosting deep cancellations or chasing low-coherence bins. Choose one change, then Store, Apply in DSP and Verify. Repeat W4 for further changes.";
+            stepBody = "Fix aiming and relative levels before broad EQ. Compare with your target; avoid boosting deep cancellations or chasing low-coherence bins. Choose one change, then Store, Apply in DSP and Verify. Repeat the tuning guide for further changes.";
         if (model.rigProfile && guide == 4 && step == 1 && !model.rigProfile->frontFillCount)
             stepBody = "Return to the tuning mic position and speaker configuration. Use brief pink noise, check reference delay, then compare the live TF with the stored tuning trace. Check settled response and coherence"
                 + String(model.rigProfile->subCount ? ", and sub/main crossover summation." : ".")
@@ -242,7 +243,7 @@ private:
         auto c = form.canvas.getLocalBounds().reduced(pad, 8);
         guideBox.setBounds(c.removeFromTop(26)); c.removeFromTop(10);
         rows.clear(); for (size_t i = 0; i < steps.size(); ++i) rows.push_back(c.removeFromTop(22)); c.removeFromTop(10);
-        stepLabel.setVisible(true); stepLabel.setText(("STEP " + String(step + 1) + " OF " + String((int) steps.size())), dontSendNotification); stepLabel.setBounds(c.removeFromTop(16));
+        stepLabel.setVisible(true); stepLabel.setText(("Step " + String(step + 1) + " of " + String((int) steps.size())), dontSendNotification); stepLabel.setBounds(c.removeFromTop(16));
         titleLabel.setVisible(true); titleLabel.setText(u8(st.title), dontSendNotification); titleLabel.setBounds(c.removeFromTop(titleH)); c.removeFromTop(6);
         auto buttons = c.removeFromBottom(36); c.removeFromBottom(8);
         for (auto& row : delayChoices) row.setVisible(st.chart == 3);
@@ -309,7 +310,7 @@ private:
     void next() { if (step + 1 < (int) kGuides[(size_t) guide].size()) ++step; }
     String delayText() const {
         auto& d = model.delay; if (!model.delayLocked()) return {}; auto& a0 = d.arrivals[0];
-        return u8("\xe2\x89\x88 ") + String(a0.distanceM, 2) + u8(" m \xc2\xb7 confidence ") + (d.confidence > 0.7 ? "high" : d.confidence > 0.35 ? "medium" : "LOW") + u8(" \xc2\xb7 polarity ") + (a0.inverted ? "INVERTED" : "normal")
+        return u8("\xe2\x89\x88 ") + String(a0.distanceM, 2) + u8(" m \xc2\xb7 confidence ") + (d.confidence > 0.7 ? "high" : d.confidence > 0.35 ? "medium" : "low") + u8(" \xc2\xb7 polarity ") + (a0.inverted ? "inverted" : "normal")
              + (d.twoSimilarArrivals ? u8(" \xc2\xb7 \xe2\x96\xb2 two similar arrivals: is only one speaker on?") : "");
     }
     // Message-thread only: phase analysis and row text never run in the audio callback.
@@ -318,11 +319,11 @@ private:
         readout.setText("Choose a delay: --", dontSendNotification);
         polarity.setText({}, dontSendNotification);
         for (auto& row : delayChoices) { row.setEnabled(false); row.setButtonText("--"); }
-        auto* m = model.findTrace("Main"); auto* s = model.findTrace("Sub"); if (!m || !s) { return "Capture mains and sub first."; }
+        auto* m = model.findTrace("Main"); auto* s = model.findTrace("Sub"); if (!m || !s) { return "Store mains and sub traces first."; }
         if (!validTrace(m->tf) || !validTrace(s->tf) || m->refDelayMs != s->refDelayMs
             || m->refDelayMs != model.refDelayMs || m->tf.sampleRate != s->tf.sampleRate
             || m->tf.fftSize != s->tf.fftSize || m->tf.freq != s->tf.freq) {
-            xover = {}; return "Captures are invalid or timing/resolution changed. Capture mains and sub again.";
+            xover = {}; return "Captures are invalid or timing/resolution changed. Store mains and sub traces again.";
         }
         xover = foh::acousticCrossover(m->tf, s->tf, 10.0); if (!xover.found) { return "No overlap within 10 dB between 30-300 Hz. Check levels."; }
         auto estimate = foh::subDelayFromPhase(m->tf, s->tf, xover.lo, xover.hi, 0,
@@ -343,12 +344,12 @@ private:
             delayChoices[i].setButtonText(String(names[i]) + alt(choiceMs[i]));
         }
         choicesValid = true;
-        readout.setText("Choose a delay (XO " + String(estimate.xoHz, 0) + " Hz)", dontSendNotification);
+        readout.setText("Choose a delay (crossover " + String(estimate.xoHz, 0) + " Hz)", dontSendNotification);
         polarity.setText("Judge polarity from the phase traces. A flip shifts phase by 180 degrees."
             + (hint.isNotEmpty() ? "\n" + hint : String()), dontSendNotification);
         String out;
         out << "Crossover " << String(xover.lo, 0) << "-" << String(xover.hi, 0) << " Hz (centre ~" << String(estimate.xoHz, 0) << " Hz). Sub vs main phase " << String(estimate.phaseDeg, 0) << u8("\xc2\xb0 = ") << String(d, 2) << " ms ("
-            << (estimate.primaryMs > 0 ? "sub LATE" : "sub EARLY") << "). Other answers differ by whole cycles (" << String(period, 2) << u8(" ms). Target: within ~60\xc2\xb0 and parallel across the band.");
+            << (estimate.primaryMs > 0 ? "sub late" : "sub early") << "). Other answers differ by whole cycles (" << String(period, 2) << u8(" ms). Target: within ~60\xc2\xb0 and parallel across the band.");
         return out;
     }
 
@@ -396,7 +397,7 @@ private:
                         safe->say("Pink noise on at " + String(safe->model.engine.genGainDb.load(), 1) + " dBFS. Watch the signal meters.");
                         safe->next(); safe->refresh();
                     }); return;
-            case 3: say("Finding the delay...");
+            case 3: say(juce::String::fromUTF8("Finding the delay\xe2\x80\xa6"));
                     guidedDelay(false, [safe] { if (!safe) return; auto& p = *safe; String o;
                         if (p.model.delayLocked()) { p.model.lockDelayFromLast(); o = "Locked reference delay " + String(consoleMs(p.model.lockedDelayMs), 2) + " ms. " + p.delayText(); p.next(); }
                         else o = "No lock. Is pink noise playing and are both inputs showing level?";
@@ -404,15 +405,15 @@ private:
                     return;
             case 4: next(); refresh(); if (model.requestWorkspace) model.requestWorkspace("alignment"); return;
 
-            case 12: say("Finding the sub/mains delay (LF-weighted, 3 s window)...");
+            case 12: say(juce::String::fromUTF8("Finding the sub/mains delay (LF-weighted, 3 s window)\xe2\x80\xa6"));
                      guidedDelay(true, [safe] { if (!safe) return; auto& p = *safe;
                          if (!p.model.delayLocked()) { p.say("No valid delay result. Is pink noise playing, and only the mains on?"); return; }
                          p.model.lockDelayFromLast();
-                         p.say("Locked delay " + String(consoleMs(p.model.lockedDelayMs), 2) + " ms. Averaging until the trace settles...");
+                         p.say("Locked delay " + String(consoleMs(p.model.lockedDelayMs), 2) + juce::String::fromUTF8(" ms. Averaging until the trace settles\xe2\x80\xa6"));
                          p.guidedCapture("Main", [safe](bool settled) { if (!safe) return; auto& q = *safe;
-                             q.say("Stored 'Main' (ref delay " + String(consoleMs(q.model.lockedDelayMs), 2) + " ms)." + String(settled ? "" : u8(" \xe2\x96\xb2 Unsettled: the average did not settle within 10 s."))); q.next(); q.refresh(); }); });
+                             q.say("Stored 'Main' (reference delay " + String(consoleMs(q.model.lockedDelayMs), 2) + " ms)." + String(settled ? "" : u8(" \xe2\x96\xb2 Unsettled: the average did not settle within 10 s."))); q.next(); q.refresh(); }); });
                      return;
-            case 7: say("Averaging the sub until the trace settles...");
+            case 7: say(juce::String::fromUTF8("Averaging the sub until the trace settles\xe2\x80\xa6"));
                     guidedCapture("Sub", [safe](bool settled) { if (!safe) return; auto& q = *safe;
                         q.say("Stored 'Sub' (same locked delay " + String(consoleMs(q.model.lockedDelayMs), 2) + " ms)." + String(settled ? "" : u8(" \xe2\x96\xb2 Unsettled: the average did not settle within 10 s.")));
                         q.selectedDelay = 0; q.delayChoices[0].setToggleState(true, dontSendNotification);
@@ -428,13 +429,13 @@ private:
                 out = instruction + ". Store a before trace first, then enter this in your DSP.";
                 next(); break;
             }
-            case 10: say("Finding the fill arrival...");
+            case 10: say(juce::String::fromUTF8("Finding the fill arrival\xe2\x80\xa6"));
                 guidedDelay(false, [safe] { if (!safe) return; auto& p = *safe;
                     if (!p.model.delayLocked()) { p.say("No valid delay result. Is only the fill on?"); return; }
                     // findDelay works on the raw (uncompensated) reference, so arrivals are absolute
                     double fillMs = p.model.delay.arrivals[0].delayMs, diff = p.model.lockedDelayMs - fillMs; String o;
                     o << "Fill arrives at " << String(consoleMs(fillMs), 2) << " ms; mains at " << String(consoleMs(p.model.lockedDelayMs), 2) << " ms. "
-                      << (diff > 0 ? "Fill arrives " + String(consoleMs(diff), 2) + " ms BEFORE the mains here. Suggested: delay the fill by ~" + String(consoleMs(diff), 2) + " ms (optionally a few ms more)."
+                      << (diff > 0 ? "Fill arrives " + String(consoleMs(diff), 2) + " ms before the mains here. Suggested: delay the fill by ~" + String(consoleMs(diff), 2) + " ms (optionally a few ms more)."
                                    : "Fill already arrives after the mains (" + String(consoleMs(-diff), 2) + " ms). Check the seam position and which speaker is on.");
                     p.suggestedChange = o; p.next(); p.say(o); p.refresh(); });
                 return;
@@ -474,10 +475,10 @@ private:
         if (!model.analysis.send(command)) {
             boxSweepPending = false; say("Measurement busy. Retry the box sweep."); refresh(); return;
         }
-        say("Measuring this box's sweep... See the signed impulse in the Impulse panel."); refresh();
+        say(juce::String::fromUTF8("Measuring this box's sweep\xe2\x80\xa6 See the signed impulse in the Impulse panel.")); refresh();
     }
     static String direction(foh::ImpulsePolarity p) {
-        return p == foh::ImpulsePolarity::Normal ? "NORMAL (positive)" : "INVERTED (negative)";
+        return p == foh::ImpulsePolarity::Normal ? "Normal (positive)" : "Inverted (negative)";
     }
     bool boxContextChanged() const {
         return model.paused || model.engine.deviceFailed.load() || model.engine.state.load() != AudioEngine::Ready
@@ -578,7 +579,7 @@ private:
         for (int i = model.traces.count() - 1; i >= 0; --i)
             if (model.traces.at(i).name == name.toStdString()) model.traces.remove(i);
         model.notify(AppModel::Traces);
-        say("Re-measuring until settled..."); refresh();
+        say(juce::String::fromUTF8("Re-measuring until settled\xe2\x80\xa6")); refresh();
         SafePointer<GuidePanel> safe(this);
         model.beginCapture(name, [safe, generation, captureGuide, captureStep, name, verify, epoch, rate, faults](bool settled) {
             if (!safe || safe->frameGeneration != generation) return;

@@ -23,7 +23,7 @@ void AppModel::finishLoopback(const foh::TFResult* raw) {
         analysis.setLoopback(std::make_shared<foh::LoopbackCorrection>(c), engine.captureEpoch.load());
         auto j = foh::Json::object(); for (const auto& entry : loopbackCals) j.set(entry.first, entry.second.toJson());
         if (auto* p = settings.getUserSettings()) { p->setValue("interfaceLoopback", juce::String(j.dump())); p->saveIfNeeded(); }
-        loopbackStatus = "Interface correction saved (response + latency).";
+        loopbackStatus = "Interface correction saved (response and latency).";
     } else loopbackStatus = "Loopback failed: check cables, gain and broadband signal.";
     notify(Settings);
 }

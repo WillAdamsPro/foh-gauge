@@ -1,3 +1,4 @@
+#include "Strings.h"
 #include <BinaryData.h>
 #include "MainComponent.h"
 using namespace juce;
@@ -38,10 +39,10 @@ MainComponent::MainComponent(juce::File workspaceFolder) : mgr(std::move(workspa
         model.setExpertMode(expertBtn.getToggleState());
     };
     content.addAndMakeVisible(showModeBtn); showModeBtn.setButtonText("Show mode"); showModeBtn.setClickingTogglesState(true);
-    showModeBtn.setTooltip("Live TF/RTA monitoring against a stored reference; toggle off to restore the workspace layout");
+    showModeBtn.setTooltip("Live TF/RTA monitoring against a stored reference; toggle off to restore the workspace");
     showModeBtn.onClick = [this] { setShowMode(showModeBtn.getToggleState()); };
-    content.addAndMakeVisible(pauseBtn); pauseBtn.setClickingTogglesState(true); makePrimary(pauseBtn); pauseBtn.setButtonText(u8("\xe2\x96\xa0 Stop"));
-    pauseBtn.onClick = [this] { model.setPaused(pauseBtn.getToggleState()); pauseBtn.setButtonText(model.paused ? u8("\xe2\x96\xb6 Start") : u8("\xe2\x96\xa0 Stop")); };
+    content.addAndMakeVisible(pauseBtn); pauseBtn.setClickingTogglesState(true); makePrimary(pauseBtn); pauseBtn.setButtonText(foh::str::pauseMeasuring);
+    pauseBtn.onClick = [this] { model.setPaused(pauseBtn.getToggleState()); pauseBtn.setButtonText(model.paused ? foh::str::resumeMeasuring : foh::str::pauseMeasuring); };
 
     appearance.setSelected(foh::theme::ThemeManager::get().current().isLight ? 1 : 0);
     appearance.onChange = [this](int i) { setSunlightTheme(i == 1); };
@@ -59,7 +60,7 @@ MainComponent::MainComponent(juce::File workspaceFolder) : mgr(std::move(workspa
     content.addAndMakeVisible(splBtn); splBtn.onClick = [this] { openSetup(); setup.focusSplCalibration(); };
     content.addAndMakeVisible(setupBtn); setupBtn.onClick = [this] { openSetup(); };
     model.requestWorkspace = [this](const std::string& id) { selectWorkspace(id); };
-    content.addAndMakeVisible(wsMenuBtn); wsMenuBtn.setButtonText(u8("Workspace \xe2\x96\xbe")); wsMenuBtn.onClick = [this] { showWorkspaceMenu(); };
+    content.addAndMakeVisible(wsMenuBtn); wsMenuBtn.setButtonText(String(foh::str::workspace) + u8(" \xe2\x96\xbe")); wsMenuBtn.onClick = [this] { showWorkspaceMenu(); };
     view.onLayoutEdited = [this] { updateSwitcher(); };
     view.onFloatRequested = [this](const std::string& id) { floatPanel(id); };
     view.isFloating = [this](const std::string& id) { if (auto* w = view.workspace()) for (auto& f : w->floating) if (f.panel == id) return true; return false; };
@@ -135,7 +136,7 @@ void MainComponent::openFloatingWindows() {
         auto window = SafePointer<FloatingPanelWindow>(win);
         // Ignore queued actions if a workspace switch or reset has already destroyed the window.
         win->onDock = [self = SafePointer<MainComponent>(this), id, window] { MessageManager::callAsync([sp = self, id, window] { if (sp && window) sp->dockPanel(id); }); };
-        win->onClose = [self = SafePointer<MainComponent>(this), id, window] { MessageManager::callAsync([sp = self, id, window] { if (sp && window) { // close = hide; Workspace > Show Panels brings it back
+        win->onClose = [self = SafePointer<MainComponent>(this), id, window] { MessageManager::callAsync([sp = self, id, window] { if (sp && window) { // close = hide; Workspace > Show panels brings it back
             auto* w2 = sp->view.workspace(); if (!w2) return;
             // Erasing from the state vector invalidates references held by every later window.
             sp->closeFloatingWindows();
@@ -185,18 +186,18 @@ void MainComponent::showWorkspaceMenu() {
     m.addItem(8, "Show mode", true, showMode);
     std::vector<std::string> hidden;
     if (!showMode) {
-        m.addItem(1, "Save Workspace", current >= 0 && mgr.isModified(current));
-        m.addItem(2, u8("Save Workspace As\xe2\x80\xa6"));
-        m.addItem(item("Revert to Saved Layout", 3, current >= 0 && mgr.isModified(current), false, u8("\xe2\x8c\xa5") + mod + "0"));
-        m.addItem(4, "Reset to Default Layout", current >= 0 && mgr.at(current).builtIn);
+        m.addItem(1, "Save workspace", current >= 0 && mgr.isModified(current));
+        m.addItem(2, u8("Save workspace as\xe2\x80\xa6"));
+        m.addItem(item("Revert to saved workspace", 3, current >= 0 && mgr.isModified(current), false, u8("\xe2\x8c\xa5") + mod + "0"));
+        m.addItem(4, "Reset to default workspace", current >= 0 && mgr.at(current).builtIn);
         bool custom = current >= 0 && !mgr.at(current).builtIn;
-        m.addItem(5, u8("Rename Custom\xe2\x80\xa6"), custom); m.addItem(6, "Delete Custom", custom);
+        m.addItem(5, u8("Rename workspace\xe2\x80\xa6"), custom); m.addItem(6, "Delete workspace", custom);
         m.addSeparator();
-        m.addItem(item("Show Inspector", 7, true, false, u8("\xe2\x8c\xa5") + mod + "I"));
+        m.addItem(item("Show inspector", 7, true, false, u8("\xe2\x8c\xa5") + mod + "I"));
         PopupMenu show; int n = 0;
         if (auto* w = view.workspace()) for (auto& e : PanelRegistry::standard().all()) { bool fl = false; for (auto& f : w->floating) fl |= f.panel == e.id;
             if (!w->root.contains(e.id) && !fl) { hidden.push_back(e.id); show.addItem(1000 + n++, e.title); } }
-        m.addSubMenu("Show Panels", show, !hidden.empty());
+        m.addSubMenu("Show panels", show, !hidden.empty());
     }
     SafePointer<MainComponent> sp(this);
     m.showMenuAsync(PopupMenu::Options().withTargetComponent(&wsMenuBtn).withStandardItemHeight(foh::theme::ws::menuItemHeight), [sp, hidden](int r) {
@@ -210,7 +211,7 @@ void MainComponent::showWorkspaceMenu() {
             case 3: s.closeFloatingWindows(); s.mgr.revert(s.current); reload(); break;
             case 4: s.closeFloatingWindows(); s.mgr.resetToDefault(s.current); reload(); break;
             case 2: case 5: {
-                auto* aw = new AlertWindow(r == 2 ? "Save Workspace As" : "Rename Workspace", "Name:", MessageBoxIconType::NoIcon);
+                auto* aw = new AlertWindow(r == 2 ? "Save workspace as" : "Rename workspace", "Name:", MessageBoxIconType::NoIcon);
                 aw->addTextEditor("name", r == 2 ? String(s.mgr.at(s.current).name) + " copy" : String(s.mgr.at(s.current).name)); aw->addButton("OK", 1, KeyPress(KeyPress::returnKey)); aw->addButton("Cancel", 0, KeyPress(KeyPress::escapeKey));
                 aw->enterModalState(true, ModalCallbackFunction::create([sp, aw, r](int res) { if (!sp || res != 1) return; auto name = aw->getTextEditorContents("name").trim(); if (name.isEmpty()) return;
                     auto& s2 = *sp; if (r == 2) s2.saveWorkspaceAs(name);
@@ -395,7 +396,7 @@ void MainComponent::timerCallback() {
     auto lvl = [&](const char* n, float p) { return P::Pill{ String(n) + " " + dbs(p), p > 0.99f ? P::Poor : p > 0.01f ? P::Good : P::Caution }; };
     std::vector<P::Pill> v { { model.paused ? "Paused" : model.engine.statusText(), model.paused || model.engine.deviceFailed.load() || model.engine.state.load() != AudioEngine::Ready || model.engine.captureEpoch.load() != model.engine.analysisEpoch.load() ? P::Caution : P::Good },
                              { dev ? dev->getName() + u8(" \xc2\xb7 ") + String((int) fs / 1000) + " kHz" : String("No device"), dev ? P::None : P::Poor },
-                             P::Pill{ "Mic " + (model.splCal().calibrated ? (model.micLevelReady() ? String(model.micLevel(), 1) + " dB SPL" : String("-- dB SPL")) : dbs(mp)), mp > 0.99f ? P::Poor : P::None }, lvl("Ref", rp), { model.calApplied ? "Cal on" : "Cal off", model.calApplied ? P::Good : P::None }, { "Ref delay " + String(model.refDelayMs, 2) + " ms", P::None } };
-    if (clip) v.push_back({ "CLIPPING", P::Poor });
+                             P::Pill{ "Mic " + (model.splCal().calibrated ? (model.micLevelReady() ? String(model.micLevel(), 1) + " dB SPL" : String("-- dB SPL")) : dbs(mp)), mp > 0.99f ? P::Poor : P::None }, lvl("Ref", rp), { model.calApplied ? "Mic calibration on" : "Mic calibration off", model.calApplied ? P::Good : P::None }, { String(foh::str::referenceDelay) + " " + String(model.refDelayMs, 2) + " ms", P::None } };
+    if (clip) v.push_back({ "Clipping", P::Poor });
     status.setPills(std::move(v));
 }

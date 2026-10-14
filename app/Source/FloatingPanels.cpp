@@ -19,7 +19,7 @@ std::vector<fohws::DisplayInfo> currentDisplays() {
 
 // 20x20 title-bar button: Pin (toggle, accent + filled when on) and Dock (arrow to tray)
 struct FloatingPanelWindow::TitleButton : Button {
-    bool isPin; TitleButton(bool p) : Button(p ? "Pin" : "Dock"), isPin(p) { setTooltip(p ? "Keep on top" : "Return to dock"); setClickingTogglesState(p); }
+    bool isPin; TitleButton(bool p) : Button(p ? "Pin" : "Dock panel"), isPin(p) { setTooltip(p ? "Keep on top" : "Dock panel"); setClickingTogglesState(p); }
     void paintButton(Graphics& g, bool over, bool down) override {
         auto& t = TH(); auto r = getLocalBounds().toFloat();
         if (down) { g.setColour(WS::pressedOverlay(t)); g.fillRoundedRectangle(r, 4.f); } else if (over) { g.setColour(WS::hoverOverlay(t)); g.fillRoundedRectangle(r, 4.f); }
@@ -33,7 +33,7 @@ struct FloatingPanelWindow::TitleButton : Button {
 };
 
 FloatingPanelWindow::FloatingPanelWindow(Panel& p, fohws::FloatingPanel& state)
-    : DocumentWindow(p.title() + " (FOH Gauge)", TH().surfaces.background, DocumentWindow::closeButton), panel(p), st(state) {
+    : DocumentWindow(p.title() + juce::String::fromUTF8(" \xe2\x80\x94 FOH Gauge"), TH().surfaces.background, DocumentWindow::closeButton), panel(p), st(state) {
     setUsingNativeTitleBar(false); setTitleBarHeight(WS::floatTitleBarHeight); setTitleBarTextCentred(false);
     setContentNonOwned(&panel, false);
     setResizable(true, false); setResizeLimits(WS::floatMinWidth, WS::floatMinHeight, 4000, 3000);

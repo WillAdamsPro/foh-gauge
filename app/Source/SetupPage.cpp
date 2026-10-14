@@ -1,4 +1,5 @@
 #include "SetupPage.h"
+#include "Strings.h"
 using namespace juce;
 
 SetupPage::SetupPage(AppModel& m, bool showDone) : model(m) {
@@ -26,7 +27,7 @@ SetupPage::SetupPage(AppModel& m, bool showDone) : model(m) {
     wizard.onApplied = [this] { model.notify(AppModel::Settings); };
     wizard.onClose = [this] { wizard.setVisible(false); refresh(); };
     addAndMakeVisible(notice);
-    loopbackInstructions.setText("Interface correction: disconnect the PA and mic (phantom off). Cable generator output to the mic input, and loopback output to reference input. Keep gains fixed; restore the mic after measuring.", dontSendNotification);
+    loopbackInstructions.setText(String(foh::str::interfaceCorrection) + ": disconnect the PA and mic (phantom off). Cable generator output to the mic input, and loopback output to reference input. Keep gains fixed; restore the mic after measuring.", dontSendNotification);
     loopbackInstructions.setJustificationType(Justification::topLeft);
     addAndMakeVisible(loopbackInstructions); addAndMakeVisible(loopbackStatus);
     addAndMakeVisible(measureLoopback); addAndMakeVisible(clearLoopback);
@@ -37,7 +38,7 @@ SetupPage::SetupPage(AppModel& m, bool showDone) : model(m) {
         }, -20.f);
     };
     clearLoopback.onClick = [this] { model.clearLoopback(); };
-    splInstructions.setText("SPL calibration: fit a 1 kHz calibrator to the mic, or play a steady signal and enter its known level. Keep input gain unchanged after calibration.", dontSendNotification);
+    splInstructions.setText(String(foh::str::splCalibration) + ": fit a 1 kHz calibrator to the mic, or play a steady signal and enter its known level. Keep input gain unchanged after calibration.", dontSendNotification);
     splInstructions.setJustificationType(Justification::topLeft);
     addAndMakeVisible(splInstructions); addAndMakeVisible(splStatus);
     splReference.addItem("94 dB / 1 kHz", 1); splReference.addItem("114 dB / 1 kHz", 2); splReference.addItem("Known level", 3);
