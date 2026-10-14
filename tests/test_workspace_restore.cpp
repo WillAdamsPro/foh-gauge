@@ -151,3 +151,45 @@ TEST_CASE("Corrupt current workspace falls back to the previous saved layout", "
     WorkspaceManager loaded(temp.folder);
     REQUIRE(fohws::toJson(loaded.at(1)) == saved); REQUIRE_FALSE(loaded.loadErrors().isEmpty());
 }
+
+TEST_CASE("Display-list churn preserves floating state through transient empty lists", "[app][workspace][stress]") {
+    TemporaryWorkspaces temp;
+    const fohws::DisplayInfo main {"main", {100, 40, 1024, 700}, true};
+    const fohws::DisplayInfo external {"external", {-2560, -200, 2560, 1440}, false};
+    WorkspaceManager manager(temp.folder);
+    for (int index = 0; index < manager.count(); ++index) {
+        auto& workspace = manager.at(index);
+        std::vector<std::string> ids;
+        workspace.root.collectPanels(ids);
+        for (const auto& id : ids) {
+            auto neighbour = fohws::removePanel(workspace.root, id);
+            workspace.floating.push_back({id, {-2400, -100, 1800, 1000}, external.id, true, neighbour});
+        }
+    }
+    for (int cycle = 0; cycle < 64; ++cycle) {
+        for (int index = 0; index < manager.count(); ++index) {
+            for (auto& panel : manager.at(index).floating) {
+                // Simulate moving back to the external display, then unplugging
+                // during a workspace switch. Empty/invalid refreshes must not
+                // erase the last valid bounds or saved display identity.
+                panel.displayId = external.id;
+                panel.bounds = {-2400, -100, 1800, 1000};
+                const auto neighbour = panel.returnNeighbour;
+                CHECK(fohws::clampToDisplays(panel, {external, main}) == fohws::Rect {-2400, -100, 1800, 1000});
+                const auto before = panel.bounds;
+                CHECK(fohws::clampToDisplays(panel, {}) == before);
+                CHECK(fohws::clampToDisplays(panel, {{"transient", {}, true}}) == before);
+                CHECK(panel.displayId == external.id);
+                CHECK(fohws::clampToDisplays(panel, {main}) == fohws::Rect {100, 40, 1024, 700});
+                CHECK(panel.displayId == main.id);
+                CHECK(fohws::clampToDisplays(panel, {external, main}) == fohws::Rect {100, 40, 1024, 700});
+                CHECK(panel.alwaysOnTop);
+                CHECK(panel.returnNeighbour == neighbour);
+            }
+        }
+    }
+    manager.saveAll();
+    WorkspaceManager relaunched(temp.folder);
+    for (int index = 0; index < manager.count(); ++index)
+        CHECK(fohws::toJson(relaunched.at(index)) == fohws::toJson(manager.at(index)));
+}

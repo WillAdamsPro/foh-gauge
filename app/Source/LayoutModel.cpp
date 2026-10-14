@@ -23,7 +23,7 @@ bool LayoutNode::operator==(const LayoutNode& o) const {
     for (size_t i = 0; i < sizes.size(); ++i) if (std::fabs(sizes[i] - o.sizes[i]) > 1e-9) return false;
     return true;
 }
-void LayoutNode::collectPanels(std::vector<std::string>& out) const { if (kind == Leaf) out.push_back(panel); for (auto& c : children) c.collectPanels(out); }
+void LayoutNode::collectPanels(std::vector<std::string>& out) const { if (kind == Leaf && !panel.empty()) out.push_back(panel); for (auto& c : children) c.collectPanels(out); }
 bool LayoutNode::contains(const std::string& id) const { if (kind == Leaf) return panel == id; for (auto& c : children) if (c.contains(id)) return true; return false; }
 
 static void renorm(std::vector<double>& s) { double t = 0; for (double v : s) t += std::max(0.0, v); if (t <= 0) { for (auto& v : s) v = 1.0 / (double) s.size(); return; } for (auto& v : s) v = std::max(0.0, v) / t; }
@@ -142,7 +142,15 @@ static bool parseNode(const Json& j, LayoutNode& n, std::string& err, int depth,
     if (!j.isObject()) { err = "node is not an object"; return false; }
     auto t = j["type"].asString();
     n = {};
-    if (t == "leaf") { n.kind = LayoutNode::Leaf; n.panel = j["panel"].asString(); if (n.panel.empty()) { err = "leaf without panel"; return false; } return true; }
+    if (t == "leaf") {
+        n.kind = LayoutNode::Leaf; n.panel = j["panel"].asString();
+        // Removing/floating the last docked panel leaves an empty root leaf.
+        // It is a valid saved layout, but empty children and missing IDs are not.
+        if (j["panel"].type() != Json::String || (n.panel.empty() && depth != 0)) {
+            err = "leaf without panel"; return false;
+        }
+        return true;
+    }
     if (t != "tabs" && t != "split") { err = "unknown node type '" + t + "'"; return false; }
     n.kind = t == "tabs" ? LayoutNode::Tabs : LayoutNode::Split;
     if (!j["children"].isArray() || j["children"].items().empty()) { err = t + " without children"; return false; }

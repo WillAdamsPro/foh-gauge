@@ -1,5 +1,6 @@
 #include <catch2/catch_test_macros.hpp>
 #include "MainComponent.h"
+#include <thread>
 
 namespace {
 struct TemporaryWorkspaces {
@@ -16,8 +17,141 @@ public:
     int floatingCount() const { return floats.size(); }
     fohws::Workspace& workspace() { return mgr.at(current); }
     WorkspaceView& workspaceView() { return view; }
+    AppModel& appModel() { return model; }
+    using MainComponent::setShowMode;
+    int selectedWorkspace() const { return current; }
+    void clickSwitcher(int index) { switcher.setSelected(index, true); }
+    bool commandWorkspace(int index) {
+        const juce::KeyPress key('1' + index, juce::ModifierKeys::commandModifier, 0);
+        return presetCommands.commandManager().invokeDirectly(
+            presetCommands.keyMappings()->findCommandForKeyPress(key), false);
+    }
 };
 void drainMessages() { juce::MessageManager::getInstance()->runDispatchLoopUntil(30); }
+}
+
+TEST_CASE("Workspace switching and presentation changes preserve live analysis and window ownership", "[app][lifetime][stress][concurrent]") {
+    juce::ScopedJuceInitialiser_GUI initialise;
+    TemporaryWorkspaces temporary;
+    const auto peers = juce::Desktop::getInstance().getNumComponents();
+    {
+        TestMain main(temporary.folder);
+        main.setShowMode(false);
+        main.showWorkspace();
+        auto& model = main.appModel();
+        // Stop hardware I/O before introducing a single synthetic producer.
+        model.dm.removeAudioCallback(&model.engine);
+        model.dm.closeAudioDevice();
+        model.engine.micCh = 0; model.engine.refCh = 1;
+        model.engine.sampleRate = 48000;
+        model.engine.deviceFailed = false;
+        model.engine.state = AudioEngine::Ready;
+        // fohapp_tests uses the hardware-free AppModel stand-in from
+        // test_guide_panel.cpp. Run the real worker and deliver its snapshots
+        // explicitly rather than relying on that stand-in's inert timer.
+        model.analysis.start();
+        auto deliverSnapshot = [&] {
+            const auto& snapshot = model.analysis.latest();
+            model.tf = snapshot.tf; model.rtaDb = snapshot.rtaDb;
+            model.rtaBands = snapshot.rtaBands; model.conv = snapshot.convergence;
+            model.notify(AppModel::Snapshot | AppModel::Capture);
+        };
+        struct Producer {
+            AudioEngine& engine;
+            std::atomic<bool> done {false};
+            std::atomic<int> blocks {0};
+            std::thread worker;
+            explicit Producer(AudioEngine& e) : engine(e), worker([this] {
+                float signal[1024];
+                foh::PinkNoise noise(70); noise.process(signal, 1024);
+                const float* inputs[] {signal, signal};
+                while (!done.load()) {
+                    if (engine.micRing.available() < 4096 && engine.refRing.available() < 4096) {
+                        engine.audioDeviceIOCallbackWithContext(inputs, 2, nullptr, 0, 1024, {});
+                        ++blocks;
+                    }
+                    // Test pacing only; the production callback remains RT-safe.
+                    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                }
+            }) {}
+            ~Producer() { done = true; worker.join(); }
+        } producer(model.engine);
+        auto waitFor = [&](auto predicate) {
+            const auto deadline = juce::Time::getMillisecondCounterHiRes() + 5000;
+            while (!predicate() && juce::Time::getMillisecondCounterHiRes() < deadline) {
+                drainMessages(); deliverSnapshot();
+            }
+            return predicate();
+        };
+        REQUIRE(waitFor([&] { return model.tf.averages > 0; }));
+        const auto initialBlocks = producer.blocks.load();
+        std::map<std::string, Panel*> identities;
+        const char* floatingPanels[] {"SignalMeters", "TransferFunction", "RTA", "SPLNumbers"};
+        for (int cycle = 0; cycle < 48; ++cycle) {
+            const int index = cycle % 4;
+            INFO("switch " << cycle);
+            switch (cycle % 3) {
+                case 0: REQUIRE(main.commandWorkspace(index)); break;
+                case 1: main.clickSwitcher(index); break;
+                default:
+                    REQUIRE(main.keyPressed(juce::KeyPress(juce::KeyPress::tabKey,
+                        juce::ModifierKeys::ctrlModifier, 0)));
+                    break;
+            }
+            REQUIRE(main.selectedWorkspace() == index);
+            auto* panel = main.workspaceView().panel(floatingPanels[index]);
+            if (identities.count(floatingPanels[index])) CHECK(panel == identities.at(floatingPanels[index]));
+            else identities.emplace(floatingPanels[index], panel);
+            main.floatPanel(floatingPanels[index]);
+            REQUIRE(main.floatingCount() == 1);
+            CHECK(main.floating(0)->getContentComponent() == panel);
+            CHECK(panel->getParentComponent() == main.floating(0));
+            main.floating(0)->setPinned(cycle % 2 == 0);
+            main.floating(0)->parentSizeChanged();
+            main.setUiScale((cycle % 2 == 0) ? 200 : 100);
+            if (cycle % 4 == 0) {
+                model.capture.active = true;
+                model.capture.name = "Synthetic switch capture";
+                REQUIRE(model.analysis.send(foh::Command::resetAverages(cycle + 1)));
+                model.setAverages(16);
+            }
+            if (cycle % 4 == 3) {
+                juce::Component::SafePointer<FloatingPanelWindow> old = main.floating(0);
+                // Queued docking must expire when Show mode destroys its window.
+                main.floating(0)->onDock();
+                main.setShowMode(true);
+                CHECK(old == nullptr);
+                CHECK(main.floatingCount() == 0);
+                const auto saved = fohws::toJson(main.workspace()).dump();
+                CHECK_FALSE(main.keyPressed(juce::KeyPress(juce::KeyPress::tabKey,
+                    juce::ModifierKeys::ctrlModifier, 0)));
+                drainMessages();
+                CHECK(fohws::toJson(main.workspace()).dump() == saved);
+                REQUIRE(main.keyPressed(juce::KeyPress(juce::KeyPress::escapeKey)));
+                REQUIRE(main.floatingCount() == 1);
+            }
+            // Reverse cycling wraps too, then the top bar returns to this preset.
+            REQUIRE(main.keyPressed(juce::KeyPress(juce::KeyPress::tabKey,
+                juce::ModifierKeys::ctrlModifier | juce::ModifierKeys::shiftModifier, 0)));
+            CHECK(main.selectedWorkspace() == (index + 3) % 4);
+            main.clickSwitcher(index);
+            REQUIRE(main.floatingCount() == 1);
+            drainMessages();
+            deliverSnapshot();
+        }
+        REQUIRE(waitFor([&] { return model.analysis.latest().resetSeq == 45 && model.tf.averages > 0; }));
+        CHECK(producer.blocks.load() > initialBlocks);
+        CHECK(model.tf.averages > 0);
+        CHECK_FALSE(model.rtaDb.empty());
+        model.cancelSessionOperations();
+        main.setUiScale(100);
+        main.floating(0)->onClose(); // queued work also expires on shell teardown
+    }
+    drainMessages();
+    juce::Timer::callPendingTimersSynchronously();
+    foh::theme::ThemeManager::get().sendChangeMessage();
+    drainMessages();
+    CHECK(juce::Desktop::getInstance().getNumComponents() == peers);
 }
 
 TEST_CASE("Save Workspace As releases borrowed state before the manager grows", "[app][lifetime]") {
@@ -41,6 +175,41 @@ TEST_CASE("Save Workspace As releases borrowed state before the manager grows", 
     CHECK(main.workspace().root.contains("RTA"));
 }
 
+TEST_CASE("Floating panel keyboard focus keeps workspace cycling and scale shortcuts reachable", "[app][lifetime][workspace]") {
+    juce::ScopedJuceInitialiser_GUI initialise;
+    TemporaryWorkspaces temporary;
+    TestMain main(temporary.folder);
+    main.selectWorkspace("tuning");
+    main.showWorkspace();
+    main.floatPanel("RTA");
+    REQUIRE(main.floatingCount() == 1);
+    auto* window = main.floating(0);
+    window->panel.setWantsKeyboardFocus(true);
+    window->toFront(true);
+    window->panel.grabKeyboardFocus();
+    REQUIRE(window->panel.hasKeyboardFocus(true));
+    REQUIRE(window->getPeer()->handleKeyPress(juce::KeyPress('=', juce::ModifierKeys::commandModifier, 0)));
+    CHECK(main.uiScalePercent() == 125);
+    REQUIRE(window->getPeer()->handleKeyPress(juce::KeyPress(juce::KeyPress::tabKey, juce::ModifierKeys::ctrlModifier, 0)));
+    CHECK(main.selectedWorkspace() == 3);
+    main.floatPanel("SPLNumbers");
+    REQUIRE(main.floatingCount() == 1);
+    window = main.floating(0);
+    window->panel.setWantsKeyboardFocus(true);
+    window->toFront(true); window->panel.grabKeyboardFocus();
+    REQUIRE(window->getPeer()->handleKeyPress(juce::KeyPress(juce::KeyPress::tabKey,
+        juce::ModifierKeys::ctrlModifier | juce::ModifierKeys::shiftModifier, 0)));
+    CHECK(main.selectedWorkspace() == 2);
+    REQUIRE(main.floatingCount() == 1);
+    window = main.floating(0);
+    window->toFront(true); window->panel.grabKeyboardFocus();
+    REQUIRE(window->getPeer()->handleKeyPress(juce::KeyPress('0', juce::ModifierKeys::commandModifier, 0)));
+    CHECK(main.uiScalePercent() == 100);
+    REQUIRE(window->getPeer()->handleKeyPress(juce::KeyPress('1', juce::ModifierKeys::commandModifier, 0)));
+    drainMessages();
+    CHECK(main.selectedWorkspace() == 0);
+}
+
 TEST_CASE("Queued floating actions expire on workspace replacement and destruction", "[app][lifetime]") {
     juce::ScopedJuceInitialiser_GUI initialise;
     TemporaryWorkspaces temporary;
@@ -62,6 +231,46 @@ TEST_CASE("Queued floating actions expire on workspace replacement and destructi
     drainMessages();
 }
 
+TEST_CASE("Multiple floating windows release listeners before state-vector edits and teardown", "[app][lifetime][stress]") {
+    juce::ScopedJuceInitialiser_GUI initialise;
+    TemporaryWorkspaces temporary;
+    const auto peers = juce::Desktop::getInstance().getNumComponents();
+    {
+        TestMain main(temporary.folder);
+        main.selectWorkspace("tuning"); main.showWorkspace();
+        for (const auto* id : {"RTA", "TransferFunction", "Inspector"}) main.floatPanel(id);
+        REQUIRE(main.floatingCount() == 3);
+        std::vector<juce::Component::SafePointer<FloatingPanelWindow>> old;
+        for (int i = 0; i < 3; ++i) old.emplace_back(main.floating(i));
+        // Closing a middle entry must replace every window borrowing vector
+        // elements. Other already-queued actions must not affect replacements.
+        main.floating(1)->onClose();
+        main.floating(2)->onDock();
+        const auto deadline = juce::Time::getMillisecondCounterHiRes() + 2000;
+        while (main.floatingCount() == 3 && juce::Time::getMillisecondCounterHiRes() < deadline) drainMessages();
+        for (const auto& pointer : old) CHECK(pointer == nullptr);
+        REQUIRE(main.floatingCount() == 2);
+        CHECK(main.workspace().floating.size() == 2);
+        for (int i = 0; i < 2; ++i) {
+            auto* window = main.floating(i);
+            const auto id = window->panel.panelId();
+            window->setBounds(60 + i * 100, 60, 500, 300);
+            const auto& states = main.workspace().floating;
+            const auto state = std::find_if(states.begin(), states.end(), [&](const auto& s) { return s.panel == id; });
+            REQUIRE(state != states.end());
+            CHECK(state->bounds.x == window->getX());
+            window->onDock();
+        }
+        main.selectWorkspace("alignment");
+        drainMessages();
+        main.selectWorkspace("tuning");
+        REQUIRE(main.floatingCount() == 2);
+        main.appModel().notify(AppModel::Snapshot | AppModel::Settings | AppModel::Capture);
+    }
+    drainMessages();
+    CHECK(juce::Desktop::getInstance().getNumComponents() == peers);
+}
+
 TEST_CASE("Embedded font references are released with the look and feel", "[app][lifetime]") {
     juce::ScopedJuceInitialiser_GUI initialise;
     juce::Typeface::Ptr regular, semibold, bold;
@@ -75,6 +284,28 @@ TEST_CASE("Embedded font references are released with the look and feel", "[app]
     CHECK(regular->getReferenceCount() == 1);
     CHECK(semibold->getReferenceCount() == 1);
     CHECK(bold->getReferenceCount() == 1);
+}
+
+TEST_CASE("Plots skip painting when workspace sizing leaves no plot area", "[app][workspace]") {
+    juce::ScopedJuceInitialiser_GUI initialise;
+    PlotComponent plot;
+    plot.bars = true;
+    plot.series.push_back({{100, 1000}, {-30, -20}, juce::Colours::white});
+    plot.barLo = {80, 800}; plot.barHi = {120, 1200};
+    for (bool legend : {false, true}) {
+        plot.showLegend = legend;
+        for (const auto size : {juce::Point<int>{0, 0}, {1, 1}, {60, 100}, {100, 32}}) {
+            plot.setSize(size.x, size.y);
+            juce::Image image(juce::Image::ARGB, 120, 120, true);
+            juce::Graphics graphics(image); plot.paint(graphics);
+            CHECK(image.getPixelAt(50, 10).getAlpha() == 0);
+            CHECK(image.getPixelAt(1, 1).getAlpha() == 0);
+        }
+    }
+    plot.setSize(120, 120);
+    juce::Image image(juce::Image::ARGB, 120, 120, true);
+    juce::Graphics graphics(image); plot.paint(graphics);
+    CHECK(image.getPixelAt(50, 10).getAlpha() != 0);
 }
 
 TEST_CASE("Session replacement destroys windows before replacing their borrowed state", "[app][lifetime]") {
@@ -99,6 +330,9 @@ TEST_CASE("Session replacement destroys windows before replacing their borrowed 
     REQUIRE(main.readSession(session));
     // Session open must return before its asynchronous device/rig fallback notice
     // is dismissed, including when JUCE modal loops are enabled.
+    // Let the async notice enter modal state before cancelling it; cancelling
+    // before its AsyncUpdater runs leaves an unmanaged alert alive at shutdown.
+    drainMessages();
     juce::ModalComponentManager::getInstance()->cancelAllModalComponents();
     drainMessages();
     main.selectWorkspace("rta-show");
