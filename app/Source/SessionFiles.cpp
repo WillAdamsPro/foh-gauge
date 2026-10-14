@@ -7,6 +7,7 @@ PopupMenu MainComponent::getFileMenu(ApplicationCommandManager& commands) {
         menu.addCommandItem(&commands, id);
 #if FOH_CONSOLE_CONTROL
     menu.addCommandItem(&commands, consoleControlCommand);
+    menu.addCommandItem(&commands, sqConsoleCommand);
 #endif
     return menu;
 }
@@ -15,10 +16,14 @@ void MainComponent::getAllCommands(Array<CommandID>& commands) {
         commands.add(id);
 #if FOH_CONSOLE_CONTROL
     commands.add(consoleControlCommand);
+    commands.add(sqConsoleCommand);
 #endif
 }
 void MainComponent::getCommandInfo(CommandID id, ApplicationCommandInfo& info) {
     switch (id) {
+        case sqConsoleCommand:
+            info.setInfo("SQ Console...", "Review SQ PEQ and output delay corrections", "File", 0);
+            break;
         case consoleControlCommand:
             info.setInfo("Console Control...", "Read and review console EQ and delay changes", "File", 0);
             break;
@@ -39,9 +44,17 @@ void MainComponent::getCommandInfo(CommandID id, ApplicationCommandInfo& info) {
 }
 bool MainComponent::perform(const InvocationInfo& info) {
     switch (info.commandID) {
+#if FOH_CONSOLE_CONTROL
         case consoleControlCommand:
             if (!consoleWindow) consoleWindow = std::make_unique<foh::console::ConsoleWindow>();
             consoleWindow->setVisible(true); consoleWindow->toFront(true); return true;
+        case sqConsoleCommand:
+            if (!sqConsoleWindow) {
+                sqConsoleWindow = std::make_unique<foh::sq::SqConsoleWindow>();
+                if (!consoleSession.isNull()) sqConsoleWindow->panel().restoreSession(consoleSession);
+            }
+            sqConsoleWindow->setVisible(true); sqConsoleWindow->toFront(true); return true;
+#endif
         case openSessionCommand: openSession(); return true;
         case saveSessionCommand: saveSession(false); return true;
         case saveSessionAsCommand: saveSession(true); return true;
@@ -88,6 +101,9 @@ bool MainComponent::writeSession(const File& folder) {
     view.storePanelStates();
     if (current >= 0) s.workspace = fohws::toJson(mgr.at(current));
     s.measurement.set("smoothing", model.smoothingFraction); s.measurement.set("averages", model.averages); s.measurement.set("rtaFraction", model.rtaFraction); s.measurement.set("blankThreshold", model.blankThreshold); s.measurement.set("refDelayMs", model.lockedDelayMs); s.measurement.set("showMode", showMode);
+#if FOH_CONSOLE_CONTROL
+    s.measurement.set("sqConsole", sqConsoleWindow ? sqConsoleWindow->panel().sessionState() : consoleSession);
+#endif
     std::string error;
     if (!foh::saveSession(folder.getFullPathName().toStdString(), s, error)) {
         showSessionNotice("Session save failed", String(error)); return false;
@@ -107,6 +123,10 @@ bool MainComponent::readSession(const File& folder) {
     if (!foh::loadSession(folder.getFullPathName().toStdString(), s, error, &notice) || !fohws::fromJson(s.workspace, workspace, error)) {
         showSessionNotice("Session open failed", String(error)); return false;
     }
+#if FOH_CONSOLE_CONTROL
+    consoleSession = s.measurement["sqConsole"];
+    if (sqConsoleWindow) sqConsoleWindow->panel().restoreSession(consoleSession);
+#endif
     // Device enumeration and all file operations run on the message thread.
     AudioIODeviceType* type = nullptr;
     for (auto* candidate : model.dm.getAvailableDeviceTypes()) if (candidate->getTypeName().toStdString() == s.deviceType) type = candidate;

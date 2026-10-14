@@ -3,6 +3,9 @@
 #pragma once
 #include "FloatingPanels.h"
 #include "console/ConsoleWindow.h"
+#if FOH_CONSOLE_CONTROL
+#include "SqConsoleWindow.h"
+#endif
 #include <fohcore/session.h>
 #include "SetupPage.h"
 #include "WorkspaceManager.h"
@@ -12,7 +15,7 @@ class MainComponent : public juce::Component, public juce::ApplicationCommandTar
 public:
     explicit MainComponent(juce::File workspaceFolder = WorkspaceManager::defaultFolder());
     ~MainComponent() override;
-    enum : juce::CommandID { openSessionCommand = 0x3000, saveSessionCommand, saveSessionAsCommand, consoleControlCommand };
+    enum : juce::CommandID { openSessionCommand = 0x3000, saveSessionCommand, saveSessionAsCommand, consoleControlCommand, sqConsoleCommand };
     juce::PopupMenu getFileMenu(juce::ApplicationCommandManager&);
     juce::ApplicationCommandTarget* getNextCommandTarget() override { return nullptr; }
     void getAllCommands(juce::Array<juce::CommandID>&) override;
@@ -58,7 +61,11 @@ protected:
     int uiScale = 100;
     juce::File sessionFolder;
     std::unique_ptr<juce::FileChooser> sessionChooser;
+#if FOH_CONSOLE_CONTROL
     std::unique_ptr<foh::console::ConsoleWindow> consoleWindow;
+    std::unique_ptr<foh::sq::SqConsoleWindow> sqConsoleWindow;
+    foh::Json consoleSession;
+#endif
     std::optional<foh::Json> sessionTargets;
     // Session notices must also close when their owning UI is destroyed.
     juce::ScopedMessageBox sessionNotice;

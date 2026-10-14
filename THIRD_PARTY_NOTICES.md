@@ -935,3 +935,34 @@ splash) are original work by
 Will Adams, Copyright (c) 2026 Will Adams. All rights reserved.
 Synthetic test signals and fixtures are generated or authored within this project
 and are not shipped. No imported measurement or calibration data is included.
+
+## SQ protocol cross-check — allen-heath-sq-tools (MIT)
+
+Source: https://github.com/hrueger/allen-heath-sq-tools
+SQ parameter/register tables originate in Will's wire captures, as summarized
+in docs/console/sq-protocol.md, and were cross-checked against this project.
+No Allen & Heath application binaries or code are incorporated. The following
+notice credits the upstream protocol reference; the optional implementation
+under src/console/sq is first-party C++.
+
+MIT License
+
+Copyright (c) 2024 Hannes Rüger
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.

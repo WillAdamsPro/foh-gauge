@@ -16,10 +16,10 @@ ALLOWED = frozenset({'MIT', 'BSD-2-Clause', 'BSD-3-Clause', 'BSL-1.0',
 MEDIA = frozenset('ttf otf woff woff2 ttc eot dfont fnt png jpg jpeg gif svg webp bmp ico icns tif tiff avif heic heif jxl psd xcf dds tga exr hdr pdf wav aif aiff aifc mp3 mp2 flac ogg opus m4a aac caf wma snd au bwf weba mid midi mp4 mov'.split())
 CODE = frozenset('c cc cpp cxx h hh hpp hxx m mm inc py js ts swift go rs java cs lua sh'.split())
 FIRST_PARTY = frozenset({'app/Source', 'app/Source/console', 'core/src',
-                         'core/include/fohcore', 'tests', 'tests/roomsim', 'scripts', 'tools'})
+                         'core/include/fohcore', 'tests', 'tests/roomsim', 'scripts', 'tools', 'src/console/sq'})
 FIRST_PARTY_DIRS = FIRST_PARTY | frozenset({'.', '.github/workflows', 'app',
     'app/Resources/Fonts', 'core', 'core/include', 'resources', 'resources/targets',
-    'tests/data', 'docs', 'compliance'})
+    'tests/data', 'tests/fixtures/sq', 'docs', 'docs/console', 'compliance'})
 VENDOR_NAMES = frozenset({'vendor', 'vendored', 'third_party', 'third-party', 'thirdparty',
                           'external', 'extern', 'deps', 'dependencies', 'libs', 'submodules'})
 
