@@ -72,7 +72,7 @@ struct WorkspaceView::Slot : WorkspaceView::Node {
                     bool ch = hover.what == TabClose && hover.tab == i; drawButtonState(g, cr, ch, ch && down.what == TabClose);
                     drawCloseGlyph(g, cr, ch ? WS::closeHover(t) : t.text.axis, 6); } }
             if (firstHidden >= 0) { auto o = overflowBtn().toFloat(); drawButtonState(g, o, hover.what == Overflow, down.what == Overflow);
-                g.setColour(hover.what == Overflow ? t.text.primary : t.text.axis); g.setFont(FohLookAndFeel::font(13)); g.drawText(u8("\xc2\xbb"), o, Justification::centred); }
+                g.setColour(hover.what == Overflow ? t.text.primary : t.text.axis); g.setFont(FohLookAndFeel::font(foh::theme::type::body)); g.drawText(u8("\xc2\xbb"), o, Justification::centred); }
         }
         if (focusedSlot) { g.setColour(t.accent); g.fillRect(h.getX(), h.getY(), 2, h.getHeight()); } // focus indicator (title also turns primary)
         bool canFloat = (bool) v.onFloatRequested;
@@ -112,7 +112,7 @@ struct WorkspaceView::Splitter : Component {
         if (horizontal) g.fillRect((getWidth() - w) / 2.f, 0.f, w, (float) getHeight()); else g.fillRect(0.f, (getHeight() - w) / 2.f, (float) getWidth(), w);
         if (dragging) if (auto* n = v.nodeAt(v.display, path)) { // live size readout pill
             int px = roundToInt(n->sizes[index] * extent); String s = String(roundToInt(n->sizes[index] * 100)) + u8("% \xc2\xb7 ") + String(px) + " px";
-            g.setFont(FohLookAndFeel::font(11, false, true)); int tw = roundToInt(g.getCurrentFont().getStringWidthFloat(s)) + 12;
+            g.setFont(FohLookAndFeel::font(foh::theme::type::caption, false, true)); int tw = roundToInt(g.getCurrentFont().getStringWidthFloat(s)) + 12;
             Rectangle<float> pill = horizontal ? Rectangle<float>((float) getWidth() / 2 - tw / 2.f, 8, (float) tw, 18) : Rectangle<float>(8, (float) getHeight() / 2 - 9, (float) tw, 18);
             g.setColour(t.accent); g.fillRoundedRectangle(pill, 4.f); g.setColour(t.text.onAccent); g.drawText(s, pill, Justification::centred); }
     }

@@ -11,6 +11,16 @@ namespace C = foh::ui::col;
 namespace D = foh::ui::dim;
 namespace T = foh::theme::type;
 
+juce::String foh::theme::systemFontName() {
+   #if JUCE_MAC
+    return juce::String::fromUTF8([[NSFont systemFontOfSize: NSFont.systemFontSize].familyName UTF8String]);
+   #elif JUCE_WINDOWS
+    return "Segoe UI";
+   #else
+    return juce::Font::getDefaultSansSerifFontName();
+   #endif
+}
+
 // ===================== Look and feel =====================
 FohLookAndFeel::FohLookAndFeel() {
 #ifdef FOH_HAS_FONTS
@@ -23,16 +33,17 @@ FohLookAndFeel::FohLookAndFeel() {
     applyTheme();
 }
 void FohLookAndFeel::applyTheme() {
+    appliedLight = foh::ui::theme().isLight;
     setColour(ResizableWindow::backgroundColourId, C::background());
     setColour(Label::textColourId, C::textPrimary());
-    setColour(TextButton::buttonColourId, C::pillBackground()); setColour(TextButton::textColourOffId, C::textBody());
+    setColour(TextButton::buttonColourId, C::controlBackground()); setColour(TextButton::textColourOffId, C::textBody());
     setColour(TextButton::buttonOnColourId, C::navItemActiveBg()); setColour(TextButton::textColourOnId, C::textStrong());
-    setColour(ComboBox::backgroundColourId, C::pillBackground()); setColour(ComboBox::outlineColourId, C::pillBorder()); setColour(ComboBox::textColourId, C::textBody());
+    setColour(ComboBox::backgroundColourId, C::controlBackground()); setColour(ComboBox::outlineColourId, C::pillBorder()); setColour(ComboBox::textColourId, C::textBody());
     setColour(PopupMenu::backgroundColourId, C::cardBackground()); setColour(ListBox::backgroundColourId, C::cardBackground());
     setColour(Slider::thumbColourId, C::accent()); setColour(Slider::trackColourId, C::divider());
     setColour(Slider::textBoxTextColourId, C::textPrimary()); setColour(Slider::textBoxBackgroundColourId, C::pillBackground()); setColour(Slider::textBoxOutlineColourId, C::pillBorder());
     setColour(ComboBox::arrowColourId, C::textSecondary()); setColour(PopupMenu::textColourId, C::textPrimary()); setColour(PopupMenu::highlightedBackgroundColourId, C::accent()); setColour(PopupMenu::highlightedTextColourId, C::textOnAccent());
-    setColour(TextEditor::backgroundColourId, C::pillBackground()); setColour(TextEditor::textColourId, C::textPrimary()); setColour(TextEditor::outlineColourId, C::pillBorder());
+    setColour(TextEditor::backgroundColourId, C::controlBackground()); setColour(TextEditor::textColourId, C::textPrimary()); setColour(TextEditor::outlineColourId, C::pillBorder());
     setColour(ListBox::textColourId, C::textPrimary()); setColour(ToggleButton::textColourId, C::textPrimary()); setColour(ToggleButton::tickColourId, C::accent());
 }
 AlertWindow* FohLookAndFeel::createAlertWindow(const String& title, const String& message,
@@ -49,7 +60,7 @@ AlertWindow* FohLookAndFeel::createAlertWindow(const String& title, const String
     return alert;
 }
 Typeface::Ptr FohLookAndFeel::getTypefaceForFont(const Font& f) {
-    // Embedded Inter only when a (deprecated) theme asks for it; Apple-pro themes use the system UI font (SF Pro / Segoe UI).
+    // The bundled Inter typeface remains available as a fallback; live UI uses the system font.
     if (regular != nullptr && foh::ui::uiFontName() == "Inter" && f.getTypefaceName() == "Inter") {
         auto st = f.getTypefaceStyle();
         if (st.containsIgnoreCase("Bold")) return bold;
@@ -58,18 +69,37 @@ Typeface::Ptr FohLookAndFeel::getTypefaceForFont(const Font& f) {
     }
     return LookAndFeel_V4::getTypefaceForFont(f);
 }
-Font FohLookAndFeel::numeric(float size, bool b) {
-   #if JUCE_MAC
-    String mono = "Menlo";      // SF Mono isn't addressable by name; Menlo has fixed-width digits
-   #elif JUCE_WINDOWS
-    String mono = "Consolas";
-   #else
-    String mono = Font::getDefaultMonospacedFontName();
-   #endif
-    return Font(FontOptions(mono, size, b ? Font::bold : Font::plain));
+void FohLookAndFeel::refreshThemeFonts(juce::Component& root) {
+    const auto oldSizes = (appliedLight ? foh::theme::proSunlight() : foh::theme::proDark()).type.sizes;
+    const auto& newSizes = foh::ui::theme().type.sizes;
+    auto refresh = [&](Font f) {
+        for (size_t i = 0; i < oldSizes.size(); ++i)
+            if (std::abs(f.getHeight() - oldSizes[i]) < 0.01f) return f.withHeight(newSizes[i]);
+        return f;
+    };
+    if (auto* label = dynamic_cast<Label*>(&root)) label->setFont(refresh(label->getFont()));
+    if (auto* editor = dynamic_cast<TextEditor*>(&root)) editor->applyFontToAllText(refresh(editor->getFont()));
+    for (auto* child : root.getChildren()) refreshThemeFonts(*child);
 }
-Font FohLookAndFeel::font(float size, bool b, bool sb) {
-    return Font(FontOptions(foh::ui::uiFontName(), size, Font::plain).withStyle(b ? "Bold" : sb ? "Semibold" : "Regular"));
+Font FohLookAndFeel::numeric(foh::theme::type::Role role, bool b) {
+    auto mono = foh::ui::theme().type.numeric;
+    if (mono.isEmpty()) {
+       #if JUCE_MAC
+        static const String macMono = Font::findAllTypefaceNames().contains("SF Mono") ? "SF Mono" : "Menlo";
+        mono = macMono;
+       #elif JUCE_WINDOWS
+        mono = "Consolas";
+       #else
+        mono = Font::getDefaultMonospacedFontName();
+       #endif
+    }
+    return Font(FontOptions(mono, foh::ui::theme().type.sizes[role], Font::plain).withStyle(b ? "Bold" : "Medium"));
+}
+Font FohLookAndFeel::font(foh::theme::type::Role role, bool b, bool sb) {
+    if (role == T::valueMd || role == T::valueLg) return numeric(role, b);
+    const auto style = (role == T::title || role == T::heading) ? "Semibold" : b ? "Bold" : sb ? "Semibold"
+        : role == T::label ? "Medium" : "Regular";
+    return Font(FontOptions(foh::ui::uiFontName(), foh::ui::theme().type.sizes[role], Font::plain).withStyle(style));
 }
 void FohLookAndFeel::drawButtonBackground(Graphics& g, Button& b, const Colour& bgc, bool over, bool down) {
     auto r = b.getLocalBounds().toFloat().reduced(0.5f);
@@ -101,17 +131,17 @@ void PlotComponent::paint(Graphics& g) {
     };
     auto pr = Rectangle<float>((float) plotX(), (float) plotY(), (float) plotW(), (float) plotH());
     g.setColour(C::plotWell()); g.fillRect(pr); // A2: darker plot well
-    g.setFont(FohLookAndFeel::font(T::axisTick));
+    g.setFont(FohLookAndFeel::font(T::caption));
     for (auto& s : shade) { if (!validRange(s.first, s.second)) continue; float a = xOf(s.first), b = xOf(s.second); g.setColour(C::accent().withAlpha(C::crossoverBandAlpha())); g.fillRect(a, pr.getY(), b - a, pr.getHeight());
-        if (shadeLabel.isNotEmpty()) { g.setColour(C::accent()); g.setFont(FohLookAndFeel::font(T::label)); g.drawText(shadeLabel, (int) a - 40, (int) pr.getY() + 10, (int) (b - a) + 80, 14, Justification::centred); g.setFont(FohLookAndFeel::font(T::axisTick)); } }
+        if (shadeLabel.isNotEmpty()) { g.setColour(C::accent()); g.setFont(FohLookAndFeel::font(T::label)); g.drawText(shadeLabel, (int) a - 40, (int) pr.getY() + 10, (int) (b - a) + 80, 14, Justification::centred); g.setFont(FohLookAndFeel::font(T::caption)); } }
     for (auto& a : annotations) { if (!validRange(a.lo, a.hi)) continue; float x0 = xOf(a.lo), x1 = xOf(a.hi); // layout-spec: warning @ annotationBandAlpha, label at band right + 6, y 30
         g.setColour(C::warning().withAlpha(C::annotationBandAlpha())); g.fillRect(x0, pr.getY(), x1 - x0, pr.getHeight());
-        if (a.label.isNotEmpty()) { g.setColour(C::warning()); g.setFont(FohLookAndFeel::font(T::label)); g.drawText(a.label, (int) x1 + 6, (int) pr.getY() + 30 - 7, 160, 14, Justification::left); g.setFont(FohLookAndFeel::font(T::axisTick)); } }
-    if (showLegend) { int x = plotX() + 14; int y = (int) pr.getBottom() + 24 + 4; g.setFont(FohLookAndFeel::font(T::small));
+        if (a.label.isNotEmpty()) { g.setColour(C::warning()); g.setFont(FohLookAndFeel::font(T::label)); g.drawText(a.label, (int) x1 + 6, (int) pr.getY() + 30 - 7, 160, 14, Justification::left); g.setFont(FohLookAndFeel::font(T::caption)); } }
+    if (showLegend) { int x = plotX() + 14; int y = (int) pr.getBottom() + 24 + 4; g.setFont(FohLookAndFeel::font(T::body));
         for (auto& s : series) { if (s.label.isEmpty()) continue; g.setColour(s.c);
             if (s.dash) { for (int k = 0; k < 18; k += 6) g.fillRect((float) x + k, (float) y + 7, 4.f, s.width); } else g.fillRect((float) x, (float) y + 7, 18.f, s.width);
             int tw = GlyphArrangement::getStringWidthInt(g.getCurrentFont(), s.label); g.setColour(C::textBody()); g.drawText(s.label, x + 24, y, tw + 4, 16, Justification::left); x += 24 + tw + 18; }
-        g.setFont(FohLookAndFeel::font(T::axisTick)); }
+        g.setFont(FohLookAndFeel::font(T::caption)); }
     g.setColour(C::border());
     for (double f : {20., 50., 100., 200., 500., 1000., 2000., 5000., 10000., 20000.}) { if (f < fMin || f > fMax) continue;
         float x = xOf(f); g.drawVerticalLine((int) x, pr.getY(), pr.getBottom());
@@ -119,12 +149,12 @@ void PlotComponent::paint(Graphics& g) {
     // Bound tick work even for corrupt saved ranges or a step too small to advance.
     for (int tick = 0; tick < 256; ++tick) { double v = yMin + tick * yStep; if (!std::isfinite(v) || v > yMax) break; float y = yOf(v); g.drawHorizontalLine((int) y, pr.getX(), pr.getRight());
         g.setColour(C::textAxis()); g.drawText(yStep < 1 ? String(v, 1) : String(v, 0), 0, (int) y - 7, plotX() - 6, 14, Justification::right); g.setColour(C::border()); }
-    if (note.isNotEmpty()) { g.setColour(C::textAxis()); g.drawText(note, (int) pr.getRight() - 300, (int) pr.getY() + 2, 296, 14, Justification::right); }
-    if (centreNote.isNotEmpty()) { g.setColour(C::textAxis()); g.setFont(FohLookAndFeel::font(T::small)); g.drawText(centreNote, (int) xOf(1500) - 120, (int) pr.getCentreY() - 8, 240, 16, Justification::centred); }
+    if (note.isNotEmpty()) { g.setColour(C::textSecondary()); g.setFont(FohLookAndFeel::font(T::caption)); g.drawText(note, (int) pr.getRight() - 300, (int) pr.getY() + 2, 296, 14, Justification::right); }
+    if (centreNote.isNotEmpty()) { g.setColour(C::textSecondary()); g.setFont(FohLookAndFeel::font(T::body)); g.drawText(centreNote, (int) xOf(1500) - 120, (int) pr.getCentreY() - 8, 240, 16, Justification::centred); }
     if (exampleData) { // top-right, ~103x20, 11 px warning text, 1 px warning border, radius 4 (layout-spec)
         auto tag = Rectangle<float>(pr.getRight() - 109, pr.getY() + 6, 103, 20);
         g.setColour(C::warning()); g.drawRoundedRectangle(tag.reduced(0.5f), D::radiusTag(), D::hairline());
-        g.setFont(FohLookAndFeel::font(T::axisTick, false, true)); g.drawText("EXAMPLE DATA", tag, Justification::centred); g.setFont(FohLookAndFeel::font(T::axisTick)); }
+        g.setFont(FohLookAndFeel::font(T::caption, false, true)); g.drawText("EXAMPLE DATA", tag, Justification::centred); g.setFont(FohLookAndFeel::font(T::caption)); }
     if (!lowCoh.empty()) { auto hc = C::textAxis().withAlpha(foh::ui::theme().trace.lowCoherenceHatchAlpha);
         if (hatchTile.isNull() || hatchFor != hc) { hatchFor = hc; hatchTile = Image(Image::ARGB, 8, 8, true); Graphics hg(hatchTile); hg.setColour(hc);
             hg.drawLine(0, 8, 8, 0, 1.0f); hg.drawLine(-4, 4, 4, -4, 1.0f); hg.drawLine(4, 12, 12, 4, 1.0f); }
@@ -140,9 +170,9 @@ void PlotComponent::paint(Graphics& g) {
             g.setColour(C::cardBackground()); g.fillRoundedRectangle(box, D::radiusButton());
             g.setColour(C::warning()); g.drawRoundedRectangle(box.reduced(0.5f), D::radiusButton(), 1.0f);
             auto ic = Rectangle<float>(box.getX() + 10, box.getCentreY() - 7, 14, 13); Path t; t.addTriangle(ic.getCentreX(), ic.getY(), ic.getRight(), ic.getBottom(), ic.getX(), ic.getBottom()); g.fillPath(t);
-            g.setColour(C::textPrimary()); g.setFont(FohLookAndFeel::font(T::small, true)); g.drawText("Low coherence: don't EQ here", (int) box.getX() + 32, (int) box.getY() + 5, 172, 16, Justification::left);
-            g.setColour(C::textSecondary()); g.setFont(FohLookAndFeel::font(T::axisTick)); g.drawText("Likely a reflection at the mic", (int) box.getX() + 32, (int) box.getY() + 21, 172, 14, Justification::left);
-            g.setFont(FohLookAndFeel::font(T::axisTick)); } }
+            g.setColour(C::textPrimary()); g.setFont(FohLookAndFeel::font(T::body, true)); g.drawText("Low coherence: don't EQ here", (int) box.getX() + 32, (int) box.getY() + 5, 172, 16, Justification::left);
+            g.setColour(C::textSecondary()); g.setFont(FohLookAndFeel::font(T::caption)); g.drawText("Likely a reflection at the mic", (int) box.getX() + 32, (int) box.getY() + 21, 172, 14, Justification::left);
+            g.setFont(FohLookAndFeel::font(T::caption)); } }
     Graphics::ScopedSaveState ss(g); g.reduceClipRegion(pr.toNearestInt());
     for (const auto& band : toleranceBands) {
         if (band.f.size() < 2 || band.lower.size() != band.f.size() || band.upper.size() != band.f.size()) continue;
@@ -196,7 +226,7 @@ void logDecimate(const foh::TFResult& r, const std::vector<double>& v, std::vect
 // ===================== Impulse =====================
 void ImpulseComponent::paint(Graphics& g) {
     auto r = getLocalBounds().toFloat().reduced(8, 6); auto axis = r.removeFromBottom(14);
-    g.setFont(FohLookAndFeel::font(T::axisTick));
+    g.setFont(FohLookAndFeel::font(T::caption));
     if (res.arrivals.empty() || res.impulse.empty()) { g.setColour(C::textAxis()); g.drawText("Impulse: press Measure sweep or Find delay", r, Justification::centred); return; }
     double t0 = std::max(0.0, res.arrivals[0].delayMs - preMs), t1 = res.arrivals[0].delayMs + postMs;
     for (auto& a : res.arrivals) t1 = std::max(t1, a.delayMs + 2);
@@ -240,7 +270,7 @@ void SegmentedControl::paint(Graphics& g) {
     g.setColour(C::pillBackground()); g.fillRoundedRectangle(r, rad);
     g.setColour(C::border()); g.drawRoundedRectangle(r, rad, D::hairline());
     float w = r.getWidth() / (float) jmax(1, labels.size());
-    g.setFont(FohLookAndFeel::font(T::small, false, true));
+    g.setFont(FohLookAndFeel::font(T::body, false, true));
     for (int i = 0; i < labels.size(); ++i) { auto seg = Rectangle<float>(r.getX() + i * w, r.getY(), w, r.getHeight());
         if (i == sel) { g.setColour(foh::ui::theme().isLight ? C::cardBackground() : C::textPrimary().withAlpha(0.22f)); g.fillRoundedRectangle(seg.reduced(2), rad - 1);
                         g.setColour(C::border()); g.drawRoundedRectangle(seg.reduced(2), rad - 1, D::hairline()); }
@@ -271,7 +301,7 @@ void NavButton::paintButton(Graphics& g, bool over, bool) {
 
 // ===================== Status pills =====================
 void StatusPills::paint(Graphics& g) {
-    auto f = FohLookAndFeel::font(T::small); g.setFont(f); float x = 0, h = 30, y = (getHeight() - h) * 0.5f;
+    auto f = FohLookAndFeel::font(T::body); g.setFont(f); float x = 0, h = 30, y = (getHeight() - h) * 0.5f;
     for (auto& p : pills) {
         float tw = (float) GlyphArrangement::getStringWidthInt(f, p.text), w = 12 + (p.state >= 0 ? 8 + 6 : 0) + tw + 12;
         if (x + w > getWidth()) break;
@@ -304,10 +334,10 @@ void HelpPanel::paint(Graphics& g) {
     g.fillAll(C::helperBackground());
     g.setColour(overlay ? C::cardBorderEmphasis() : C::border()); g.fillRect(0.f, 0.f, D::hairline(), (float) getHeight());
     auto r = getLocalBounds().reduced(14, 0).withTrimmedTop(12);
-    g.setColour(C::textSecondary()); g.setFont(FohLookAndFeel::font(T::axisTick, true)); g.drawText(caption, r.removeFromTop(18), Justification::left); r.removeFromTop(6);
+    g.setColour(C::textSecondary()); g.setFont(FohLookAndFeel::font(T::caption, true)); g.drawText(caption, r.removeFromTop(18), Justification::left); r.removeFromTop(6);
     for (size_t i = 0; i < sections.size(); ++i) { auto& hd = sections[i].first; auto& body = sections[i].second;
         if (i) { g.setColour(C::border()); g.fillRect(0.f, (float) r.getY(), (float) getWidth(), D::hairline()); r.removeFromTop(12); }
-        g.setColour(C::textPrimary()); g.setFont(FohLookAndFeel::font(i == 0 ? T::body + 1 : T::body, true)); g.drawText(hd, r.removeFromTop(20), Justification::left); r.removeFromTop(2);
+        g.setColour(C::textPrimary()); g.setFont(FohLookAndFeel::font(i == 0 ? T::title : T::body, true)); g.drawText(hd, r.removeFromTop(20), Justification::left); r.removeFromTop(2);
         AttributedString as; as.append(body, FohLookAndFeel::font(T::body), C::textSecondary()); as.setLineSpacing(3.0f);
         TextLayout tl; tl.createLayout(as, (float) r.getWidth()); auto bh = (int) std::ceil(tl.getHeight());
         tl.draw(g, r.removeFromTop(bh).toFloat()); r.removeFromTop(12);

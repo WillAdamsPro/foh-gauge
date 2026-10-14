@@ -90,6 +90,11 @@ private:
 class FohLookAndFeel : public juce::LookAndFeel_V4 {
 public:
     FohLookAndFeel();
+    juce::Font getTextButtonFont(juce::TextButton&, int) override { return font(foh::theme::type::label); }
+    juce::Font getComboBoxFont(juce::ComboBox&) override { return font(foh::theme::type::label); }
+    juce::Font getPopupMenuFont() override { return font(foh::theme::type::body); }
+    void refreshThemeFonts(juce::Component&);
+    bool appliedLight = false;
     void applyTheme(); // re-read ColourIds from the current Theme
     juce::Typeface::Ptr getTypefaceForFont(const juce::Font&) override;
     juce::AlertWindow* createAlertWindow(const juce::String& title, const juce::String& message,
@@ -97,8 +102,8 @@ public:
         juce::MessageBoxIconType icon, int numButtons, juce::Component* associated) override;
     void drawButtonBackground(juce::Graphics&, juce::Button&, const juce::Colour&, bool, bool) override;
     void drawDocumentWindowTitleBar(juce::DocumentWindow&, juce::Graphics&, int w, int h, int titleSpaceX, int titleSpaceW, const juce::Image*, bool drawTitleTextOnLeft) override; // floating panel chrome (ws spec §5)
-    static juce::Font font(float size, bool bold = false, bool semibold = false);
-    static juce::Font numeric(float size, bool bold = true); // readouts: monospaced digits (no OpenType tnum in JUCE)
+    static juce::Font font(foh::theme::type::Role size, bool bold = false, bool semibold = false);
+    static juce::Font numeric(foh::theme::type::Role size, bool bold = false); // readouts: monospaced digits (no OpenType tnum in JUCE)
     // Release bundled typefaces with the UI, before JUCE tears down CoreText.
     juce::Typeface::Ptr regular, semibold, bold;
 };

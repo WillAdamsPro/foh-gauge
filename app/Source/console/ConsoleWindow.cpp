@@ -1,4 +1,5 @@
 #include "ConsoleWindow.h"
+#include "../ThemeBridge.h"
 #include <cstdlib>
 #if JUCE_MAC
 #import <AppKit/AppKit.h>
@@ -40,7 +41,7 @@ void ConsolePanel::Worker::run() {
 }
 ConsolePanel::ConsolePanel() : control([this](const Bytes& b) { return worker && worker->enqueue(b); }) {
     for (auto* c : std::initializer_list<Component*>{&host, &value, &desk, &bus, &number, &output, &parameter, &band, &connect, &write, &status, &instructions}) addAndMakeVisible(c);
-    host.setTextToShowWhenEmpty("Console IPv4 address", Colours::grey);
+    host.setTextToShowWhenEmpty("Console IPv4 address", foh::ui::col::textSecondary());
     desk.addItem("Behringer X32 (OSC)", 1); desk.addItem(String::fromUTF8("SQ-5 1.6.3 \xe2\x80\x94 awaiting protocol verification"), 2); desk.setSelectedId(1);
     bus.addItem("Mix bus", 1); bus.addItem("Matrix", 2); bus.setSelectedId(1);
     for (int i = 1; i <= 16; ++i) { number.addItem(String(i), i); output.addItem("Output " + String(i), i); }
@@ -120,7 +121,7 @@ void ConsoleWindow::closeButtonPressed() {
     if (auto* panel = dynamic_cast<ConsolePanel*>(getContentComponent())) panel->disconnect();
     setVisible(false);
 }
-ConsoleWindow::ConsoleWindow() : DocumentWindow("Console control", Colours::darkgrey, DocumentWindow::closeButton) {
+ConsoleWindow::ConsoleWindow() : DocumentWindow("Console control", foh::ui::col::background(), DocumentWindow::closeButton) {
     setUsingNativeTitleBar(true); setContentOwned(new ConsolePanel, true); centreWithSize(getWidth(), getHeight());
 #if JUCE_MAC
     // Closing and immediately reopening or destroying this window must not

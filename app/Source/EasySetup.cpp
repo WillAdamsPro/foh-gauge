@@ -4,7 +4,7 @@ using namespace juce;
 EasySetup::EasySetup(AppModel& m) : model(m) {
     addAndMakeVisible(form);
     title.setText("Easy Setup (optional)", dontSendNotification);
-    title.setFont(FohLookAndFeel::font(20, true));
+    title.setFont(FohLookAndFeel::font(foh::theme::type::heading, false, true));
     instructions.setText("Set each cluster separately. New clusters use the default cabinet count. Skip shows all guides.", dontSendNotification);
     instructions.setJustificationType(Justification::topLeft);
     clusterLabel.setText("Main speaker clusters", dontSendNotification);
