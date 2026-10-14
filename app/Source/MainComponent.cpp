@@ -28,9 +28,14 @@ void FohLookAndFeel::applyTheme() {
     setColour(ComboBox::backgroundColourId, C::pillBackground()); setColour(ComboBox::outlineColourId, C::pillBorder()); setColour(ComboBox::textColourId, C::textBody());
     setColour(PopupMenu::backgroundColourId, C::cardBackground()); setColour(ListBox::backgroundColourId, C::cardBackground());
     setColour(Slider::thumbColourId, C::accent()); setColour(Slider::trackColourId, C::divider());
+    setColour(Slider::textBoxTextColourId, C::textPrimary()); setColour(Slider::textBoxBackgroundColourId, C::pillBackground()); setColour(Slider::textBoxOutlineColourId, C::pillBorder());
+    setColour(ComboBox::arrowColourId, C::textSecondary()); setColour(PopupMenu::textColourId, C::textPrimary()); setColour(PopupMenu::highlightedBackgroundColourId, C::accent()); setColour(PopupMenu::highlightedTextColourId, C::textOnAccent());
+    setColour(TextEditor::backgroundColourId, C::pillBackground()); setColour(TextEditor::textColourId, C::textPrimary()); setColour(TextEditor::outlineColourId, C::pillBorder());
+    setColour(ListBox::textColourId, C::textPrimary()); setColour(ToggleButton::textColourId, C::textPrimary()); setColour(ToggleButton::tickColourId, C::accent());
 }
 Typeface::Ptr FohLookAndFeel::getTypefaceForFont(const Font& f) {
-    if (regular != nullptr && f.getTypefaceName() == Font::getDefaultSansSerifFontName()) {
+    // Embedded Inter only when a (deprecated) theme asks for it; Apple-pro themes use the system UI font (SF Pro / Segoe UI).
+    if (regular != nullptr && foh::ui::uiFontName() == "Inter" && f.getTypefaceName() == "Inter") {
         auto st = f.getTypefaceStyle();
         if (st.containsIgnoreCase("Bold")) return bold;
         if (st.containsIgnoreCase("SemiBold")) return semibold;
@@ -39,7 +44,7 @@ Typeface::Ptr FohLookAndFeel::getTypefaceForFont(const Font& f) {
     return LookAndFeel_V4::getTypefaceForFont(f);
 }
 Font FohLookAndFeel::font(float size, bool b, bool sb) {
-    return Font(FontOptions(size).withStyle(b ? "Bold" : sb ? "SemiBold" : "Regular"));
+    return Font(FontOptions(foh::ui::uiFontName(), size, Font::plain).withStyle(b ? "Bold" : sb ? "Semibold" : "Regular"));
 }
 void FohLookAndFeel::drawButtonBackground(Graphics& g, Button& b, const Colour& bgc, bool over, bool down) {
     auto r = b.getLocalBounds().toFloat().reduced(0.5f);
@@ -155,6 +160,41 @@ void ImpulseComponent::paint(Graphics& g) {
         g.setFont(FohLookAndFeel::font(T::label)); g.drawText(lab, (int) x + 4, (int) r.getY() + (int) k * 14, 200, 14, Justification::left); }
 }
 
+// ===================== Segmented control / sidebar =====================
+void SegmentedControl::paint(Graphics& g) {
+    auto r = getLocalBounds().toFloat().reduced(0.5f); float rad = D::radiusButton();
+    g.setColour(C::pillBackground()); g.fillRoundedRectangle(r, rad);
+    g.setColour(C::border()); g.drawRoundedRectangle(r, rad, D::hairline());
+    float w = r.getWidth() / (float) jmax(1, labels.size());
+    g.setFont(FohLookAndFeel::font(T::small, false, true));
+    for (int i = 0; i < labels.size(); ++i) { auto seg = Rectangle<float>(r.getX() + i * w, r.getY(), w, r.getHeight());
+        if (i == sel) { g.setColour(foh::ui::theme().isLight ? C::cardBackground() : C::textPrimary().withAlpha(0.22f)); g.fillRoundedRectangle(seg.reduced(2), rad - 1);
+                        g.setColour(C::border()); g.drawRoundedRectangle(seg.reduced(2), rad - 1, D::hairline()); }
+        else if (i > 0 && i - 1 != sel) { g.setColour(C::border()); g.fillRect(seg.getX(), seg.getY() + 5, D::hairline(), seg.getHeight() - 10); }
+        g.setColour(i == sel ? C::textPrimary() : C::textSecondary()); g.drawText(labels[i], seg, Justification::centred); }
+}
+Path NavButton::glyphPath(Glyph gl, Rectangle<float> b) { // 16 px line glyphs, drawn as stroked paths
+    Path p; float x = b.getX(), y = b.getY(), s = b.getWidth() / 16.0f; auto P = [&](float px, float py) { return Point<float>(x + px * s, y + py * s); };
+    switch (gl) {
+        case Home: p.startNewSubPath(P(2, 8)); p.lineTo(P(8, 2.5f)); p.lineTo(P(14, 8)); p.startNewSubPath(P(4, 6.5f)); p.lineTo(P(4, 14)); p.lineTo(P(12, 14)); p.lineTo(P(12, 6.5f));
+                   p.startNewSubPath(P(6.75f, 14)); p.lineTo(P(6.75f, 10)); p.lineTo(P(9.25f, 10)); p.lineTo(P(9.25f, 14)); break;
+        case Transfer: p.startNewSubPath(P(1, 8)); p.cubicTo(P(3.5f, 2), P(5.5f, 2), P(8, 8)); p.cubicTo(P(10.5f, 14), P(12.5f, 14), P(15, 8)); break;
+        case Rta: for (int i = 0; i < 4; ++i) { float hgt[] = {5, 10, 7, 12}; float cx = 2.5f + i * 3.7f; p.startNewSubPath(P(cx, 14)); p.lineTo(P(cx, 14 - hgt[i])); } break;
+        case Guides: for (int i = 0; i < 3; ++i) { float cx = 3.5f + i * 4.5f, ky[] = {5, 10, 7}; p.startNewSubPath(P(cx, 2)); p.lineTo(P(cx, 14));
+                         p.addEllipse(x + (cx - 1.6f) * s, y + (ky[i] - 1.6f) * s, 3.2f * s, 3.2f * s); } break;
+    }
+    return p;
+}
+void NavButton::paintButton(Graphics& g, bool over, bool) {
+    auto r = getLocalBounds().toFloat().reduced(0.5f); bool on = getToggleState();
+    if (on) { g.setColour(C::navItemActiveBg()); g.fillRoundedRectangle(r, D::radiusButton()); }
+    else if (over) { g.setColour(C::textPrimary().withAlpha(0.06f)); g.fillRoundedRectangle(r, D::radiusButton()); }
+    auto gb = Rectangle<float>(r.getX() + 10, r.getCentreY() - 8, 16, 16);
+    g.setColour(on ? C::textPrimary() : C::accent()); g.strokePath(glyphPath(glyph, gb), PathStrokeType(1.4f, PathStrokeType::curved, PathStrokeType::rounded));
+    g.setColour(on ? C::textPrimary() : C::textPrimary().withMultipliedAlpha(0.9f)); g.setFont(FohLookAndFeel::font(T::body));
+    g.drawText(getButtonText(), r.withTrimmedLeft(36), Justification::centredLeft);
+}
+
 // ===================== Status pills =====================
 void StatusPills::paint(Graphics& g) {
     auto f = FohLookAndFeel::font(T::small); g.setFont(f); float x = 0, h = 30, y = (getHeight() - h) * 0.5f;
@@ -178,6 +218,9 @@ void StatusPills::paint(Graphics& g) {
 
 // ===================== Main component =====================
 MainComponent::MainComponent() {
+    { PropertiesFile::Options o; o.applicationName = "FOH Gauge"; o.filenameSuffix = ".settings"; o.folderName = "FOH Gauge"; o.osxLibrarySubFolder = "Application Support";
+      settings.setStorageParameters(o);
+      if (auto* pf = settings.getUserSettings()) foh::theme::ThemeManager::get().setTheme(pf->getValue("appearance") == "sunlight" ? "apple-pro-sunlight" : "apple-pro-dark"); }
     setLookAndFeel(&lnf);
     dm.initialiseWithDefaultDevices(4, 4);
     { auto s = dm.getAudioDeviceSetup(); s.sampleRate = 48000; dm.setAudioDeviceSetup(s, true); }
@@ -188,7 +231,7 @@ MainComponent::MainComponent() {
     micHist.assign(96000, 0.f); refHist.assign(96000, 0.f);
 
     const char* pages[] = {"Home / Setup", "Transfer Function", "RTA / Spectrum", "Guides"};
-    for (int i = 0; i < 4; ++i) { auto* b = nav.add(new TextButton(pages[i])); b->onClick = [this, i] { showPage(i); }; addAndMakeVisible(b); }
+    for (int i = 0; i < 4; ++i) { auto* b = nav.add(new NavButton(pages[i], (NavButton::Glyph) i)); b->onClick = [this, i] { showPage(i); }; addAndMakeVisible(b); }
     addAndMakeVisible(status);
     addAndMakeVisible(pauseBtn); pauseBtn.setClickingTogglesState(true); pauseBtn.onClick = [this] { paused = pauseBtn.getToggleState(); pauseBtn.setButtonText(paused ? "Resume" : "Pause"); };
     addAndMakeVisible(helpPanel); addChildComponent(helpBtn); helpBtn.setClickingTogglesState(true);
@@ -212,14 +255,19 @@ MainComponent::MainComponent() {
     for (auto* l : {&setupHelp, &calLabel, &levelLabel}) { l->setFont(FohLookAndFeel::font(T::body)); addChildComponent(*l); }
     setupHelp.setText("ROUTING (UMC404HD defaults)", dontSendNotification); setupHelp.setColour(Label::textColourId, C::textSecondary());
     calLabel.setText("No mic cal loaded", dontSendNotification);
-    { auto& tm = foh::theme::ThemeManager::get(); int i = 1; for (auto& t : tm.all()) { themeBox.addItem("Theme: " + t.displayName, i); if (t.id == tm.current().id) themeBox.setSelectedId(i, dontSendNotification); ++i; }
-      themeBox.onChange = [this] { auto& all = foh::theme::ThemeManager::get().all(); int k = themeBox.getSelectedId() - 1; if (k >= 0 && k < (int) all.size()) foh::theme::ThemeManager::get().setTheme(all[(size_t) k].id); };
-      addChildComponent(themeBox); tm.addChangeListener(this); }
-    // Global UI scale (100/125/150/200 %): scales text + hero values crisply via JUCE's global scale factor, not per-window reflow
+    // Appearance: Pro Dark (default) / Pro Sunlight toggle; persisted with the UI scale
+    { auto& tm = foh::theme::ThemeManager::get(); appearance.setSelected(tm.current().isLight ? 1 : 0);
+      appearance.onChange = [this](int i) { foh::theme::ThemeManager::get().setTheme(i == 1 ? "apple-pro-sunlight" : "apple-pro-dark");
+                                            if (auto* pf = settings.getUserSettings()) { pf->setValue("appearance", i == 1 ? "sunlight" : "dark"); pf->saveIfNeeded(); } };
+      addChildComponent(appearance); appearanceLabel.setText("Appearance", dontSendNotification); appearanceLabel.setFont(FohLookAndFeel::font(T::body)); addChildComponent(appearanceLabel);
+      tm.addChangeListener(this); }
+    // Global UI scale (100/125/150/200 %), persisted between launches
     for (int pc : {100, 125, 150, 200}) scaleBox.addItem("UI scale " + String(pc) + "%", pc);
-    scaleBox.setSelectedId(jlimit(100, 200, roundToInt(Desktop::getInstance().getGlobalScaleFactor() * 100)), dontSendNotification);
-    if (scaleBox.getSelectedId() == 0) scaleBox.setSelectedId(100, dontSendNotification);
-    scaleBox.onChange = [this] { Desktop::getInstance().setGlobalScaleFactor((float) scaleBox.getSelectedId() / 100.0f); };
+    { int saved = settings.getUserSettings() ? settings.getUserSettings()->getIntValue("uiScale", 100) : 100;
+      if (saved != 100 && saved != 125 && saved != 150 && saved != 200) saved = 100;
+      scaleBox.setSelectedId(saved, dontSendNotification); if (saved != 100) Desktop::getInstance().setGlobalScaleFactor((float) saved / 100.0f); }
+    scaleBox.onChange = [this] { int pc = scaleBox.getSelectedId(); Desktop::getInstance().setGlobalScaleFactor((float) pc / 100.0f);
+                                 if (auto* pf = settings.getUserSettings()) { pf->setValue("uiScale", pc); pf->saveIfNeeded(); } };
     addChildComponent(scaleBox);
 
     magPlot.yLabel = "MAGNITUDE DB"; magPlot.showLegend = true; magPlot.yMin = -12; magPlot.yMax = 12; magPlot.yStep = 6;
@@ -265,12 +313,12 @@ MainComponent::MainComponent() {
 
     setSize(std::getenv("FOH_WINDOW_W") ? std::atoi(std::getenv("FOH_WINDOW_W")) : th::frame::baseWidth, th::frame::baseHeight); /* FOH_WINDOW_W: dev aid for narrow-layout checks */
     showPage(0); startTimerHz(15);
-    if (auto* t = std::getenv("FOH_THEME")) foh::theme::ThemeManager::get().setTheme(t); // dev aid: a, b, c, c-sunlight
+    if (auto* t = std::getenv("FOH_THEME")) foh::theme::ThemeManager::get().setTheme(t); // dev aid: apple-pro-dark, apple-pro-sunlight
     // Dev/screenshot aid: FOH_START_PAGE=0..3, FOH_GUIDE=0..2, FOH_STEP=n
     if (auto* e = std::getenv("FOH_START_PAGE")) { guide = std::getenv("FOH_GUIDE") ? std::atoi(std::getenv("FOH_GUIDE")) : 1; step = std::getenv("FOH_STEP") ? std::atoi(std::getenv("FOH_STEP")) : 0;
         guideBox.setSelectedId(guide + 1, dontSendNotification); showPage(jlimit(0, 3, std::atoi(e))); }
 }
-MainComponent::~MainComponent() { foh::theme::ThemeManager::get().removeChangeListener(this); stopTimer(); dm.removeAudioCallback(&engine); traceList.setModel(nullptr); setLookAndFeel(nullptr); }
+MainComponent::~MainComponent() { if (auto* pf = settings.getUserSettings()) pf->saveIfNeeded(); foh::theme::ThemeManager::get().removeChangeListener(this); stopTimer(); dm.removeAudioCallback(&engine); traceList.setModel(nullptr); setLookAndFeel(nullptr); }
 
 Rectangle<int> MainComponent::mainArea() const {
     return getLocalBounds().withTrimmedTop(D::statusBarHeight()).withTrimmedLeft(D::navWidth()).withTrimmedRight(helperW()).reduced(D::mainPadding());
@@ -291,7 +339,6 @@ void MainComponent::paint(Graphics& g) {
     g.drawVerticalLine(navWidth - 1, (float) statusBarHeight, (float) getHeight()); g.drawVerticalLine(getWidth() - helperWidth, (float) statusBarHeight, (float) getHeight());
     g.setFont(FohLookAndFeel::font(T::logo, true)); g.setColour(C::textPrimary()); g.drawText("FOH", 16, 0, 40, statusBarHeight, Justification::centredLeft);
     g.setColour(C::accent()); g.drawText("Gauge", 52, 0, 80, statusBarHeight, Justification::centredLeft);
-    if (page >= 0 && page < nav.size()) { auto b = nav[page]->getBounds(); g.setColour(C::accent()); g.fillRect(b.getX(), b.getY() + 6, (int) D::navActiveBar(), b.getHeight() - 12); }
     if (page == 1) { card(g, tfCard); card(g, delayCard, C::cardBorderEmphasis());
         g.setFont(FohLookAndFeel::font(T::label)); g.setColour(C::textSecondary());
         for (auto* p : {&magPlot, &phasePlot, &cohPlot}) { auto b = p->getBounds(); Graphics::ScopedSaveState s(g);
@@ -321,8 +368,8 @@ void MainComponent::paint(Graphics& g) {
 
 void MainComponent::resized() {
     const int statusBarHeight = D::statusBarHeight(), navWidth = D::navWidth();
-    auto nr = Rectangle<int>(10, statusBarHeight + 16, navWidth - 20, 44);
-    for (auto* b : nav) { b->setBounds(nr); nr.translate(0, 48); }
+    auto nr = Rectangle<int>(10, statusBarHeight + 16, navWidth - 20, 30);
+    for (auto* b : nav) { b->setBounds(nr); nr.translate(0, 34); }
     status.setBounds(navWidth + 12, 0, getWidth() - navWidth - 12 - 140, statusBarHeight);
     pauseBtn.setBounds(getWidth() - 120, 10, 100, 35);
     layoutHelp();
@@ -337,7 +384,7 @@ void MainComponent::resized() {
       s.removeFromTop(12); row = s.removeFromTop(30); genBox.setBounds(row.removeFromLeft(300).reduced(4, 0)); genGain.setBounds(row.removeFromLeft(360).reduced(8, 0));
       s.removeFromTop(12); row = s.removeFromTop(30); calBtn.setBounds(row.removeFromLeft(150).reduced(4, 0)); calToggle.setBounds(row.removeFromLeft(90).reduced(4, 0)); calLabel.setBounds(row);
       s.removeFromTop(12); levelLabel.setBounds(s.removeFromTop(30));
-      s.removeFromTop(12); row = s.removeFromTop(30); themeBox.setBounds(row.removeFromLeft(300).reduced(4, 0)); scaleBox.setBounds(row.removeFromLeft(200).reduced(4, 0)); }
+      s.removeFromTop(12); row = s.removeFromTop(30); appearanceLabel.setBounds(row.removeFromLeft(100)); appearance.setBounds(row.removeFromLeft(200).reduced(4, 1)); row.removeFromLeft(16); scaleBox.setBounds(row.removeFromLeft(200).reduced(4, 0)); }
     // TF: card, then delay bar 63 h, then trace list
     { auto s = c; auto traceArea = s.removeFromBottom(96); s.removeFromBottom(10);
       delayCard = s.removeFromBottom(63); s.removeFromBottom(10); tfCard = s;
@@ -369,7 +416,7 @@ void HelpPanel::paint(Graphics& g) {
 }
 
 void MainComponent::changeListenerCallback(ChangeBroadcaster*) { // theme switched: refresh stock-widget colours, then re-layout (widths) + repaint
-    lnf.applyTheme(); makePrimary(insertBtn); makePrimary(guideAct); makePrimary(doneAgain);
+    appearance.setSelected(foh::ui::theme().isLight ? 1 : 0); lnf.applyTheme(); makePrimary(insertBtn); makePrimary(guideAct); makePrimary(doneAgain);
     status.repaint(); help.setColour(Label::textColourId, C::textBody()); setupHelp.setColour(Label::textColourId, C::textSecondary());
     delayCaption.setColour(Label::textColourId, C::textSecondary()); delayDetail.setColour(Label::textColourId, C::textSecondary());
     guideStepLabel.setColour(Label::textColourId, C::accent()); guideResult.setColour(Label::textColourId, C::textBody()); guidePolarity.setColour(Label::textColourId, C::textSecondary());
@@ -380,12 +427,12 @@ void MainComponent::changeListenerCallback(ChangeBroadcaster*) { // theme switch
 void MainComponent::showPage(int p) {
     page = p;
     for (int i = 0; i < nav.size(); ++i) { nav[i]->setToggleState(i == p, dontSendNotification); }
-    std::vector<Component*> all {selector.get(), &micBox, &refBox, &outABox, &outBBox, &genBox, &genGain, &calBtn, &calToggle, &setupHelp, &calLabel, &levelLabel, &themeBox, &scaleBox,
+    std::vector<Component*> all {selector.get(), &micBox, &refBox, &outABox, &outBBox, &genBox, &genGain, &calBtn, &calToggle, &setupHelp, &calLabel, &levelLabel, &appearance, &appearanceLabel, &scaleBox,
         &magPlot, &phasePlot, &cohPlot, &smoothBox, &avgBox, &storeBtn, &findBtn, &clearAvgBtn, &delayCaption, &delayValue, &delayDetail, &insertBtn, &traceList, &delTraceBtn, &tfImpulse, &gImpulse,
         &rtaPlot, &rtaFracBox, &guideBox, &guideStepLabel, &guideBody, &guideResult, &guideReadout, &guidePolarity, &guidePrev, &guideAct, &gPlotA, &gPlotB, &doneSummary, &doneActions, &doneAgain, &doneHome};
     for (auto* x : all) x->setVisible(false);
     std::vector<Component*> on;
-    if (p == 0) on = {selector.get(), &micBox, &refBox, &outABox, &outBBox, &genBox, &genGain, &calBtn, &calToggle, &setupHelp, &calLabel, &levelLabel, &themeBox, &scaleBox};
+    if (p == 0) on = {selector.get(), &micBox, &refBox, &outABox, &outBBox, &genBox, &genGain, &calBtn, &calToggle, &setupHelp, &calLabel, &levelLabel, &appearance, &appearanceLabel, &scaleBox};
     if (p == 1) on = {&magPlot, &phasePlot, &cohPlot, &smoothBox, &avgBox, &storeBtn, &findBtn, &clearAvgBtn, &delayCaption, &delayValue, &delayDetail, &insertBtn, &traceList, &delTraceBtn, &tfImpulse};
     if (p == 2) on = {&rtaPlot, &rtaFracBox};
     for (auto* x : on) x->setVisible(true);
@@ -467,12 +514,12 @@ void MainComponent::updateGuidePlots() {
     switch (st.chart) {
         case 1: magSetup(gPlotA, -24, 6); add(gPlotA, lastTF, lastTF.magDb, C::accent(), nullptr); break;
         case 2: magSetup(gPlotA, -24, 6); if (main) add(gPlotA, main->tf, main->tf.magDb, C::traceStored(), th::stroke::dashStored, 1e9, D::traceStored(), "Mains (stored)");
-                add(gPlotA, lastTF, lastTF.magDb, C::warning(), nullptr, 1e9, D::trace(), "Sub (live)"); break;
+                add(gPlotA, lastTF, lastTF.magDb, C::traceSecondary(), nullptr, 1e9, D::trace(), "Sub (live)"); break;
         case 3: phSetup(gPlotA); gPlotA.centreNote = "phase hidden above 400 Hz";
-                if (main) add(gPlotA, main->tf, main->tf.phaseDeg, C::accent(), nullptr, 400, D::trace(), "Mains phase"); if (sub) add(gPlotA, sub->tf, sub->tf.phaseDeg, C::warning(), nullptr, 400, D::trace(), "Sub phase"); break;
+                if (main) add(gPlotA, main->tf, main->tf.phaseDeg, C::accent(), nullptr, 400, D::trace(), "Mains phase"); if (sub) add(gPlotA, sub->tf, sub->tf.phaseDeg, C::traceSecondary(), nullptr, 400, D::trace(), "Sub phase"); break;
         case 4: phSetup(gPlotA); gPlotA.centreNote = "phase hidden above 400 Hz"; magSetup(gPlotB, -24, 12);
                 if (main) add(gPlotA, main->tf, main->tf.phaseDeg, C::accent(), nullptr, 400, D::trace(), "Mains phase");
-                if (sub) add(gPlotA, sub->tf, sub->tf.phaseDeg, C::warning(), th::stroke::dashLimit, 400, D::trace(), "Sub phase");
+                if (sub) add(gPlotA, sub->tf, sub->tf.phaseDeg, C::traceSecondary(), th::stroke::dashLimit, 400, D::trace(), "Sub phase");
                 if (main) add(gPlotB, main->tf, main->tf.magDb, C::traceMainsMuted(), th::stroke::dashComponent, 1e9, D::traceSecondary(), "Mains");
                 if (sub) add(gPlotB, sub->tf, sub->tf.magDb, C::traceSubMuted(), th::stroke::dashComponent, 1e9, D::traceSecondary(), "Sub");
                 add(gPlotB, lastTF, lastTF.magDb, C::traceSum(), nullptr, 1e9, D::trace(), "Sum (live)"); break;

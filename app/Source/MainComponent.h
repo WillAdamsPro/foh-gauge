@@ -74,6 +74,30 @@ public:
     juce::Label body; bool overlay = false;
 };
 
+// Small macOS-style segmented control (rounded track, raised selected segment, hairline separators).
+class SegmentedControl : public juce::Component {
+public:
+    explicit SegmentedControl(juce::StringArray items) : labels(std::move(items)) {}
+    std::function<void(int)> onChange;
+    void setSelected(int i, bool notify = false) { if (i == sel) return; sel = i; repaint(); if (notify && onChange) onChange(sel); }
+    int getSelected() const { return sel; }
+    void paint(juce::Graphics&) override;
+    void mouseDown(const juce::MouseEvent& e) override { if (labels.isEmpty()) return; setSelected(juce::jlimit(0, labels.size() - 1, e.x * labels.size() / juce::jmax(1, getWidth())), true); }
+private:
+    juce::StringArray labels; int sel = 0;
+};
+
+// Sidebar item with a hand-drawn 16 px line glyph (SF-Symbol-like), flat source-list styling.
+class NavButton : public juce::Button {
+public:
+    enum Glyph { Home, Transfer, Rta, Guides };
+    NavButton(const juce::String& name, Glyph gl) : juce::Button(name), glyph(gl) {}
+    void paintButton(juce::Graphics&, bool over, bool down) override;
+    static juce::Path glyphPath(Glyph, juce::Rectangle<float>);
+private:
+    Glyph glyph;
+};
+
 // Status bar pills (layout-spec: auto width, h ~30, padding 6/12, radius 18, 1 px pillBorder, 13 px, 8x8 status mark).
 // Status is never colour-only: good = circle, caution = triangle, poor = square, always with a text label.
 class StatusPills : public juce::Component {
@@ -104,7 +128,7 @@ private:
     foh::TraceStore traces; foh::MicCal cal; bool calOn = false; foh::DelayResult lastDelay; foh::TFResult lastTF;
     bool paused = false; foh::Band2 xover; std::vector<std::pair<juce::String, juce::String>> summaryRows; // step 09 Done card rows (label, value)
     // frame
-    juce::OwnedArray<juce::TextButton> nav; int page = 0; StatusPills status; juce::TextButton pauseBtn {"Pause"};
+    juce::OwnedArray<NavButton> nav; int page = 0; StatusPills status; juce::TextButton pauseBtn {"Pause"};
     HelpPanel helpPanel; juce::Label& help = helpPanel.body; juce::Label pageTitle; juce::TextButton helpBtn {"?"}; bool helpOpen = false;
     static constexpr int narrowWidth = 1360, railWidth = 48;
     bool railMode() const { return getWidth() < narrowWidth; }
@@ -112,7 +136,8 @@ private:
     void layoutHelp();
     // setup
     juce::ComboBox micBox, refBox, outABox, outBBox, genBox; juce::Slider genGain; juce::TextButton calBtn {"Load mic cal..."}, calToggle {"Cal ON"};
-    juce::Label setupHelp, calLabel, levelLabel; juce::ComboBox themeBox, scaleBox;
+    juce::Label setupHelp, calLabel, levelLabel; SegmentedControl appearance {{"Dark", "Sunlight"}}; juce::Label appearanceLabel; juce::ComboBox scaleBox;
+    juce::ApplicationProperties settings; // persists UI scale + appearance between launches
     // TF
     PlotComponent magPlot, phasePlot, cohPlot; juce::ComboBox smoothBox, avgBox; juce::TextButton storeBtn {"Store"}, clearAvgBtn {"Reset avg"};
     juce::Label delayCaption, delayValue, delayDetail; juce::TextButton findBtn {"Find again"}, insertBtn {"Insert delay"};
