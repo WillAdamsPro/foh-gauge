@@ -20,7 +20,6 @@ AppModel::AppModel() {
     settings.getUserSettings()->setValue("setupComplete", true);
 }
 AppModel::~AppModel() = default;
-foh::SplCal AppModel::splCal() const { return {}; }
 bool AppModel::calibrateSpl(double) { throw std::logic_error("Unexpected SPL calibration"); }
 bool AppModel::micLevelReady() const { return false; }
 void AppModel::loadCalFile(const juce::File&) { throw std::logic_error("Unexpected calibration file load"); }
@@ -30,7 +29,6 @@ bool AppModel::beginLoopback() { throw std::logic_error("Unexpected interface me
 void AppModel::clearLoopback() { throw std::logic_error("Unexpected interface calibration"); }
 void AppModel::clearSpl() { throw std::logic_error("Unexpected SPL calibration"); }
 foh::Json AppModel::splCalJson() const { return foh::Json::object(); }
-void AppModel::loadSplCalJson(const foh::Json&) {}
 static std::function<void()> guideDelay;
 void AppModel::requestDelay(bool, std::function<void()> then) { guideDelay = std::move(then); }
 void AppModel::lockDelayFromLast() { throw std::logic_error("Unexpected delay lock"); }
@@ -945,4 +943,27 @@ TEST_CASE("W2 sub completion tolerates a mains capture losing its measurement", 
     CHECK(panel->saveState()["step"].asInt() == 2);
     CHECK(labelContains(*panel, "Capture mains and sub again"));
     button(*panel, "Use this delay").onClick(); CHECK(panel->saveState()["step"].asInt() == 2);
+}
+
+TEST_CASE("W6 ambiguous impulse releases pending sweep and permits retry", "[app][guide][edges][polarity]") {
+    juce::ScopedJuceInitialiser_GUI gui;
+    AppModel model; auto panel = makeGuidePanel(model); panel->setSize(260, 780);
+    auto state = fohws::Json::object(); state.set("guide", 5); state.set("step", 1); panel->loadState(state);
+    auto complete = [&](std::vector<double> impulse) {
+        button(*panel, "Measure box sweep").onClick();
+        model.sweepSeq = model.nextGuideSweepId;
+        model.sweepCapturing = true; model.notify(AppModel::Snapshot);
+        model.sweepCapturing = false; model.sweep.response.impulse = std::move(impulse);
+        model.sweep.response.arrivals = {{}}; model.notify(AppModel::Snapshot);
+    };
+    std::vector<double> ambiguous(512); ambiguous[48] = 0.8; ambiguous[240] = -0.7;
+    complete(ambiguous);
+    CHECK(panel->saveState()["step"].asInt() == 1);
+    CHECK(labelContains(*panel, "Inconclusive impulse"));
+    REQUIRE(button(*panel, "Measure box sweep").isEnabled());
+    cannotPass(*panel);
+    std::vector<double> inverted(512, 0.4); inverted[48] -= 0.8;
+    complete(inverted);
+    CHECK(panel->saveState()["step"].asInt() == 2);
+    CHECK(labelContains(*panel, "This box: INVERTED"));
 }

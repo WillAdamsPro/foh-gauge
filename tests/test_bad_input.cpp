@@ -73,6 +73,15 @@ TEST_CASE("JSON rejects invalid grammar escapes encoding and excessive complexit
         REQUIRE(foh::Json(v).asInt(42) == 42);
 }
 
+TEST_CASE("Damaged calibration rows containing Hz are not treated as headings", "[files][regression]") {
+    for (const auto* row : {"2000Hz 1", "frequency-broken 1", "bad Hz", "Hz 1"}) {
+        INFO(row);
+        CHECK_FALSE(foh::parseMicCal(std::string("20 0\n1000 1\n") + row).ok());
+    }
+    CHECK_FALSE(foh::parseMicCal("2000Hz 1\n20 0\n1000 1\n").ok());
+    CHECK(foh::parseMicCal("Freq(Hz) dB Phase\n20 0\n1000 1\n").ok());
+}
+
 TEST_CASE("Truncated curve cells and inconsistent columns never publish partial data", "[files]") {
     const std::string good = "20 0\n1000 1\n";
     for (const auto* row : {"2000 2e", "2000 2e+", "2000 2e-", "2000 2 3e", "2000 2 0 1e",

@@ -44,9 +44,11 @@ public:
         shown.onClick = band.onClick = [this] { changed(); };
         offset.onValueChange = [this] { changed(); };
         import.onClick = [this] {
-            chooser = std::make_unique<FileChooser>("Import Smaart target", File{}, "*.txt;*.asc;*.csv");
+            chooser = std::make_unique<juce::FileChooser>(juce::String("Import Smaart target"),
+                juce::File(), juce::String("*.txt;*.asc;*.csv"));
+            const juce::Component::SafePointer<TargetControls> safe(this);
             chooser->launchAsync(FileBrowserComponent::openMode | FileBrowserComponent::canSelectFiles,
-                [safe = Component::SafePointer<TargetControls>(this)](const FileChooser& fc) {
+                [safe](const juce::FileChooser& fc) {
                     if (!safe || fc.getResult() == File{}) return;
                     std::string text;
                     try { text = foh::input::read(fc.getResult().getFullPathName().toStdString()); }
@@ -216,6 +218,10 @@ public:
         plot.note = "averages " + String(model.tf.averages) + (model.calApplied ? u8(" \xc2\xb7 cal applied") : "")
                     + u8(" \xc2\xb7 ") + u8(fohui::settleStatusText(model.conv, model.capture.active, model.capture.unsettled))
                     + " | Multi-mic: " + String(model.positionCount) + "/3 positions (2 required)";
+        if (model.positionCount >= 2 && (model.multiPosition.H.empty()
+            || std::none_of(model.multiPosition.coherence.begin(), model.multiPosition.coherence.end(),
+                            [](double c) { return std::isfinite(c) && c > 0; })))
+            plot.note += " | No coherent positions; check mic/ref routing and capture again";
         plot.repaint();
     }
 private:
@@ -659,7 +665,10 @@ public:
         auto line=[&](const String& text) { g.drawText(text,r.removeFromTop(24),Justification::centredLeft); };
         const auto c=model.splCal();
         if (!c.calibrated) { line("Calibrate SPL in Setup"); return; }
-        if (!model.micLevelReady() || model.leqRevision != model.analysis.leqRevision.load() || !model.leq.valid) { line("-- SPL / Leq (invalid or no live signal)"); return; }
+        if (!model.micLevelReady() || model.leqRevision != model.analysis.leqRevision.load() || !model.leq.valid) {
+            if (model.micPeak >= 0.99f) line("WARNING: input clipping");
+            line("-- SPL / Leq (invalid or no live signal)"); return;
+        }
         size_t w=static_cast<size_t>(weighting.getSelectedId()-1);
         auto level=[&](double db) { return c.level(db-(model.calOn ? model.cal.dbAt(1000) : 0), model.splSensitivity()); };
         auto value=[&](const char* label, double db) { line(String(label)+String(level(db),1)+" dB"+weighting.getText()); };

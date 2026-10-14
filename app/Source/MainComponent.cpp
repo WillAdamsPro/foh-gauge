@@ -10,7 +10,10 @@ MainComponent::MainComponent(juce::File workspaceFolder) : mgr(std::move(workspa
     setLookAndFeel(&lnf); LookAndFeel::setDefaultLookAndFeel(&lnf); lnf.applyTheme(); // default too, so floating panel windows get the ws chrome
     foh::theme::ThemeManager::get().addChangeListener(this); model.addListener(this);
 
-    addAndMakeVisible(content);
+    addAndMakeVisible(contentViewport);
+    contentViewport.setViewedComponent(&contentCanvas, false);
+    contentViewport.setScrollOnDragMode(Viewport::ScrollOnDragMode::never);
+    contentCanvas.addAndMakeVisible(content);
     addChildComponent(microphoneNotice);
     microphoneNotice.setText("Microphone access is blocked. Enable it in System Settings.", dontSendNotification);
     microphoneNotice.setFont(FohLookAndFeel::font(T::small));
@@ -66,7 +69,7 @@ MainComponent::MainComponent(juce::File workspaceFolder) : mgr(std::move(workspa
     if (!mgr.loadErrors().isEmpty()) AlertWindow::showMessageBoxAsync(AlertWindow::WarningIcon, "Workspace load failed", mgr.loadErrors().joinIntoString("\n"));
     startTimerHz(15);
 }
-MainComponent::~MainComponent() { sessionNotice.close(); removeKeyListener(presetCommands.keyMappings()); stopTimer(); leaveWorkspace(); view.setWorkspace(nullptr); model.removeListener(this); foh::theme::ThemeManager::get().removeChangeListener(this); floats.clear(); LookAndFeel::setDefaultLookAndFeel(nullptr); setLookAndFeel(nullptr); }
+MainComponent::~MainComponent() { contentViewport.setViewedComponent(nullptr, false); sessionNotice.close(); removeKeyListener(presetCommands.keyMappings()); stopTimer(); leaveWorkspace(); view.setWorkspace(nullptr); model.removeListener(this); foh::theme::ThemeManager::get().removeChangeListener(this); floats.clear(); LookAndFeel::setDefaultLookAndFeel(nullptr); setLookAndFeel(nullptr); }
 
 void MainComponent::openSetup() {
     if (showMode) setShowMode(false);
@@ -126,8 +129,8 @@ void MainComponent::openFloatingWindows() {
         win->addKeyListener(this);
         auto window = SafePointer<FloatingPanelWindow>(win);
         // Ignore queued actions if a workspace switch or reset has already destroyed the window.
-        win->onDock = [this, id, window] { MessageManager::callAsync([sp = SafePointer<MainComponent>(this), id, window] { if (sp && window) sp->dockPanel(id); }); };
-        win->onClose = [this, id, window] { MessageManager::callAsync([sp = SafePointer<MainComponent>(this), id, window] { if (sp && window) { // close = hide; Workspace > Show Panels brings it back
+        win->onDock = [self = SafePointer<MainComponent>(this), id, window] { MessageManager::callAsync([sp = self, id, window] { if (sp && window) sp->dockPanel(id); }); };
+        win->onClose = [self = SafePointer<MainComponent>(this), id, window] { MessageManager::callAsync([sp = self, id, window] { if (sp && window) { // close = hide; Workspace > Show Panels brings it back
             auto* w2 = sp->view.workspace(); if (!w2) return;
             // Erasing from the state vector invalidates references held by every later window.
             sp->closeFloatingWindows();
@@ -161,7 +164,7 @@ void MainComponent::floatPanel(const std::string& id) {
     f.displayId = displayIdFor(screen); f.returnNeighbour = fohws::removePanel(w->root, id);
     closeFloatingWindows(); w->floating.push_back(f); view.rebuild(); openFloatingWindows(); updateSwitcher();
 }
-void MainComponent::dockPanel(const std::string& id) {
+void MainComponent::dockPanel(std::string id) {
     auto* w = view.workspace(); if (!w) return;
     auto it = std::find_if(w->floating.begin(), w->floating.end(), [&](auto& x) { return x.panel == id; }); if (it == w->floating.end()) return;
     std::string nb = it->returnNeighbour; closeFloatingWindows(); w->floating.erase(it);
@@ -257,6 +260,7 @@ void MainComponent::setUiScale(int percent) {
     uiScale = percent;
     scaleBox.setSelectedId(percent, dontSendNotification);
     resized();
+    contentViewport.setViewPosition(0, 0);
     if (auto* pf = model.settings.getUserSettings()) { pf->setValue("uiScale", percent); pf->saveIfNeeded(); }
 }
 void MainComponent::stepUiScale(int direction) {
@@ -264,11 +268,12 @@ void MainComponent::stepUiScale(int direction) {
     setUiScale(scaleBox.getItemId(jlimit(0, scaleBox.getNumItems() - 1, index + direction)));
 }
 void MainComponent::fitSavedScale() {
-    // At launch retain at least a compact 640 x 360 logical workspace.
+    // At launch retain the logical size required by the toolbar and workspace.
     // Explicit later choices may zoom further; View and Cmd+0 remain available.
     int fit = 100;
     for (int percent : {100, 125, 150, 200})
-        if (percent <= uiScale && getWidth() * 100 >= 640 * percent && getHeight() * 100 >= 360 * percent)
+        if (percent <= uiScale && getWidth() * 100 >= minimumContentWidth * percent
+            && (getHeight() - (microphoneNotice.isVisible() ? 36 : 0)) * 100 >= minimumContentHeight * percent)
             fit = percent;
     setUiScale(fit);
 }
@@ -288,8 +293,23 @@ void MainComponent::resized() {
     microphoneNotice.setColour(Label::textColourId, C::textPrimary());
     microphoneNotice.setColour(Label::backgroundColourId, C::background());
     const float scale = (float) uiScale / 100.0f;
-    content.setTransform(AffineTransform::scale(scale).translated(0.0f, (float) consentHeight));
-    content.setBounds(0, 0, jmax(1, (int) std::ceil(getWidth() / scale)), jmax(1, (int) std::ceil((getHeight() - consentHeight) / scale)));
+    contentViewport.setBounds(getLocalBounds().withTrimmedTop(consentHeight));
+    // Reserve scrollbar space before choosing the logical extent. Starting without
+    // bars allows a formerly cramped window to return to a full-size workspace.
+    int width = contentViewport.getWidth(), height = contentViewport.getHeight();
+    const int bar = contentViewport.getScrollBarThickness();
+    bool horizontal = false, vertical = false;
+    for (int i = 0; i < 2; ++i) {
+        horizontal = minimumContentWidth * scale > width;
+        vertical = minimumContentHeight * scale > height;
+        width = jmax(0, contentViewport.getWidth() - (vertical ? bar : 0));
+        height = jmax(0, contentViewport.getHeight() - (horizontal ? bar : 0));
+    }
+    content.setTransform(AffineTransform::scale(scale));
+    content.setBounds(0, 0, jmax(minimumContentWidth, (int) std::floor(width / scale)),
+                           jmax(minimumContentHeight, (int) std::floor(height / scale)));
+    contentCanvas.setSize((int) std::ceil(content.getWidth() * scale),
+                          (int) std::ceil(content.getHeight() * scale));
     layoutContent();
     content.repaint();
 }

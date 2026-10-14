@@ -55,3 +55,9 @@ TEST_CASE("TF removes loopback before smoothing", "[loopback]") {
         CHECK(corrected.coherence[k] > .99);
     }
 }
+
+TEST_CASE("Interface calibration rejects fractional FFT sizes", "[loopback][regression]") {
+    const auto cal = foh::LoopbackCorrection::measure(syntheticInterface()); REQUIRE(cal.valid());
+    auto j = cal.toJson(); j.set("fftSize", cal.fftSize + 0.5);
+    CHECK_FALSE(foh::LoopbackCorrection::fromJson(j).valid());
+}

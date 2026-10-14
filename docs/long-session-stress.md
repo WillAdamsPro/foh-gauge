@@ -50,3 +50,55 @@ held-key input delivery remain manual checks; the automated UI harness invokes
 the preset command manager and workspace view directly. Native Show toggling
 was also exercised in the full Debug app. This is accelerated stress coverage,
 not a wall-clock multi-hour audio-device soak.
+
+## Newer-feature accelerated soak
+
+The newer-feature suite adds deterministic bucket and worker-step accessors;
+these are private friends, not runtime controls. No audio callback code changes.
+
+- Twelve hours of actual Leq bucket bookkeeping at 8 kHz and 384 kHz, including
+  three loud hours followed by nine quiet hours. The high-rate clock crosses
+  32-bit sample counts. Checks cover raw accumulated energy, A/C/Z readings,
+  rolling-window expiration, partial buckets and reset. Weighting filters are
+  covered by the existing sample-driven tone tests; only repeated filtering is
+  skipped in the accelerated bucket soak.
+- Session energy now sums completed 100 ms buckets with compensated addition.
+  Per-sample addition could round quiet input away after a loud session.
+- A four-hour schedule of representative worker blocks and W7 comparisons uses
+  the production block/command/publication paths without starting a worker or
+  waiting for one-second timers. It replaces all three mic-position slots,
+  saturates and drains the 64-entry queue, replaces full-size stored TFs in the
+  eight-entry store, and verifies the three snapshot slots and history storage
+  stay bounded. This schedule skips intervening audio blocks; the existing
+  three-hour ring test and twelve-hour Leq test advance their full clocks.
+- Command servicing yields after at most 64 commands per pass. A continuously
+  replenished queue previously had no upper bound on work before audio analysis.
+  A concurrent producer regression checks the per-pass bound and final drain;
+  temporarily restoring the unbounded drain makes that regression fail.
+- W7 alert state is checked for twelve hours of synthetic updates. Two hundred
+  panel lifetimes and one thousand monitoring restarts verify silent-mode
+  release and expired timer callbacks, with a final visible timer/plot check.
+- Early/late representative block/update timings have a generous regression
+  bound to detect duration-dependent work, not an absolute device CPU budget.
+  Release measured approximately 99/103 microseconds per update on this Mac.
+
+A sample-driven before/after probe seeded three hours of loud session energy,
+then processed ten seconds of quiet input at 384 kHz: the previous code added
+zero energy; the compensated implementation retained the expected 0.0384.
+
+Release core/layout/golden validation: 144 tests passed (13 seconds). Release
+app/core/layout/golden validation: 226 tests passed (54 seconds). Debug
+ASan/UBSan validation initially passed 225/226; the sweep test exceeded its
+three-second completion wait during instrumented deconvolution. Its completion
+wait now allows 20 seconds (other control waits stay at three); the rerun passed
+in 9.5 seconds. The strengthened concurrent queue regression also passed in
+Debug ASan/UBSan. No ASan/UBSan findings were reported.
+
+Separate follow-up: the existing session-replacement UI test passes but emits
+JUCE leak-detector warnings for two asynchronous modal AlertWindowImpl objects
+at teardown. That session/modal lifecycle is outside this focused soak change;
+it has not been patched here.
+
+The macOS app builds with deployment target 26.0 using Command Line Tools;
+full Xcode is not installed, so the Xcode generator is unavailable. This remains
+accelerated synthetic coverage, not a multi-hour hardware or live-device soak.

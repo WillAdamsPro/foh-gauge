@@ -1,7 +1,12 @@
 #include <functional>
 #include <catch2/catch_test_macros.hpp>
 #include "MainComponent.h"
+#include "WindowBounds.h"
 #include <thread>
+#include "PreferencesRecovery.h"
+#if JUCE_MAC
+#import <AppKit/AppKit.h>
+#endif
 
 namespace {
 struct TemporaryWorkspaces {
@@ -14,6 +19,15 @@ public:
     explicit TestMain(const juce::File& folder) : MainComponent(folder) {}
     using MainComponent::saveWorkspaceAs;
     using MainComponent::setShowMode;
+    bool resetFromFloating() {
+        return MainComponent::keyPressed(juce::KeyPress('0', juce::ModifierKeys::commandModifier, 0), floats[0]);
+    }
+    juce::Viewport& viewport() { return contentViewport; }
+    juce::Component& canvas() { return contentCanvas; }
+    juce::Component& logicalContent() { return content; }
+    std::vector<juce::Component*> toolbarControls() {
+        return { &switcher, &wsMenuBtn, &expertBtn, &showModeBtn, &pauseBtn, &setupBtn, &splBtn };
+    }
     bool inShowMode() const { return showMode; }
     AppModel& appModel() { return model; }
     juce::TextButton& expertToggle() { return expertBtn; }
@@ -32,6 +46,115 @@ public:
     }
 };
 void drainMessages() { juce::MessageManager::getInstance()->runDispatchLoopUntil(30); }
+}
+
+TEST_CASE("Docking accepts an ID borrowed from the floating state being erased", "[app][lifetime][regression]") {
+    juce::ScopedJuceInitialiser_GUI initialise;
+    TemporaryWorkspaces temporary;
+    TestMain main(temporary.folder);
+    main.setShowMode(false); main.selectWorkspace("tuning"); main.showWorkspace();
+    main.floatPanel("RTA"); main.floatPanel("TransferFunction");
+    REQUIRE(main.floatingCount() == 2);
+    // Erasing the first element moves the next panel's ID into its storage.
+    main.dockPanel(main.workspace().floating.front().panel);
+    CHECK(main.workspace().root.contains("RTA"));
+    CHECK_FALSE(main.workspace().root.contains("TransferFunction"));
+    REQUIRE(main.floatingCount() == 1);
+    CHECK(main.floating(0)->panel.panelId() == "TransferFunction");
+    // Erasing the last element also destroys the borrowed string itself.
+    main.dockPanel(main.workspace().floating.front().panel);
+    CHECK(main.workspace().root.contains("TransferFunction"));
+    CHECK(main.floatingCount() == 0);
+}
+
+TEST_CASE("Rapid floating close and recreate expires actions for the old window", "[app][lifetime][regression][stress]") {
+    juce::ScopedJuceInitialiser_GUI initialise;
+    TemporaryWorkspaces temporary;
+    const auto peers = juce::Desktop::getInstance().getNumComponents();
+    {
+        TestMain main(temporary.folder);
+        main.setShowMode(false); main.selectWorkspace("tuning"); main.showWorkspace();
+        auto* panel = main.workspaceView().panel("RTA");
+        for (int cycle = 0; cycle < 24; ++cycle) {
+            main.floatPanel("RTA");
+            REQUIRE(main.floatingCount() == 1);
+            juce::Component::SafePointer<FloatingPanelWindow> old = main.floating(0);
+            main.floating(0)->closeButtonPressed();
+            main.floating(0)->onDock();
+            main.dockPanel("RTA");
+            CHECK(old == nullptr);
+            main.floatPanel("RTA");
+            drainMessages();
+            REQUIRE(main.floatingCount() == 1);
+            CHECK(main.floating(0)->getContentComponent() == panel);
+            CHECK_FALSE(main.workspace().root.contains("RTA"));
+            main.dockPanel("RTA");
+            CHECK(main.workspace().root.contains("RTA"));
+        }
+    }
+    drainMessages();
+    CHECK(juce::Desktop::getInstance().getNumComponents() == peers);
+}
+
+TEST_CASE("Show mode releases multiple floats and restores missing-display state on Escape", "[app][lifetime][show][regression]") {
+    juce::ScopedJuceInitialiser_GUI initialise;
+    TemporaryWorkspaces temporary;
+    const auto peers = juce::Desktop::getInstance().getNumComponents();
+    {
+        TestMain main(temporary.folder);
+        main.setShowMode(false); main.selectWorkspace("rta-show"); main.showWorkspace();
+        for (const auto* id : {"RTA", "SPLNumbers", "ShowMonitoring"}) main.floatPanel(id);
+        REQUIRE(main.floatingCount() == 3);
+        auto* monitoring = main.workspaceView().panel("ShowMonitoring");
+        std::vector<juce::Component::SafePointer<FloatingPanelWindow>> old;
+        for (int i = 0; i < main.floatingCount(); ++i) {
+            old.emplace_back(main.floating(i));
+            main.floating(i)->setPinned(true);
+            main.floating(i)->onClose(); main.floating(i)->onDock();
+        }
+        // All windows must be gone before their borrowed states can be edited.
+        main.setShowMode(true);
+        for (const auto& window : old) CHECK(window == nullptr);
+        CHECK(main.floatingCount() == 0);
+        CHECK(monitoring->getParentComponent() != nullptr);
+        const auto root = main.workspace().root;
+        for (auto& state : main.workspace().floating) {
+            state.displayId = "synthetic-disconnected-display";
+            state.bounds = {-10000, -10000, 700, 400};
+        }
+        const auto saved = fohws::toJson(main.workspace()).dump();
+        for (int modifiers : {int(juce::ModifierKeys::ctrlModifier),
+             juce::ModifierKeys::ctrlModifier | juce::ModifierKeys::shiftModifier}) {
+            CHECK_FALSE(main.keyPressed(juce::KeyPress(juce::KeyPress::tabKey, modifiers, 0)));
+            CHECK(main.selectedWorkspace() == 3);
+        }
+        drainMessages();
+        CHECK(fohws::toJson(main.workspace()).dump() == saved);
+        REQUIRE(main.keyPressed(juce::KeyPress(juce::KeyPress::escapeKey)));
+        REQUIRE(main.floatingCount() == 3);
+        CHECK(main.workspace().root == root);
+        const auto displays = currentDisplays();
+        REQUIRE_FALSE(displays.empty());
+        for (int i = 0; i < main.floatingCount(); ++i) {
+            auto* window = main.floating(i);
+            const auto& state = main.workspace().floating[(size_t) i];
+            CHECK(state.displayId != "synthetic-disconnected-display");
+            CHECK(state.alwaysOnTop);
+            CHECK(window->getContentComponent() == &window->panel);
+            CHECK(window->panel.getParentComponent() == window);
+            window->parentSizeChanged();
+            auto copy = state;
+            CHECK(fohws::clampToDisplays(copy, displays,
+                foh::theme::ws::floatMinWidth, foh::theme::ws::floatMinHeight) == state.bounds);
+        }
+        CHECK(main.workspaceView().panel("ShowMonitoring") == monitoring);
+    }
+    drainMessages();
+    CHECK(juce::Desktop::getInstance().getNumComponents() == peers);
+    WorkspaceManager relaunched(temporary.folder);
+    REQUIRE(relaunched.at(3).floating.size() == 3);
+    for (const auto& state : relaunched.at(3).floating)
+        CHECK(state.displayId != "synthetic-disconnected-display");
 }
 
 TEST_CASE("Workspace switching and presentation changes preserve live analysis and window ownership", "[app][lifetime][stress][concurrent]") {
@@ -393,6 +516,34 @@ TEST_CASE("Session notices expire with their owner before and after asynchronous
     }
 }
 
+TEST_CASE("Session notice replacement and owner teardown cannot leave native animations", "[app][session][lifetime][regression]") {
+    juce::ScopedJuceInitialiser_GUI initialise;
+    TemporaryWorkspaces temporary;
+    const auto peers = juce::Desktop::getInstance().getNumComponents();
+    auto main = std::make_unique<TestMain>(temporary.folder);
+    for (int cycle = 0; cycle < 8; ++cycle) {
+        INFO("notice replacement " << cycle);
+        // A missing synthetic session creates a notice and closes its predecessor.
+        REQUIRE_FALSE(main->readSession(temporary.folder.getChildFile("Missing.fohsession")));
+        drainMessages();
+        auto* modals = juce::ModalComponentManager::getInstance();
+        REQUIRE(modals->getNumModalComponents() == 1);
+        auto* notice = dynamic_cast<juce::AlertWindow*>(modals->getModalComponent(0));
+        REQUIRE(notice != nullptr);
+        REQUIRE(notice->getPeer() != nullptr);
+#if JUCE_MAC
+        NSWindow* native = [(NSView*) notice->getPeer()->getNativeHandle() window];
+        REQUIRE(native != nil);
+        CHECK(native.animationBehavior == NSWindowAnimationBehaviorNone);
+#endif
+    }
+    main.reset();
+    drainMessages();
+    juce::MessageManager::getInstance()->runDispatchLoopUntil(250);
+    CHECK(juce::ModalComponentManager::getInstance()->getNumModalComponents() == 0);
+    CHECK(juce::Desktop::getInstance().getNumComponents() == peers);
+}
+
 TEST_CASE("Merged measurement panels repeatedly release listeners and pending UI work", "[app][lifetime][stress]") {
     juce::ScopedJuceInitialiser_GUI initialise;
     AppModel model;
@@ -598,6 +749,9 @@ TEST_CASE("Session traces colours and delays survive a different live sample rat
     CHECK(main.workspace().id == "setup");
     CHECK(model.positionCount == 0); CHECK(model.positionMask == 0); CHECK(model.multiPosition.freq.empty());
     CHECK(model.engine.gen.load() == AudioEngine::Off);
+    CHECK(model.engine.micCh.load() == -1); CHECK(model.engine.refCh.load() == -1);
+    CHECK(model.engine.outA.load() == -1); CHECK(model.engine.outB.load() == -1);
+    CHECK(model.dm.getCurrentAudioDevice() == nullptr);
     REQUIRE(model.traces.count() == 1); CHECK(model.traces.at(0).tf.sampleRate == 96000);
     CHECK(model.traces.at(0).tf.freq == tf.freq); CHECK(model.traces.at(0).tf.H == tf.H);
     CHECK(model.traces.at(0).refDelayMs == 2.5); CHECK_FALSE(model.traces.at(0).visible);
@@ -613,4 +767,152 @@ TEST_CASE("Session traces colours and delays survive a different live sample rat
         juce::Thread::sleep(5);
     }
     CHECK(delaySamples == 120);
+}
+
+TEST_CASE("Audio preferences recover as a unit before device initialization", "[app][prefs][regression]") {
+    juce::ScopedJuceInitialiser_GUI initialise;
+    const juce::String device = "<DEVICESETUP deviceType=\"Synthetic\" audioDeviceRate=\"48000\" audioDeviceBufferSize=\"256\" audioDeviceInChans=\"11\"/>";
+    juce::PropertySet prefs;
+    prefs.setValue("setupComplete", true); prefs.setValue("audioDeviceState", device);
+    prefs.setValue("micChannel", 2); prefs.setValue("refChannel", 3);
+    prefs.setValue("generatorChannel", 2); prefs.setValue("loopbackChannel", -1);
+    prefs.setValue("appearance", "sunlight");
+    SECTION("valid") {
+        CHECK_FALSE(fohapp::recoverAudioPreferences(prefs));
+        CHECK(prefs.getIntValue("micChannel") == 2); CHECK(prefs.getBoolValue("setupComplete")); return;
+    }
+    SECTION("missing device") { prefs.removeValue("audioDeviceState"); }
+    SECTION("empty device") { prefs.setValue("audioDeviceState", ""); }
+    SECTION("truncated device") { prefs.setValue("audioDeviceState", "<DEVICESETUP"); }
+    SECTION("wrong root") { prefs.setValue("audioDeviceState", "<PROPERTIES/>"); }
+    SECTION("empty setup") { prefs.setValue("audioDeviceState", "<DEVICESETUP/>"); }
+    SECTION("oversized device") { prefs.setValue("audioDeviceState", juce::String(std::string(1024 * 1024 + 1, ' '))); }
+    SECTION("oversized mask") { prefs.setValue("audioDeviceState", "<DEVICESETUP deviceType=\"Synthetic\" audioDeviceInChans=\"" + juce::String(std::string(1025, '1')) + "\"/>"); }
+    SECTION("bad rate") { prefs.setValue("audioDeviceState", device.replace("48000", "nan")); }
+    SECTION("bad buffer") { prefs.setValue("audioDeviceState", device.replace("256", "-1")); }
+    SECTION("bad channel") { prefs.setValue("refChannel", "oops"); }
+    SECTION("missing channel") { prefs.removeValue("refChannel"); }
+    SECTION("fractional channel") { prefs.setValue("micChannel", "1.5"); }
+    SECTION("oversized channel") { prefs.setValue("generatorChannel", "1024"); }
+    SECTION("wrong completion type") { prefs.setValue("setupComplete", "true"); }
+    REQUIRE(fohapp::recoverAudioPreferences(prefs));
+    CHECK_FALSE(prefs.getBoolValue("setupComplete")); CHECK(prefs.getValue("audioDeviceState").isEmpty());
+    for (const auto* key : {"micChannel", "refChannel", "generatorChannel", "loopbackChannel"}) CHECK(prefs.getIntValue(key) == -1);
+    CHECK(prefs.getValue("appearance") == "sunlight");
+}
+
+TEST_CASE("Interface preference corruption cannot publish a partial calibration map", "[app][prefs][regression]") {
+    foh::LoopbackCorrection cal{48000, 2, {{1, 0}, {1, 0}}}; REQUIRE(cal.valid());
+    std::map<std::string, foh::LoopbackCorrection> out{{"previous", cal}};
+    auto j = foh::Json::object(); j.set("first", cal.toJson()); j.set("broken", foh::Json::object());
+    for (const auto& text : {std::string(), std::string("{"), std::string("[]"), std::string("null"),
+            std::string(foh::input::maxBytes + 1, ' '), j.dump()}) {
+        CHECK_FALSE(fohapp::loadLoopbackPreferences(text, out));
+        REQUIRE(out.size() == 1); CHECK(out.at("previous").H == cal.H);
+    }
+    j = foh::Json::object(); j.set("first", cal.toJson());
+    REQUIRE(fohapp::loadLoopbackPreferences(j.dump(), out));
+    REQUIRE(out.size() == 1); CHECK(out.at("first").H == cal.H);
+    CHECK(fohapp::loadLoopbackPreferences("{}", out)); CHECK(out.empty());
+}
+
+TEST_CASE("Audio recovery overrides corrupt common preferences and tolerates fresh defaults", "[app][prefs][regression]") {
+    juce::ScopedJuceInitialiser_GUI initialise;
+    juce::PropertySet prefs, common;
+    CHECK_FALSE(fohapp::recoverAudioPreferences(prefs));
+    CHECK_FALSE(prefs.getBoolValue("setupComplete"));
+    common.setValue("setupComplete", true); common.setValue("audioDeviceState", "<wrong/>");
+    common.setValue("micChannel", "bad"); prefs.setFallbackPropertySet(&common);
+    REQUIRE(fohapp::recoverAudioPreferences(prefs));
+    CHECK(prefs.getValue("audioDeviceState").isEmpty()); CHECK(prefs.getIntValue("micChannel") == -1);
+    CHECK_FALSE(prefs.getBoolValue("setupComplete"));
+    CHECK_FALSE(fohapp::recoverAudioPreferences(prefs)); // Recovery remains safe on the next launch.
+    prefs.setFallbackPropertySet(nullptr);
+}
+
+TEST_CASE("Scaled workspace overflow stays reachable and reset restores the origin", "[app][scale][stress]") {
+    juce::ScopedJuceInitialiser_GUI initialise;
+    TemporaryWorkspaces temporary;
+    TestMain main(temporary.folder);
+    main.setShowMode(false);
+    main.showWorkspace();
+    main.selectWorkspace(1);
+    main.floatPanel("TransferFunction");
+    REQUIRE(main.floatingCount() == 1);
+    auto* floating = main.floating(0);
+    auto* panel = &floating->panel;
+    const auto floatingBounds = floating->getBounds();
+    for (bool show : {false, true}) {
+        main.setShowMode(show);
+        for (int scale : {100, 125, 150, 200}) {
+            for (auto size : {juce::Point<int>{640, 400}, {1512, 982}, {6000, 4000}, {80, 60}}) {
+                CAPTURE(show, scale, size.x, size.y);
+                main.setSize(size.x, size.y);
+                const auto bounds = main.getBounds();
+                main.setUiScale(scale);
+                CHECK(main.getBounds() == bounds);
+                for (auto* control : main.toolbarControls()) {
+                    CHECK(main.logicalContent().getLocalBounds().contains(control->getBounds()));
+                    // Scroll each control into view in physical canvas coordinates.
+                    auto r = main.canvas().getLocalArea(control, control->getLocalBounds());
+                    main.viewport().setViewPosition(r.getX(), r.getY());
+                    CHECK(main.viewport().getViewArea().intersects(r));
+                }
+                main.viewport().setViewPosition(100000, 100000);
+                CHECK(main.viewport().getViewPositionX() + main.viewport().getViewWidth() >= main.canvas().getWidth());
+                CHECK(main.viewport().getViewPositionY() + main.viewport().getViewHeight() >= main.canvas().getHeight());
+                if (show) REQUIRE(main.keyPressed(juce::KeyPress('0', juce::ModifierKeys::commandModifier, 0)));
+                else REQUIRE(main.resetFromFloating());
+                CHECK(main.uiScalePercent() == 100);
+                CHECK(main.viewport().getViewPosition() == juce::Point<int>{});
+                CHECK(main.inShowMode() == show);
+                if (!show) {
+                    REQUIRE(main.floatingCount() == 1);
+                    CHECK(main.floating(0) == floating);
+                    CHECK(&main.floating(0)->panel == panel);
+                    CHECK(main.floating(0)->getBounds() == floatingBounds);
+                }
+            }
+        }
+    }
+    main.setShowMode(false);
+    main.setSize(1512, 982);
+    main.setUiScale(200);
+    main.fitSavedScale();
+    CHECK(main.uiScalePercent() == 150);
+    main.setSize(640, 400);
+    main.setUiScale(200);
+    main.fitSavedScale();
+    CHECK(main.uiScalePercent() == 100);
+    main.setSize(1500, 900);
+    main.setUiScale(200);
+    main.setMicrophoneAccessBlocked(true);
+    main.fitSavedScale();
+    CHECK(main.uiScalePercent() == 125);
+    main.setMicrophoneAccessBlocked(false);
+    main.setUiScale(200);
+    main.fitSavedScale();
+    CHECK(main.uiScalePercent() == 150);
+    main.setSize(6000, 4000);
+    main.setUiScale(100);
+    CHECK_FALSE(main.viewport().getHorizontalScrollBar().isVisible());
+    CHECK_FALSE(main.viewport().getVerticalScrollBar().isVisible());
+}
+
+TEST_CASE("Window geometry clamps both size extremes after display resolution changes", "[app][scale][window]") {
+    const juce::Rectangle<int> large {-2560, -100, 2560, 1400};
+    const juce::Rectangle<int> small {100, 40, 320, 200};
+    for (auto area : {large, small, juce::Rectangle<int>{0, 25, 1512, 957}}) {
+        for (auto bounds : {juce::Rectangle<int>{-9000, -9000, 8000, 5000},
+                            juce::Rectangle<int>{9000, 9000, 1, 1}}) {
+            const auto clamped = fohui::clampWindowBounds(bounds, area, 640, 400);
+            CHECK(area.contains(clamped));
+            CHECK(clamped.getWidth() >= juce::jmin(640, area.getWidth()));
+            CHECK(clamped.getHeight() >= juce::jmin(400, area.getHeight()));
+            CHECK(fohui::clampWindowBounds(clamped, area, 640, 400) == clamped);
+            const auto shrunk = fohui::clampWindowBounds(clamped, small, 640, 400);
+            CHECK(shrunk == small);
+            CHECK(fohui::clampWindowBounds(shrunk, {}, 640, 400) == shrunk);
+        }
+    }
 }

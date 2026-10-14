@@ -22,15 +22,17 @@ public:
     void process(const float*, int) noexcept;
     LeqReading reading() const noexcept;
 private:
+    friend struct LeqMeterSoakAccess; // deterministic bucket-level synthetic stress tests
+    void finishBucket() noexcept;
     struct Pole { double b0=0, b1=0, a1=0, x=0, y=0; double tick(double) noexcept; };
     std::array<std::array<Pole, 6>, 2> filters {};
     std::array<double, 2> gain {{1, 1}};
     using Energy = std::array<double, 3>;
     std::array<Energy, 9000> history {};
-    Energy partial {}, total {}, recent {};
+    Energy partial {}, total {}, totalCorrection {}, recent {};
     double fs;
     int bucketSamples, fill=0, head=0, count=0, recentSamples=0;
-    uint64_t samples=0;
+    uint64_t samples=0; // completed buckets; fill holds the current partial bucket
     bool invalidInput=false;
     double bucketSum=0, bucketSquare=0, recentVariance=0, recentMeanSquare=0;
     Energy window(int buckets) const noexcept;

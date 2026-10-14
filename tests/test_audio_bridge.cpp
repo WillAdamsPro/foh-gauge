@@ -1,5 +1,6 @@
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/catch_approx.hpp>
+#include <catch2/generators/catch_generators.hpp>
 #include "Widgets.h"
 #include "AnalysisEngine.h"
 #include "SettleStatus.h"
@@ -409,6 +410,35 @@ public:
     int getOutputLatencyInSamples() override { return 0; }
     int getInputLatencyInSamples() override { return 0; }
 };
+}
+
+TEST_CASE("Interrupted connection tests fail and fresh tests recover", "[app][audio][routing][edges]") {
+    AudioEngine engine; SyntheticDevice device;
+    constexpr int block = 256;
+    float signal[block], silence[block] {}, a[block] {}, b[block] {};
+    std::fill(std::begin(signal), std::end(signal), 0.1f);
+    const float* inputs[] {signal, silence}; float* outputs[] {a, b};
+    auto feed = [&] { engine.audioDeviceIOCallbackWithContext(inputs, 2, outputs, 2, block, {}); };
+    for (int event = 0; event < 5; ++event) {
+        engine.audioDeviceAboutToStart(&device);
+        engine.testConnection(0, 0); feed();
+        REQUIRE(engine.connectionResult() == foh::ConnectionResult::pending);
+        if (event == 0) engine.audioDeviceStopped();
+        if (event == 1) engine.audioDeviceError("Synthetic unplug");
+        if (event == 2) { device.rate = 96000; engine.audioDeviceAboutToStart(&device); }
+        if (event == 3) engine.audioDeviceAboutToStart(&device); // replacement with same shape/rate
+        if (event == 4) {
+            engine.audioDeviceIOCallbackWithContext(inputs, 1, outputs, 2, block, {});
+            for (int i = 0; i < 400; ++i) feed();
+        }
+        CHECK(engine.connectionResult() == foh::ConnectionResult::invalid);
+        engine.audioDeviceAboutToStart(&device);
+        for (int i = 0; i < 400; ++i) feed();
+        CHECK(engine.connectionResult() == foh::ConnectionResult::invalid); // never resumes the old test
+        engine.testConnection(0, 0);
+        for (int i = 0; i < 400; ++i) feed();
+        CHECK(engine.connectionResult() == foh::ConnectionResult::pass);
+    }
 }
 
 namespace {
@@ -910,6 +940,45 @@ TEST_CASE("Settings and calibration changes overlap a synthetic measurement", "[
     }
 }
 
+namespace {
+class PortDeviceType : public SyntheticDeviceType {
+public:
+    explicit PortDeviceType(bool independent) : separate(independent) {}
+    bool separate;
+    juce::StringArray getDeviceNames(bool) const override { return {"Synthetic", "Synthetic 2"}; }
+    bool hasSeparateInputsAndOutputs() const override { return separate; }
+    juce::AudioIODevice* createDevice(const juce::String& output, const juce::String& input) override {
+        if (!separate && input.isNotEmpty() && output.isNotEmpty() && input != output) return nullptr;
+        return new SyntheticDevice;
+    }
+};
+}
+
+TEST_CASE("Audio Setup pairs unified devices and preserves independent endpoints", "[app][devices]") {
+    juce::ScopedJuceInitialiser_GUI initialise;
+    const bool separate = GENERATE(false, true); // ASIO-style and WASAPI-style backends
+    AppModel model;
+    model.dm.addAudioDeviceType(std::make_unique<PortDeviceType>(separate));
+    model.dm.setCurrentAudioDeviceType("Synthetic", true);
+    auto state = model.dm.getAudioDeviceSetup();
+    state.inputDeviceName = state.outputDeviceName = "Synthetic";
+    REQUIRE(model.dm.setAudioDeviceSetup(state, true).isEmpty());
+    SetupPage page(model);
+    auto* input = routingChoice(page, "Input");
+    auto* output = routingChoice(page, "Output");
+    REQUIRE(input != nullptr); REQUIRE(output != nullptr);
+    input->setSelectedId(3, juce::dontSendNotification); input->onChange();
+    state = model.dm.getAudioDeviceSetup();
+    CHECK(state.inputDeviceName == "Synthetic 2");
+    CHECK(state.outputDeviceName == (separate ? "Synthetic" : "Synthetic 2"));
+    CHECK(output->getSelectedId() == (separate ? 2 : 3));
+    output->setSelectedId(separate ? 3 : 2, juce::dontSendNotification); output->onChange();
+    state = model.dm.getAudioDeviceSetup();
+    CHECK(state.outputDeviceName == (separate ? "Synthetic 2" : "Synthetic"));
+    CHECK(state.inputDeviceName == (separate ? "Synthetic 2" : "Synthetic"));
+    CHECK(model.dm.getCurrentAudioDevice() != nullptr);
+}
+
 TEST_CASE("Multi-mic worker captures replaces clears and compensates reference delay", "[app][audio][multipos]") {
     AudioEngine engine; AnalysisEngine analysis(engine); analysis.start();
     REQUIRE(waitFor([&] { return engine.analysisEpoch.load() == engine.captureEpoch.load(); }));
@@ -995,6 +1064,7 @@ TEST_CASE("Multi-mic TF average overlays the target with controls reachable", "[
     REQUIRE(panel->getLocalBounds().contains(show->getBounds()));
     REQUIRE(show->getWidth() > 80);
     model.multiPosition.fftSize = 1024;
+    model.multiPosition.H.assign(513, std::pow(10.0, 2.0 / 20.0));
     model.multiPosition.magDb.assign(513, 2);
     model.multiPosition.coherence.assign(513, 1);
     model.positionCount = 2;
@@ -1008,12 +1078,59 @@ TEST_CASE("Multi-mic TF average overlays the target with controls reachable", "[
         for (double value : series.v) REQUIRE(value == 2);
     }
     REQUIRE(hasSeries("Target +6"));
+    model.multiPosition.coherence.assign(513, 0);
+    model.multiPosition.blanked.assign(513, 1);
+    panel->modelChanged(AppModel::Snapshot);
+    CHECK(plot->note.contains("No coherent positions"));
+    model.multiPosition.coherence.assign(513, 1);
+    model.multiPosition.blanked.assign(513, 0);
+    panel->modelChanged(AppModel::Snapshot);
+    CHECK_FALSE(plot->note.contains("No coherent positions"));
     show->setToggleState(false, juce::dontSendNotification); show->onClick();
     REQUIRE_FALSE(hasSeries("Multi-mic average"));
     REQUIRE(hasSeries("Target +6"));
     show->setToggleState(true, juce::dontSendNotification);
     model.positionCount = 1; panel->modelChanged(AppModel::Snapshot);
     REQUIRE_FALSE(hasSeries("Multi-mic average"));
+}
+
+TEST_CASE("Clearing positions and losing a mic during a sweep discards capture state", "[app][audio][sweep][multipos][edges]") {
+    AudioEngine engine; SyntheticDevice device; engine.audioDeviceAboutToStart(&device);
+    AnalysisEngine analysis(engine); AnalysisEngineTestAccess consumer(analysis);
+    consumer.step();
+    std::vector<float> noise(32768); foh::PinkNoise generator;
+    generator.process(noise.data(), int(noise.size()));
+    std::vector<float> outA(noise.size()), outB(noise.size());
+    float* outputs[] {outA.data(), outB.data()};
+    const float* connected[] {noise.data(), noise.data()};
+    engine.audioDeviceIOCallbackWithContext(connected, 2, outputs, 2, int(noise.size()), {});
+    consumer.step();
+    REQUIRE(analysis.send(foh::Command::micPosition(0, 0))); consumer.step();
+    REQUIRE(analysis.latest().positionCount == 1);
+    foh::Command sweep; sweep.type = foh::CommandType::MeasureSweep;
+    REQUIRE(analysis.send(sweep)); consumer.step();
+    REQUIRE(analysis.latest().sweepCapturing);
+    engine.audioDeviceIOCallbackWithContext(connected, 2, outputs, 2, 512, {});
+    consumer.step();
+    REQUIRE(analysis.latest().sweepCapturing);
+    foh::Command clear; clear.type = foh::CommandType::ClearMicPositions;
+    REQUIRE(analysis.send(clear)); consumer.step();
+    CHECK(analysis.latest().positionCount == 0);
+    CHECK(analysis.latest().multiPosition.H.empty());
+    CHECK(analysis.latest().sweepCapturing);
+    // A missing physical input is published by I/O as a new capture epoch.
+    const float* disconnected[] {nullptr, noise.data()};
+    engine.audioDeviceIOCallbackWithContext(disconnected, 2, outputs, 2, 512, {});
+    REQUIRE(engine.state.load() == AudioEngine::InvalidInputs);
+    consumer.step();
+    const auto snapshot = analysis.latest();
+    CHECK_FALSE(snapshot.sweepCapturing);
+    CHECK_FALSE(snapshot.sweep.response.error.empty());
+    CHECK(snapshot.sweep.response.impulse.empty()); CHECK(snapshot.sweep.etcDb.empty());
+    CHECK(snapshot.positionMask == 0); CHECK(snapshot.positionCount == 0);
+    CHECK(engine.gen.load() == AudioEngine::Off);
+    for (double c : snapshot.tf.coherence) CHECK(std::isfinite(c));
+    for (double db : snapshot.tf.magDb) CHECK(std::isfinite(db));
 }
 
 TEST_CASE("Sweep measurement captures loopback and publishes impulse and ETC", "[app][audio][sweep]") {
@@ -1530,4 +1647,64 @@ TEST_CASE("Guide sweep cancellation is scoped to its accepted request", "[app][a
     cancel.id = 43; REQUIRE(analysis.send(cancel));
     REQUIRE(waitFor([&] { return !analysis.latest().sweepCapturing; }));
     CHECK(engine.gen.load() == AudioEngine::Off); analysis.stop();
+}
+
+TEST_CASE("Changing SPL calibration during active integration discards old exposure", "[app][audio][splcal][edges]") {
+    juce::ScopedJuceInitialiser_GUI initialise;
+    AppModel model;
+    model.analysis.stop(); model.dm.removeAudioCallback(&model.engine);
+    model.engine.micCh = 0; model.engine.refCh = 1;
+    model.engine.state = AudioEngine::Ready; model.engine.deviceFailed = false;
+    AnalysisEngineTestAccess worker(model.analysis);
+    auto calibrate = [&](double measured, double known) {
+        foh::SplCal cal; REQUIRE(cal.calibrate(measured, known));
+        auto json = foh::Json::object(); json.set(model.splInputKey(), cal.toJson());
+        const auto revision = model.analysis.leqRevision.load();
+        model.loadSplCalJson(json);
+        REQUIRE(model.analysis.leqRevision.load() == revision + 1);
+        worker.step();
+        CHECK(model.analysis.latest().leqRevision == revision + 1);
+        CHECK(model.analysis.latest().leq.seconds == 0);
+        CHECK_FALSE(model.analysis.latest().leq.valid);
+    };
+    auto feed = [&](double amplitude) {
+        std::vector<float> block(960);
+        for (int i = 0; i < 960; ++i)
+            block[i] = float(amplitude * std::sin(2 * juce::MathConstants<double>::pi * 1000 * i / 48000));
+        for (int i = 0; i < 10; ++i) capture(model.engine, block.data(), block.data(), 960);
+        worker.step();
+        const auto r = model.analysis.latest().leq;
+        REQUIRE(r.valid); CHECK(r.seconds == Catch::Approx(0.2));
+        return r;
+    };
+    calibrate(-20, 94);
+    CHECK(model.splCal().level(feed(0.1).session[2]) == Catch::Approx(94).margin(0.01));
+    calibrate(-40, 114);
+    CHECK(model.splCal().level(feed(0.01).session[2]) == Catch::Approx(114).margin(0.01));
+    // Removing calibration also resets history; the next reading remains in dBFS.
+    const auto revision = model.analysis.leqRevision.load();
+    model.loadSplCalJson(foh::Json::object()); worker.step();
+    CHECK(model.analysis.latest().leqRevision == revision + 1);
+    CHECK(model.analysis.latest().leq.seconds == 0);
+    CHECK_FALSE(model.splCal().calibrated);
+    CHECK(model.splCal().level(feed(0.01).session[2]) == Catch::Approx(-40).margin(0.01));
+}
+
+TEST_CASE("Missing reference completes delay requests with an invalid snapshot", "[app][delay][edges]") {
+    AudioEngine engine;
+    AnalysisEngine analysis(engine);
+    analysis.start();
+    REQUIRE(analysis.send(foh::Command::resetAverages(1)));
+    REQUIRE(waitFor([&] { return analysis.latest().resetSeq == 1; }));
+    std::vector<float> mic(4096), ref(4096); mic[1000] = -0.5f;
+    capture(engine, mic.data(), ref.data(), int(mic.size()));
+    REQUIRE(waitFor([&] { return engine.micRing.available() == 0 && engine.refRing.available() == 0; }));
+    for (uint64_t id : {1u, 2u}) {
+        REQUIRE(analysis.send(foh::Command::findDelay(id == 2, id)));
+        REQUIRE(waitFor([&] { return analysis.latest().delaySeq == id; }));
+        const auto result = analysis.latest().delay;
+        REQUIRE_FALSE(result.ok()); REQUIRE(result.error == "reference is silent");
+        REQUIRE(result.arrivals.empty()); REQUIRE(result.confidence == 0);
+    }
+    analysis.stop();
 }

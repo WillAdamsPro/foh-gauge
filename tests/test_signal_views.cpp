@@ -1,5 +1,6 @@
 #include <catch2/catch_test_macros.hpp>
 #include "Widgets.h"
+#include "Panels.h"
 #include <limits>
 
 namespace {
@@ -70,4 +71,33 @@ TEST_CASE("Plot paint bounds malformed axis ticks instead of hanging", "[app][ed
     plot.yMax = 12; plot.fMin = 0; REQUIRE_FALSE(render(plot).isNull());
     plot.fMin = 20; plot.fMax = inf; REQUIRE_FALSE(render(plot).isNull());
     plot.fMax = std::nextafter(plot.fMin, inf); REQUIRE_FALSE(render(plot).isNull());
+}
+
+TEST_CASE("SPL panel retains the clipping warning when exposure is invalid", "[app][splcal][edges]") {
+    juce::ScopedJuceInitialiser_GUI initialise;
+    AppModel model;
+    model.analysis.stop(); model.dm.removeAudioCallback(&model.engine);
+    model.splCals.clear();
+    foh::SplCal cal; REQUIRE(cal.calibrate(-20, 94));
+    model.splCals[model.splInputKey()] = cal;
+    model.leq.valid = false; model.micLevelValid = false;
+    auto panel = PanelRegistry::standard().create("SPLNumbers", model); REQUIRE(panel);
+    panel->setSize(400, 300);
+    auto paint = [&] {
+        juce::Image image(juce::Image::ARGB, 400, 300, true);
+        juce::Graphics g(image); panel->paint(g); return image;
+    };
+    model.micPeak = 0;
+    const auto invalid = paint();
+    model.micPeak = 1;
+    const auto clipped = paint();
+    CHECK_FALSE(samePixels(invalid, clipped)); // invalid early return must retain the warning
+    model.micPeak = -0.f;
+    CHECK(samePixels(invalid, paint()));
+    // Without SPL calibration the panel asks for calibration, never reports a safe exposure.
+    model.splCals.clear();
+    const auto uncalibrated = paint();
+    CHECK_FALSE(samePixels(invalid, uncalibrated));
+    model.leq.valid = true; model.leq.session = {120, 120, 120};
+    CHECK(samePixels(uncalibrated, paint()));
 }

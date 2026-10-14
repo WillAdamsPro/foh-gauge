@@ -1,5 +1,6 @@
 #include <juce_gui_extra/juce_gui_extra.h>
 #include "MainComponent.h"
+#include "WindowBounds.h"
 #if JUCE_MAC
  #import <AVFoundation/AVFoundation.h>
 #endif
@@ -72,18 +73,25 @@ public:
 #endif
         }
         void timerCallback() override { updateMicrophoneConsent(); }
+        bool constraining = false;
         void constrainToDisplay() {
+            if (constraining) return;
+            const juce::ScopedValueSetter<bool> guard(constraining, true);
             auto& displays = juce::Desktop::getInstance().getDisplays();
             if (auto* display = displays.getDisplayForRect(getBounds())) {
                 auto area = display->userArea;
                 // JUCE bounds exclude the native frame, so reserve that space too.
                 if (auto* peer = getPeer())
                     if (const auto frame = peer->getFrameSizeIfPresent()) frame->subtractFrom(area);
+                if (area.isEmpty()) return;
                 setResizeLimits(juce::jmin(640, area.getWidth()), juce::jmin(400, area.getHeight()),
                                 area.getWidth(), area.getHeight());
-                setBounds(getBounds().withSize(juce::jmin(getWidth(), area.getWidth()),
-                                               juce::jmin(getHeight(), area.getHeight())).constrainedWithin(area));
+                setBounds(fohui::clampWindowBounds(getBounds(), area, 640, 400));
             }
+        }
+        void parentSizeChanged() override {
+            DocumentWindow::parentSizeChanged();
+            constrainToDisplay();
         }
         void moved() override { constrainToDisplay(); }
         void resized() override { DocumentWindow::resized(); constrainToDisplay(); }
