@@ -1,5 +1,6 @@
 #pragma once
 #include "AppModel.h"
+#include "ScrollableForm.h"
 
 // Optional rig questionnaire; all edits remain local until Use these answers.
 class EasySetup : public juce::Component {
@@ -11,6 +12,7 @@ public:
     std::function<void()> onClose;
 private:
     AppModel& model;
+    ScrollableForm form;
     juce::Label title, instructions, clusterLabel, cabinetLabel, controlLabel, arrangementLabel, status;
     juce::TextEditor clusters, cabinets;
     juce::ComboBox control, arrangement;

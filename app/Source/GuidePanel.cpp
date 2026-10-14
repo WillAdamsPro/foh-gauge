@@ -2,6 +2,7 @@
 // Function and Phase panels (AppModel::overlay), so the guide works inside any workspace layout.
 #include "Panels.h"
 #include "Diagrams.h"
+#include "ScrollableForm.h"
 using namespace juce;
 namespace C = foh::ui::col;
 namespace D = foh::ui::dim;
@@ -41,14 +42,16 @@ static const char* kGuideNames[] = {"Setup + reference delay", "Align sub to mai
 class GuidePanel : public Panel {
 public:
     explicit GuidePanel(AppModel& m) : Panel(m, "GuideInspector", "Guide") {
+        addAndMakeVisible(form);
+        form.canvas.onPaint = [this](Graphics& g) { paintContent(g); };
         helpText = "Step-by-step guides. The charts for each step appear in the Transfer Function and Phase panels.";
         updateGuides();
         guideBox.setSelectedId(guide + 1, dontSendNotification);
         guideBox.onChange = [this] { guide = guideBox.getSelectedId() - 1; step = 0; resetVerification(); result.setText({}, dontSendNotification); refresh(); };
-        for (auto* c : std::initializer_list<Component*>{&guideBox, &stepLabel, &titleLabel, &body, &result, &readout, &polarity, &prev, &act, &note, &pass, &fail, &micDiagram}) addChildComponent(c);
+        for (auto* c : std::initializer_list<Component*>{&guideBox, &stepLabel, &titleLabel, &body, &result, &readout, &polarity, &prev, &act, &note, &pass, &fail, &micDiagram}) form.canvas.addChildComponent(c);
         for (size_t i = 0; i < delayChoices.size(); ++i) {
             auto& row = delayChoices[i];
-            addChildComponent(row);
+            form.canvas.addChildComponent(row);
             row.setRadioGroupId(27);
             row.setClickingTogglesState(true);
             if (i == 3) row.setTooltip("Flip sub polarity and use the displayed delay. Verify the phase slopes across the crossover band.");
@@ -101,7 +104,7 @@ public:
     }
     void visibilityChanged() override { buildOverlay(); model.notify(AppModel::Overlay); }
 
-    void paint(Graphics& g) override {
+    void paintContent(Graphics& g) {
         auto& steps = kGuides[(size_t) guide];
         for (size_t i = 0; i < steps.size() && i < rows.size(); ++i) { auto r = rows[i].toFloat(); bool done = (int) i < step, cur = (int) i == step;
             auto d = r.removeFromLeft(r.getHeight()).reduced(3);
@@ -140,14 +143,40 @@ private:
     }
     void refresh() {
         auto& steps = kGuides[(size_t) guide]; step = jlimit(0, (int) steps.size() - 1, step); auto& st = steps[(size_t) step];
-        auto c = getLocalBounds().reduced(pad, 8);
+        form.setBounds(getLocalBounds());
+        const int width = form.layoutWidth(260);
+        const bool verifying = st.act == 22;
+        const String bodyText = u8(st.body) + (verifying && guide == 1 ? "\nThe sum should rise in the crossover band rather than dip. Walk a few seats and listen." : String())
+            + (verifying && guide == 2 ? "\nCheck phase overlap through the seam and listen from mains-only to fill-only positions." : String())
+            + (st.act == 21 && suggestedChange.isNotEmpty() ? "\n" + suggestedChange : String());
+        auto textHeight = [width](const Label& label, const String& text) {
+            GlyphArrangement layout;
+            layout.addJustifiedText(label.getFont(), text, 0, label.getFont().getAscent(),
+                (float) (width - 2 * pad - 10), Justification::left);
+            return (int) std::ceil(layout.getBoundingBox(0, -1, true).getBottom()) + 8;
+        };
+        using Placement = MicPlacementDiagram::Placement;
+        const auto placement = st.chart == 3 ? Placement::None : guide == 0 && step > 0 ? Placement::OnAxis
+            : guide == 1 ? Placement::SubMainCrossover
+            : guide == 2 ? Placement::Seam : Placement::None;
+        if (st.chart == 3) say(updateSubChoices());
+        const int readoutH = jmax(24, textHeight(readout, readout.getText()));
+        const int polarityH = jmax(76, textHeight(polarity, polarity.getText()));
+        const int bodyH = textHeight(body, bodyText);
+        const int titleH = jmax(26, textHeight(titleLabel, u8(st.title)));
+        const int resultH = jmax(80, textHeight(result, result.getText()));
+        // Reserve the full wrapped text and every optional control before laying out.
+        const int height = 16 + 36 + (int) steps.size() * 22 + 10 + 16 + titleH + 6
+            + 44 + (verifying ? 100 : 0) + (placement != Placement::None ? 110 : 0) + bodyH + 6
+            + (st.chart == 3 ? readoutH + 112 + polarityH + 4 : 0) + 30 + resultH;
+        form.sizeCanvas(width, jmax(780, height));
+        auto c = form.canvas.getLocalBounds().reduced(pad, 8);
         guideBox.setBounds(c.removeFromTop(26)); c.removeFromTop(10);
         rows.clear(); for (size_t i = 0; i < steps.size(); ++i) rows.push_back(c.removeFromTop(22)); c.removeFromTop(10);
         stepLabel.setVisible(true); stepLabel.setText(("STEP " + String(step + 1) + " OF " + String((int) steps.size())), dontSendNotification); stepLabel.setBounds(c.removeFromTop(16));
-        titleLabel.setVisible(true); titleLabel.setText(u8(st.title), dontSendNotification); titleLabel.setBounds(c.removeFromTop(26)); c.removeFromTop(6);
+        titleLabel.setVisible(true); titleLabel.setText(u8(st.title), dontSendNotification); titleLabel.setBounds(c.removeFromTop(titleH)); c.removeFromTop(6);
         auto buttons = c.removeFromBottom(36); c.removeFromBottom(8);
         for (auto& row : delayChoices) row.setVisible(st.chart == 3);
-        const bool verifying = st.act == 22;
         note.setVisible(verifying); pass.setVisible(verifying); fail.setVisible(verifying);
         if (verifying) {
             auto verdict = c.removeFromBottom(28); c.removeFromBottom(6);
@@ -157,29 +186,17 @@ private:
         updateVerdictButtons();
         // W4/W5 currently contain only the shared frame and prescribe no mic move.
         // Retain the W1-W3 placement through Store / Apply / Verify.
-        using Placement = MicPlacementDiagram::Placement;
-        const auto placement = st.chart == 3 ? Placement::None : guide == 0 && step > 0 ? Placement::OnAxis
-            : guide == 1 ? Placement::SubMainCrossover
-            : guide == 2 ? Placement::Seam : Placement::None;
         micDiagram.setPlacement(placement);
         if (placement != Placement::None) {
             micDiagram.setBounds(c.removeFromTop(104)); c.removeFromTop(6);
         }
-        body.setVisible(true); body.setText(u8(st.body) + (verifying && guide == 1 ? "\nThe sum should rise in the crossover band rather than dip. Walk a few seats and listen." : String())
-            + (verifying && guide == 2 ? "\nCheck phase overlap through the seam and listen from mains-only to fill-only positions." : String()) + (st.act == 21 && suggestedChange.isNotEmpty() ? "\n" + suggestedChange : String()), dontSendNotification);
-        // Measure wrapped lines, including the explicit W5 symptom list line breaks.
-        GlyphArrangement bodyLayout;
-        bodyLayout.addJustifiedText(body.getFont(), body.getText(), 0, body.getFont().getAscent(),
-            (float) jmax(1, c.getWidth() - 10), Justification::left);
-        int bodyH = jmin(jmax(0, c.getHeight() - 80), (int) std::ceil(bodyLayout.getBoundingBox(0, -1, true).getBottom()) + 4);
-        if (st.chart == 3) bodyH = jmin(bodyH, 96);
+        body.setVisible(true); body.setText(bodyText, dontSendNotification);
         body.setBounds(c.removeFromTop(bodyH)); c.removeFromTop(6);
         bool ro = st.chart == 3; readout.setVisible(ro); polarity.setVisible(ro);
         if (ro) {
-            say(updateSubChoices());
-            readout.setBounds(c.removeFromTop(24));
+            readout.setBounds(c.removeFromTop(readoutH));
             for (auto& row : delayChoices) row.setBounds(c.removeFromTop(28));
-            polarity.setBounds(c.removeFromTop(76)); c.removeFromTop(4);
+            polarity.setBounds(c.removeFromTop(polarityH)); c.removeFromTop(4);
         }
         progress = c.removeFromBottom(26); c.removeFromBottom(4);
         result.setVisible(true); result.setBounds(c);
@@ -187,7 +204,7 @@ private:
         if (step > 0) { prev.setBounds(buttons.removeFromLeft(72)); buttons.removeFromLeft(8); }
         act.setBounds(buttons);
         act.setEnabled(!frameCapturePending && (!(st.act == 20 || st.act == 22) || !model.capture.active) && ((st.act != 21 && st.act != 22) || baselineValid));
-        buildOverlay(); model.notify(AppModel::Overlay); repaint();
+        buildOverlay(); model.notify(AppModel::Overlay); form.canvas.repaint();
     }
 
     void buildOverlay() {
@@ -374,6 +391,7 @@ private:
         });
     }
 
+    ScrollableForm form;
     MicPlacementDiagram micDiagram;
     ComboBox guideBox; Label stepLabel, titleLabel, body, result, readout, polarity; TextButton prev {"Back"}, act {"Do it"};
     TextEditor note; TextButton pass {"Pass"}, fail {"Fail"};
