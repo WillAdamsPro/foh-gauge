@@ -8,12 +8,22 @@ SweepResult deconvolveSweep(const std::vector<float>& ref, const std::vector<flo
     if (!std::isfinite(fs) || fs < 1) return fail("Invalid sweep sample rate");
     if (ref.size() != mic.size() || ref.size() < 64 || ref.size() > (1u << 22))
         return fail("Invalid sweep capture length");
+    double refMean = 0, micMean = 0;
+    for (size_t i = 0; i < ref.size(); ++i) {
+        if (!std::isfinite(ref[i]) || !std::isfinite(mic[i])) return fail("Non-finite sweep capture");
+        if (std::abs(ref[i]) >= 1 || std::abs(mic[i]) >= 1) return fail("Clipped sweep capture");
+        refMean += ref[i]; micMean += mic[i];
+    }
+    refMean /= ref.size(); micMean /= mic.size();
+    double refEnergy = 0, micEnergy = 0;
     int n = 1; while (size_t(n) < 2 * ref.size()) n *= 2;
     FFT fft(n); std::vector<cpx> x(n), y(n);
     for (size_t i = 0; i < ref.size(); ++i) {
-        if (!std::isfinite(ref[i]) || !std::isfinite(mic[i])) return fail("Non-finite sweep capture");
-        x[i] = ref[i]; y[i] = mic[i];
+        x[i] = double(ref[i]) - refMean; y[i] = double(mic[i]) - micMean;
+        refEnergy += std::norm(x[i]); micEnergy += std::norm(y[i]);
     }
+    if (refEnergy / ref.size() <= 1e-20) return fail("No loopback reference signal");
+    if (micEnergy / mic.size() <= 1e-20) return fail("No measurement signal");
     fft.forward(x); fft.forward(y);
     double power = 0;
     for (auto v : x) power = std::max(power, std::norm(v));

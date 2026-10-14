@@ -7,7 +7,7 @@
 #include "WorkspaceManager.h"
 #include "WorkspacePresetCommands.h"
 
-class MainComponent : public juce::Component, public juce::ApplicationCommandTarget, private juce::Timer, private juce::ChangeListener, private AppModel::Listener {
+class MainComponent : public juce::Component, public juce::ApplicationCommandTarget, private juce::Timer, private juce::ChangeListener, private juce::KeyListener, private AppModel::Listener {
 public:
     explicit MainComponent(juce::File workspaceFolder = WorkspaceManager::defaultFolder());
     ~MainComponent() override;
@@ -35,6 +35,7 @@ public:
     void floatPanel(const std::string& id);
     void dockPanel(const std::string& id);
 protected:
+    bool keyPressed(const juce::KeyPress&, juce::Component*) override;
     void timerCallback() override; void changeListenerCallback(juce::ChangeBroadcaster*) override; void modelChanged(int what) override;
     virtual void workspaceSelected() {}
     bool sidebarVisible() const { return !showMode && content.getWidth() >= 1280; } // spec §7: sidebar collapses under 1280 px

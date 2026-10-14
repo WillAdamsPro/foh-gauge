@@ -9,6 +9,9 @@ struct LeqReading {
     std::array<double, 3> fifteenMinutes {{-120, -120, -120}};
     std::array<double, 3> session {{-120, -120, -120}};
     double seconds = 0;
+    // Requires a completed 100 ms signal bucket. Bad/clipped or DC-dominated input invalidates
+    // accumulated exposure until reset; silence/DC does not indicate a safe level.
+    bool valid = false;
 };
 // A/C/Z in that order. Worker-thread processing; fixed storage, no process allocations.
 // Rolling windows use 100 ms energy buckets (oldest partial bucket prorated).
@@ -28,6 +31,8 @@ private:
     double fs;
     int bucketSamples, fill=0, head=0, count=0, recentSamples=0;
     uint64_t samples=0;
+    bool invalidInput=false;
+    double bucketSum=0, bucketSquare=0, recentVariance=0, recentMeanSquare=0;
     Energy window(int buckets) const noexcept;
 };
 enum class ExposurePreset { WHO, NIOSH };

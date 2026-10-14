@@ -121,6 +121,9 @@ void MainComponent::openFloatingWindows() {
         auto* p = view.panel(f.panel); if (!p) continue; view.releasePanel(f.panel, p);
         auto* win = floats.add(new FloatingPanelWindow(*p, f)); std::string id = f.panel;
         win->addKeyListener(presetCommands.keyMappings());
+        // A desktop window has no component ancestry back to the shell.
+        // Forward cycling/scale keys as well as the shared preset mappings.
+        win->addKeyListener(this);
         auto window = SafePointer<FloatingPanelWindow>(win);
         // Ignore queued actions if a workspace switch or reset has already destroyed the window.
         win->onDock = [this, id, window] { MessageManager::callAsync([sp = SafePointer<MainComponent>(this), id, window] { if (sp && window) sp->dockPanel(id); }); };
@@ -132,7 +135,13 @@ void MainComponent::openFloatingWindows() {
             sp->openFloatingWindows(); sp->updateSwitcher(); } }); };
         win->onChanged = [this] { updateSwitcher(); }; }
 }
-void MainComponent::closeFloatingWindows() { floats.clear(); }
+void MainComponent::closeFloatingWindows() {
+    for (auto* window : floats) {
+        window->removeKeyListener(this);
+        window->removeKeyListener(presetCommands.keyMappings());
+    }
+    floats.clear();
+}
 void MainComponent::saveWorkspaceAs(const String& name) {
     view.storePanelStates();
     closeFloatingWindows();
@@ -204,6 +213,16 @@ void MainComponent::showWorkspaceMenu() {
             default: break;
         }
     });
+}
+bool MainComponent::keyPressed(const KeyPress& k, Component*) {
+    const auto modifiers = k.getModifiers();
+    const int code = k.getKeyCode();
+    const bool cycle = code == KeyPress::tabKey
+        && modifiers.withoutFlags(ModifierKeys::shiftModifier).getRawFlags() == ModifierKeys::ctrlModifier;
+    const bool scale = modifiers.isCommandDown() && !modifiers.isAltDown() && !modifiers.isCtrlDown()
+        && (code == '0' || code == '=' || code == '+' || code == '-');
+    // Panel-local keys must keep their normal floating-window behavior.
+    return (cycle || scale) && keyPressed(k);
 }
 bool MainComponent::keyPressed(const KeyPress& k) {
     auto m = k.getModifiers(); int code = k.getKeyCode();
