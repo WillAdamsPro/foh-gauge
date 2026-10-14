@@ -3,6 +3,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <set>
 
 namespace fohws {
 
@@ -109,9 +110,12 @@ void enforceMinSizes(LayoutNode& n, int width, int height, const std::function<S
 // ===================== displays =====================
 Rect clampToDisplays(FloatingPanel& fp, const std::vector<DisplayInfo>& displays, int minW, int minH) {
     Rect r = fp.bounds; if (displays.empty()) return r;
-    const DisplayInfo* d = nullptr; for (auto& x : displays) if (x.id == fp.displayId) d = &x;
+    const auto usable = [](const DisplayInfo& x) { return x.area.w > 0 && x.area.h > 0; };
+    const DisplayInfo* d = nullptr; for (auto& x : displays) if (usable(x) && x.id == fp.displayId) d = &x;
     if (!d) { // display gone: move onto the main display with an inset so the title bar is accessible
-        const DisplayInfo* m = &displays.front(); for (auto& x : displays) if (x.isMain) m = &x;
+        const DisplayInfo* m = nullptr;
+        for (auto& x : displays) if (usable(x) && (!m || x.isMain)) m = &x;
+        if (!m) return r; // transient display refresh: preserve the last valid position
         r.x = m->area.x + 40; r.y = m->area.y + 40; d = m; fp.displayId = m->id;
     }
     const Rect& a = d->area;
@@ -167,6 +171,14 @@ bool fromJson(const Json& j, Workspace& w, std::string& err) {
         fp.bounds = { b["x"].asInt(), b["y"].asInt(), b["w"].asInt(400), b["h"].asInt(300) }; fp.displayId = o["display"].asString(); fp.alwaysOnTop = o["alwaysOnTop"].asBool(); fp.returnNeighbour = o["returnNeighbour"].asString();
         if (!fp.panel.empty()) x.floating.push_back(fp); }
     if (j["panelState"].isObject()) x.panelState = j["panelState"];
+    // A panel is a single component. Multiple slots/windows for it would re-parent
+    // it away from an earlier owner, leaving stale layout pointers behind.
+    std::vector<std::string> ids; x.root.collectPanels(ids);
+    for (const auto& fp : x.floating) ids.push_back(fp.panel);
+    std::set<std::string> unique;
+    for (const auto& id : ids) if (!unique.insert(id).second) {
+        err = "duplicate panel '" + id + "'"; return false;
+    }
     w = std::move(x); return true;
 }
 
