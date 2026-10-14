@@ -22,6 +22,8 @@ App tasks also require the macOS build (dispatch build-macos on master after mer
 ## P3: tests (simulated room)
 10. #43 review fixes: rename rounding helper to "half away from zero", document it as message-thread only, move it to core format.h/.cpp, add edge tests (x.xx5, negatives, NaN/inf).
 11. After #45 merges: drop the xfails in #43/#44 that #45 fixes.
+    - Deferred on master: #45 is merged (`4341c11`), but #43 and #44 remain open drafts; their `test_part_a.cpp` and `test_room_sim.cpp` tests and `[!shouldfail]` markers are not present here. Do not import the stacked drafts just to remove their xfails.
+    - Once those tests land, remove the fixed D-SGN and S16 reflection-level xfails. D-SGN tests must explicitly enable negative-lag search with `DelayOptions::minDelayMs < 0` (or symmetric search); the default still searches positive lags only. Update the Part A coverage map to reflect passing tests and run T. Master's existing S16 rate-independence and D-SGN regression tests already assert #45's fixes without xfails.
 12. Rebase #39/#41/#43/#44 onto master using `tests/data/synthetic-mic-cal.csv` (#46); update expected values. Accept: T passes.
 
 ## Build #1 (Oct 25, hard window Oct 25-27)
