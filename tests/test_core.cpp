@@ -610,7 +610,7 @@ TEST_CASE("C6/C8 unsorted, duplicate and malformed cal files", "[PartA][C6][C8]"
     auto u = parseMicCal("1000 1\n20 0\n1000 5\n100 0.5\n"); REQUIRE(u.ok()); REQUIRE(u.hz==std::vector<double>{20,100,1000}); // sorted, dedup keeps first
     REQUIRE(!parseMicCal("").ok()); REQUIRE(!parseMicCal(std::string("\x00\x01\x02\xff\xfe", 5)).ok());
     REQUIRE(!parseMicCal("abc,def\nfoo bar\n").ok()); REQUIRE(!parseMicCal("20,0\n").ok()); // one point is not a curve
-    auto nanf = parseMicCal("20 nan\n100 0\n1000 0\n"); REQUIRE(nanf.ok()); for (double d : nanf.db) REQUIRE(std::isfinite(d));
+    auto nanf = parseMicCal("20 nan\n100 0\n1000 0\n"); REQUIRE_FALSE(nanf.ok()); REQUIRE_FALSE(nanf.error.empty());
     auto comma = parseMicCal("20,5;0,1\n"); REQUIRE(!comma.ok()); REQUIRE(!comma.error.empty()); // decimal comma rejected clearly
     REQUIRE(!loadMicCal("/nonexistent/x.csv").ok());
 }

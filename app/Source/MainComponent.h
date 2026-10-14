@@ -59,6 +59,7 @@ protected:
     void openFloatingWindows(); void closeFloatingWindows();
     void showWorkspaceMenu(); void updateSwitcher(); void leaveWorkspace();
     WorkspaceView view { model, PanelRegistry::standard() };
+    juce::Label audioNotice;
     juce::Label toolbarTitle; SegmentedControl switcher {{"Setup", "Alignment", "Tuning", "RTA/Show"}};
     StatusPills status; juce::TextButton pauseBtn;
     SegmentedControl appearance {{"Dark", "Sunlight"}}; juce::ComboBox scaleBox;

@@ -81,3 +81,41 @@ TEST_CASE("Session retains undefined measurement bins as JSON null", "[session]"
     std::string error; REQUIRE(foh::saveSession(bundle.path, s, error)); foh::Session loaded;
     REQUIRE(foh::loadSession(bundle.path, loaded, error)); REQUIRE(std::isnan(loaded.captures[0].tf.magDb[0]));
 }
+
+TEST_CASE("Session asset corruption leaves the entire prior session intact", "[session][files]") {
+    Bundle bundle; auto s = synthetic(); std::string error; REQUIRE(foh::saveSession(bundle.path, s, error));
+    auto out = s;
+    auto rewrite = [&](const std::string& file, auto mutate) {
+        std::ifstream f(bundle.path / file); std::string text{std::istreambuf_iterator<char>(f), {}};
+        auto j = foh::Json::parse(text); mutate(j); std::ofstream(bundle.path / file) << j.dump();
+    };
+    SECTION("missing manifest") { std::filesystem::remove(bundle.path / "session.json"); }
+    SECTION("empty manifest") { std::ofstream(bundle.path / "session.json"); }
+    SECTION("huge manifest") { std::filesystem::resize_file(bundle.path / "session.json", 17 * 1024 * 1024); }
+    SECTION("wrong encoding") { std::ofstream(bundle.path / "session.json", std::ios::binary) << "\xff\xfe{}"; }
+    SECTION("empty mic cal") { std::ofstream(bundle.path / "mic-cal.txt"); }
+    SECTION("bad mic row") { std::ofstream(bundle.path / "mic-cal.txt") << "20 0\n1000 1\n2000 nan\n"; }
+    SECTION("missing target") { std::filesystem::remove(bundle.path / "targets/targets.json"); }
+    SECTION("garbled target") { std::ofstream(bundle.path / "targets/targets.json") << "{x"; }
+    SECTION("wrong target type") { std::ofstream(bundle.path / "targets/targets.json") << "[]"; }
+    SECTION("truncated capture") { std::ofstream(bundle.path / "captures/0.json") << "{\"freq\":[0,"; }
+    SECTION("bad capture frequencies") { rewrite("captures/0.json", [](auto& j) { auto a = foh::Json::array(); a.push(20); a.push(10); j.set("freq", a); }); }
+    SECTION("duplicate capture frequencies") { rewrite("captures/0.json", [](auto& j) { auto a = foh::Json::array(); a.push(0); a.push(0); j.set("freq", a); }); }
+    SECTION("null capture frequency") { rewrite("captures/0.json", [](auto& j) { auto a = foh::Json::array(); a.push(foh::Json()); a.push(100); j.set("freq", a); }); }
+    SECTION("absurd capture magnitude") { rewrite("captures/0.json", [](auto& j) { auto a = foh::Json::array(); a.push(0); a.push(1000); j.set("magDb", a); }); }
+    SECTION("negative capture frequency") { rewrite("captures/0.json", [](auto& j) { auto a = foh::Json::array(); a.push(-1); a.push(100); j.set("freq", a); }); }
+    SECTION("nonnumeric capture") { rewrite("captures/0.json", [](auto& j) { j.set("sampleRate", "bad"); }); }
+    SECTION("absurd measurement delay") { rewrite("session.json", [](auto& j) { auto m = j["measurement"]; m.set("refDelayMs", 1e100); j.set("measurement", m); }); }
+    SECTION("wrong measurement type") { rewrite("session.json", [](auto& j) { j.set("measurement", "bad"); }); }
+    SECTION("invalid SPL calibration") { rewrite("session.json", [](auto& j) { auto a = foh::Json::object(); auto c = foh::Json::object(); c.set("offsetDb", 1000); c.set("sensitivityDb", 0); a.set("synthetic", c); j.set("splCal", a); }); }
+    REQUIRE_FALSE(foh::loadSession(bundle.path, out, error)); REQUIRE_FALSE(error.empty());
+    REQUIRE(out.inputDevice == s.inputDevice); REQUIRE(out.micCalText == s.micCalText); REQUIRE(out.workspace == s.workspace);
+    REQUIRE(out.targets == s.targets); REQUIRE(out.captures[0].tf.freq == s.captures[0].tf.freq);
+}
+
+TEST_CASE("Session preserves disabled channel selections", "[session][files]") {
+    Bundle bundle; auto s = synthetic(); s.mic = s.reference = s.outputA = s.outputB = -1;
+    std::string error; REQUIRE(foh::saveSession(bundle.path, s, error)); foh::Session loaded;
+    REQUIRE(foh::loadSession(bundle.path, loaded, error));
+    REQUIRE(loaded.mic == -1); REQUIRE(loaded.reference == -1); REQUIRE(loaded.outputA == -1); REQUIRE(loaded.outputB == -1);
+}

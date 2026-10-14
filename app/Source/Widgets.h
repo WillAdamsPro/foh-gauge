@@ -18,7 +18,8 @@ inline double consoleMs(double ms) { return std::round(ms * 100.0) / 100.0; }
 
 // Audio engine: generator out + capture of mic/ref into lock-free rings. RT-safe callback.
 class AudioEngine : public juce::AudioIODeviceCallback {
-    int lastMicChannel = 0;
+    int lastMicChannel = 0, lastRefChannel = 1, lastInputCount = -1;
+    bool lastInputsValid = true;
 public:
     AudioEngine(); // Synthesizes the immutable chime before the audio callback is registered.
     // Message-thread commands; one atomic packet keeps channel selection and request together.
@@ -32,6 +33,7 @@ public:
     std::atomic<float> genGainDb{-20.f};
     static_assert(std::atomic<int>::is_always_lock_free);
     static_assert(std::atomic<float>::is_always_lock_free);
+    static_assert(std::atomic<bool>::is_always_lock_free);
     static_assert(std::atomic<uint64_t>::is_always_lock_free);
     std::atomic<float> micPeak{0}, refPeak{0};
     // Device restart handshake: capture waits for the analysis consumer to discard
@@ -39,11 +41,19 @@ public:
     std::atomic<uint64_t> captureEpoch{0}, analysisEpoch{0};
     foh::RingBuffer micRing{1 << 19}, refRing{1 << 19};
     std::atomic<double> sampleRate{48000};
+    static_assert(std::atomic<double>::is_always_lock_free);
+    enum State { Ready, Stopped, InvalidInputs, InvalidOutputs, Overflow };
+    std::atomic<int> state{Ready};
+    std::atomic<bool> deviceFailed{false};
+    std::atomic<int> captureMicChannel{0};
+    const char* statusText() const noexcept;
     void audioDeviceIOCallbackWithContext(const float* const* in, int nIn, float* const* out, int nOut, int n,
                                           const juce::AudioIODeviceCallbackContext&) override;
     void audioDeviceAboutToStart(juce::AudioIODevice* d) override;
-    void audioDeviceStopped() override {}
+    void audioDeviceStopped() override;
+    void audioDeviceError(const juce::String&) override;
 private:
+    void resetPlayback() noexcept; // JUCE lifecycle callbacks, with I/O quiesced
     std::array<float, 28801> chime {}; // 0.6 seconds at 48 kHz, final sample is zero
     std::atomic<uint64_t> chimeRequest {0};
     uint64_t lastChimeRequest = 0;
@@ -53,7 +63,6 @@ private:
     int testSamplesRemaining = 0, chimeOutput = -1;
     double chimePosition = 28800;
     foh::PinkNoise pink; foh::LogSweep sweep; float lastGain = -999;
-    float scratch[4096] {};
 };
 
 // Inter (OFL) bundled via BinaryData; falls back to system sans if missing.

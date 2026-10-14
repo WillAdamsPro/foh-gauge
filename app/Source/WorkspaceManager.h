@@ -15,6 +15,7 @@ public:
     static juce::File defaultFolder();
     juce::File folder() const { return dir; }
 
+    const juce::StringArray& loadErrors() const { return errors; }
     int count() const { return (int) list.size(); }
     fohws::Workspace& at(int i) { return list[(size_t) i]; }
     int indexOf(const std::string& id) const;
@@ -34,6 +35,7 @@ private:
     static std::string layoutKey(const fohws::Workspace& w); // root + floating, excluding panel state
     bool readFile(const juce::File& f, fohws::Workspace& w) const;
     void writeFile(const juce::File& f, const fohws::Workspace& w) const;
+    mutable juce::StringArray errors;
     // Views and floating windows retain references into the live workspaces.
     // Save As must not invalidate those references when appending a workspace.
     juce::File dir; std::deque<fohws::Workspace> list;

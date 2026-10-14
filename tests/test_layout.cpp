@@ -1,6 +1,7 @@
 // Workspace layout: JSON round-trip, collapse rule and floating-window display clamping (pure C++, no JUCE).
 #include <catch2/catch_test_macros.hpp>
 #include "LayoutModel.h"
+#include "FileValidation.h"
 using namespace fohws;
 
 static Size mins(const std::string& id) { if (id == "TransferFunction" || id == "RTA") return {420, 220}; if (id == "Inspector") return {260, 140}; return {240, 140}; }
@@ -146,4 +147,44 @@ TEST_CASE("display refresh ignores empty work areas and preserves state until re
     for (int i = 0; i < 1000; ++i)
         CHECK(clampToDisplays(panel, {{"usable", {-1440, 25, 1440, 875}, true}})
               == Rect {-1400, 65, 500, 300});
+TEST_CASE("Damaged layouts are rejected transactionally", "[layout][files]") {
+    auto w = builtInPresets()[1]; const auto before = toJson(w); auto j = before; std::string err;
+    SECTION("absurd active tab") { auto root = toJson(LayoutNode::tabs({"RTA", "Phase"})); root.set("active", 1e100); j.set("root", root); }
+    SECTION("missing saved target") { Json s = Json::object(), p = Json::object(); p.set("targetChoice", 4); s.set("RTA", p); j.set("panelState", s); }
+    SECTION("unsafe id") { j.set("id", "../outside"); }
+    SECTION("nonintegral version") { j.set("version", 1.5); }
+    SECTION("bad floating bounds") {
+        Json f = Json::array(), p = Json::object(), b = Json::object();
+        b.set("x", 1e100); b.set("y", 0); b.set("w", -1); b.set("h", 300); p.set("bounds", b); p.set("panel", "Test"); f.push(p); j.set("floating", f);
+    }
+    SECTION("negative split size") { auto root = j["root"]; Json sizes = Json::array(); sizes.push(-1); sizes.push(2); root.set("sizes", sizes); j.set("root", root); }
+    SECTION("nonnumeric split size") { auto root = j["root"]; Json sizes = Json::array(); sizes.push("bad"); sizes.push(1); root.set("sizes", sizes); j.set("root", root); }
+    SECTION("huge plot setting") { Json s = Json::object(), p = Json::object(); p.set("yMin", 1e100); s.set("TransferFunction", p); j.set("panelState", s); }
+    SECTION("corrupt saved target") { Json s = Json::object(), p = Json::object(); p.set("targetChoice", 4); p.set("targetText", "20 0\n1000 nan"); s.set("RTA", p); j.set("panelState", s); }
+    SECTION("duplicate panels") { j.set("root", toJson(LayoutNode::tabs({"RTA", "RTA"}))); }
+    SECTION("deep layout") { auto root = toJson(L("RTA")); for (int i = 0; i < 40; ++i) { Json p = Json::object(), children = Json::array(), sizes = Json::array(); p.set("type", "split"); children.push(root); sizes.push(1); p.set("children", children); p.set("sizes", sizes); root = p; } j.set("root", root); }
+    REQUIRE_FALSE(fromJson(j, w, err)); REQUIRE_FALSE(err.empty()); REQUIRE(toJson(w) == before);
+}
+TEST_CASE("Failed node parsing preserves its previous tree", "[layout][files]") {
+    auto n = builtInPresets()[1].root; const auto before = n; std::string error;
+    REQUIRE_FALSE(fromJson(Json::parse(R"({"type":"split","children":[{"type":"leaf","panel":"RTA"}],"sizes":["bad"]})"), n, error));
+    REQUIRE(n == before);
+}
+
+TEST_CASE("Preference XML preflight bounds recursion bytes and encodings", "[prefs][files]") {
+    REQUIRE(fohapp::boundedXml("\xef\xbb\xbf" "<?xml version=\"1.0\"?>\r\n<PROPERTIES><VALUE name=\"x\" val=\"&lt;\" /></PROPERTIES>"));
+    for (const auto& bad : {std::string(), std::string("<PROPERTIES>"), std::string("<PROPERTIES val=\"unterminated>"),
+                            std::string("<!DOCTYPE a [<!ENTITY x SYSTEM \"file:///synthetic\">]><a/>"),
+                            std::string("\xff\xfe<a/>"), std::string(1024 * 1024 + 1, ' ')}) REQUIRE_FALSE(fohapp::boundedXml(bad));
+    std::string deep; for (int i = 0; i < 40; ++i) deep += "<a>"; for (int i = 0; i < 40; ++i) deep += "</a>";
+    REQUIRE_FALSE(fohapp::boundedXml(deep));
+    std::string wide = "<a>"; for (int i = 0; i < 4097; ++i) wide += "<b/>"; wide += "</a>";
+    REQUIRE_FALSE(fohapp::boundedXml(wide));
+}
+
+TEST_CASE("Workspace preserves disabled routing channels", "[layout][files]") {
+    auto w = builtInPresets()[0]; Json routing = Json::object();
+    for (const auto* key : {"mic", "ref", "outA", "outB"}) routing.set(key, -1);
+    w.panelState.set("InputsAndDevices", routing); Workspace loaded; std::string error;
+    REQUIRE(fromJson(toJson(w), loaded, error)); REQUIRE(loaded.panelState == w.panelState);
 }

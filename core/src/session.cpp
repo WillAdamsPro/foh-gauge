@@ -1,4 +1,5 @@
 #include "fohcore/session.h"
+#include "fohcore/input.h"
 #include <algorithm>
 #include <cmath>
 #include <fstream>
@@ -40,6 +41,9 @@ Json captureJson(const Trace& t) {
 }
 Trace captureFromJson(const Json& j) {
     if (!j.isObject()) throw std::runtime_error("Invalid capture");
+    for (const auto* key : {"sampleRate", "refDelayMs", "blankThreshold"})
+        if (j[key].type() != Json::Number) throw std::runtime_error("Invalid capture setting type");
+    if (j["name"].type() != Json::String || j["visible"].type() != Json::Bool) throw std::runtime_error("Invalid capture metadata");
     Trace t; t.name = j["name"].asString(); t.visible = j["visible"].asBool(true); t.refDelayMs = j["refDelayMs"].asNumber();
     auto& f = t.tf; f.sampleRate = j["sampleRate"].asNumber(); f.fftSize = integer(j["fftSize"], 0, 1 << 24); f.averages = integer(j["averages"], 0, std::numeric_limits<int>::max()); f.blankThreshold = j["blankThreshold"].asNumber();
     f.freq = numbers(j["freq"]); f.magDb = numbers(j["magDb"]); f.phaseDeg = numbers(j["phaseDeg"]); f.coherence = numbers(j["coherence"]);
@@ -49,6 +53,17 @@ Trace captureFromJson(const Json& j) {
         throw std::runtime_error("Capture arrays have different lengths");
     for (size_t i = 0; i < n; ++i) f.H.emplace_back(real[i], imag[i]);
     for (double v : blank) { if (v != 0 && v != 1) throw std::runtime_error("Invalid blanking flag"); f.blanked.push_back((uint8_t) v); }
+    if (!std::isfinite(t.refDelayMs) || std::abs(t.refDelayMs) > 10000 || f.sampleRate < 8000 || f.sampleRate > 768000
+        || f.fftSize < 2 || f.fftSize > (1 << 20) || (f.fftSize & (f.fftSize - 1)) || n == 0 || n > (size_t) f.fftSize / 2 + 1
+        || f.blankThreshold < 0 || f.blankThreshold > 1)
+        throw std::runtime_error("Invalid capture settings");
+    for (size_t i = 0; i < n; ++i) {
+        if (!std::isfinite(f.freq[i]) || f.freq[i] < 0 || f.freq[i] > f.sampleRate / 2 || (i && f.freq[i] <= f.freq[i-1])
+            || (std::isfinite(f.magDb[i]) && std::abs(f.magDb[i]) > 300)
+            || (std::isfinite(f.phaseDeg[i]) && std::abs(f.phaseDeg[i]) > 36000)
+            || (std::isfinite(f.coherence[i]) && (f.coherence[i] < 0 || f.coherence[i] > 1)))
+            throw std::runtime_error("Invalid capture frequency or measurement value");
+    }
     return t;
 }
 void write(const Path& p, const std::string& text) {
@@ -56,10 +71,8 @@ void write(const Path& p, const std::string& text) {
     f << text; f.close(); if (!f) throw std::runtime_error("Cannot write " + p.filename().string());
 }
 std::string read(const Path& p) {
-    if (std::filesystem::is_symlink(p) || !std::filesystem::is_regular_file(p) || std::filesystem::file_size(p) > 64 * 1024 * 1024)
-        throw std::runtime_error("Missing or invalid session file: " + p.filename().string());
-    std::ifstream f(p, std::ios::binary); if (!f) throw std::runtime_error("Cannot read session file");
-    return {std::istreambuf_iterator<char>(f), std::istreambuf_iterator<char>()};
+    if (std::filesystem::is_symlink(p)) throw std::runtime_error("Session files must not be symbolic links");
+    return input::read(p);
 }
 Json readJson(const Path& p, bool objectRequired = true) {
     std::string err; auto j = Json::parse(read(p), &err);
@@ -80,7 +93,7 @@ bool saveSession(const Path& folder, const Session& s, std::string& error) {
     try {
         checkFolder(folder);
         if (!s.workspace.isObject() || !s.measurement.isObject()) throw std::runtime_error("Invalid session metadata");
-        if (!std::isfinite(s.sampleRate) || s.sampleRate <= 0 || s.bufferSize <= 0) throw std::runtime_error("Invalid device settings");
+        if (!std::isfinite(s.sampleRate) || s.sampleRate < 8000 || s.sampleRate > 768000 || s.bufferSize <= 0) throw std::runtime_error("Invalid device settings");
         if (!s.micCalText.empty() && !parseMicCal(s.micCalText).ok()) throw std::runtime_error("Invalid session mic calibration");
         for (const auto& t : s.captures) captureFromJson(captureJson(t));
         if (s.captures.size() > TraceStore::kMax) throw std::runtime_error("Too many captures");
@@ -117,18 +130,38 @@ bool loadSession(const Path& folder, Session& out, std::string& error) {
         Session s; const auto& d = j["devices"]; const auto& c = j["channels"]; const auto& cal = j["micCal"];
         if (!d.isObject() || !c.isObject() || !cal.isObject() || !j["workspace"].isObject()) throw std::runtime_error("Incomplete session manifest");
         s.deviceType = d["type"].asString(); s.inputDevice = d["input"].asString(); s.outputDevice = d["output"].asString(); s.sampleRate = d["sampleRate"].asNumber(); s.bufferSize = integer(d["bufferSize"], 1, 1 << 20); s.inputChannels = d["inputChannels"].asString(); s.outputChannels = d["outputChannels"].asString();
-        s.mic = integer(c["mic"], 0, 1023); s.reference = integer(c["reference"], 0, 1023); s.outputA = integer(c["outputA"], 0, 1023); s.outputB = integer(c["outputB"], 0, 1023);
-        if (!std::isfinite(s.sampleRate) || s.sampleRate <= 0 || s.bufferSize <= 0 || s.mic < 0 || s.reference < 0 || s.outputA < 0 || s.outputB < 0 || s.mic > 1023 || s.reference > 1023 || s.outputA > 1023 || s.outputB > 1023) throw std::runtime_error("Invalid device or channel settings");
+        s.mic = integer(c["mic"], -1, 1023); s.reference = integer(c["reference"], -1, 1023); s.outputA = integer(c["outputA"], -1, 1023); s.outputB = integer(c["outputB"], -1, 1023);
+        if (!std::isfinite(s.sampleRate) || s.sampleRate < 8000 || s.sampleRate > 768000 || s.bufferSize <= 0 || s.mic < -1 || s.reference < -1 || s.outputA < -1 || s.outputB < -1 || s.mic > 1023 || s.reference > 1023 || s.outputA > 1023 || s.outputB > 1023) throw std::runtime_error("Invalid device or channel settings");
         for (const auto& mask : {s.inputChannels, s.outputChannels})
             if (mask.size() > 1024 || mask.find_first_not_of("01") != std::string::npos) throw std::runtime_error("Invalid channel mask");
         s.micCalName = cal["name"].asString(); s.micCalEnabled = cal["enabled"].asBool();
-        if (cal["present"].asBool()) s.micCalText = read(folder / "mic-cal.txt");
-        if (!s.micCalText.empty() && !parseMicCal(s.micCalText).ok()) throw std::runtime_error("Invalid session mic calibration");
-        if (j.has("splCal")) s.splCal = j["splCal"];
-        if (j["hasTargets"].asBool()) s.targets = readJson(folder / "targets" / "targets.json", false);
+        if (cal["present"].type() != Json::Bool || cal["enabled"].type() != Json::Bool || j["hasTargets"].type() != Json::Bool)
+            throw std::runtime_error("Invalid session flags");
+        if (cal["present"].asBool()) {
+            s.micCalText = read(folder / "mic-cal.txt");
+            if (!parseMicCal(s.micCalText).ok()) throw std::runtime_error("Invalid session mic calibration");
+        }
+        if (s.micCalEnabled && s.micCalText.empty()) throw std::runtime_error("Enabled mic calibration is missing");
+        if (j.has("splCal")) {
+            if (!j["splCal"].isObject()) throw std::runtime_error("Invalid SPL calibration");
+            for (const auto& entry : j["splCal"].members())
+                if (!SplCal::fromJson(entry.second).calibrated) throw std::runtime_error("Invalid SPL calibration");
+            s.splCal = j["splCal"];
+        }
+        if (j["hasTargets"].asBool()) s.targets = readJson(folder / "targets" / "targets.json");
         double count = j["captureCount"].asNumber(-1);
         if (count < 0 || count > TraceStore::kMax || std::floor(count) != count) throw std::runtime_error("Invalid capture count");
         for (int i = 0; i < count; ++i) s.captures.push_back(captureFromJson(readJson(folder / "captures" / (std::to_string(i) + ".json"))));
+        if (!j["measurement"].isObject()) throw std::runtime_error("Invalid measurement settings");
+        const auto& m = j["measurement"];
+        for (const auto* key : {"smoothing", "averages", "rtaFraction"})
+            if (m.has(key)) integer(m[key], 0, 65536);
+        for (const auto* key : {"blankThreshold", "refDelayMs"}) {
+            if (!m.has(key)) continue;
+            double v = m[key].asNumber(std::numeric_limits<double>::quiet_NaN());
+            if (!std::isfinite(v) || (std::string(key) == "blankThreshold" ? v < 0 || v > 1 : std::abs(v) > 10000))
+                throw std::runtime_error("Invalid measurement setting: " + std::string(key));
+        }
         s.workspace = j["workspace"]; s.measurement = j["measurement"]; out = std::move(s); error.clear(); return true;
     } catch (const std::exception& e) { error = e.what(); return false; }
 }
