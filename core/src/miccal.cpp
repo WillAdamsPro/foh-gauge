@@ -13,14 +13,17 @@ MicCal parseMicCal(const std::string& text) {
     while (std::getline(in, line)) {
         std::string low = line; std::transform(low.begin(), low.end(), low.begin(), [](unsigned char ch){ return (char) std::tolower(ch); });
         auto sf = low.find("sens factor");
-        if (sf != std::string::npos) { auto eq = low.find_first_of("=:", sf); if (eq != std::string::npos) try { c.sensitivityOffsetDb = std::stod(low.substr(eq + 1)); } catch (...) {} continue; }
+        if (sf != std::string::npos) { auto eq = low.find_first_of("=:", sf); if (eq != std::string::npos) try { c.sensitivityOffsetDb = std::stod(low.substr(eq + 1)); c.hasSensFactor = true; } catch (...) {}
+            std::string t = line; while (!t.empty() && (t.back() == '\r' || t.back() == '\n' || t.back() == ' ')) t.pop_back();
+            size_t b = t.find_first_not_of(" \t\"\xEF\xBB\xBF"); t = b == std::string::npos ? "" : t.substr(b); if (!t.empty() && t.back() == '"') t.pop_back();
+            c.sensFactorLine = t; continue; }
         size_t s = line.find_first_not_of(" \t\r\xEF\xBB\xBF"); if (s == std::string::npos) continue;
         char f = line[s]; if (f == '*' || f == '#' || f == ';' || f == '"' || f == '/') continue;
         for (auto& ch : line) if (ch == ',' || ch == ';' || ch == '\t') ch = ' ';
         std::istringstream ls(line); std::vector<double> v; std::string tok;
         while (ls >> tok) { try { size_t used; double d = std::stod(tok, &used); if (used != tok.size()) break; v.push_back(d); } catch (...) { break; } }
         if (v.size() < 2) continue; // header or junk line
-        if (v[0] <= 0) continue;
+        if (!(v[0] > 0) || !std::isfinite(v[0]) || !std::isfinite(v[1]) || (v.size() >= 3 && !std::isfinite(v[2]))) continue; // non-finite rows are skipped
         ++nrows; if (v.size() < 3) anyPhase = false;
         rows.push_back({v[0], v[1], v.size() >= 3 ? v[2] : 0.0});
     }
