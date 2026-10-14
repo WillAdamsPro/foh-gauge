@@ -21,6 +21,7 @@ public:
     const foh::AnalysisSnapshot& latest() { return publisher.latest(); }
     // Cal is not POD, so it is handed over by pointer swap (rare, non-RT). nullptr = cal off.
     void setCal(std::shared_ptr<const foh::MicCal> cal, const juce::String& name);
+    void setLoopback(std::shared_ptr<const foh::LoopbackCorrection> c, uint64_t epoch);
     std::atomic<bool> paused { false };
 
 private:
@@ -35,6 +36,9 @@ private:
     std::mutex calLock; std::shared_ptr<const foh::MicCal> pendingCal; juce::String pendingCalName; bool calDirty = false;
     std::shared_ptr<const foh::MicCal> cal; std::string calName;
 
+    std::shared_ptr<const foh::LoopbackCorrection> pendingLoopback, loopback;
+    uint64_t loopbackEpoch = 0, pendingLoopbackEpoch = 0;
+    bool loopbackDirty = false;
     // analysis-thread state
     double levelEnergy = 0; int levelSamples = 0;
     uint64_t inputEpoch = 0; int micChannel = -1;

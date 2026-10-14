@@ -16,7 +16,8 @@ private:
     void applyDevice();
     void changeListenerCallback(juce::ChangeBroadcaster*) override { refresh(); }
     AppModel& model;
-    juce::Label title, notice, splInstructions, splStatus;
+    juce::Label title, notice, splInstructions, splStatus, loopbackInstructions, loopbackStatus;
+    juce::TextButton measureLoopback { "Measure interface" }, clearLoopback { "Clear correction" };
     juce::ComboBox splReference; juce::TextEditor knownLevel;
     juce::TextButton calibrate { "Calibrate SPL" }, clearSpl { "Clear SPL" };
     juce::ComboBox deviceType, input, output, rate, mic, ref, generator, loopback;

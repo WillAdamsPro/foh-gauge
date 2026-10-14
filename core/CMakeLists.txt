@@ -1,4 +1,4 @@
-add_library(fohcore STATIC src/interface_presets.cpp src/routing.cpp src/fft.cpp src/generators.cpp src/transfer.cpp src/delay.cpp src/rta.cpp src/splcal.cpp src/miccal.cpp src/smoothing.cpp src/format.cpp src/target.cpp src/json.cpp src/session.cpp)
+add_library(fohcore STATIC src/loopback.cpp src/interface_presets.cpp src/routing.cpp src/fft.cpp src/generators.cpp src/transfer.cpp src/delay.cpp src/rta.cpp src/splcal.cpp src/miccal.cpp src/smoothing.cpp src/format.cpp src/target.cpp src/json.cpp src/session.cpp)
 target_include_directories(fohcore PUBLIC include)
 target_link_libraries(fohcore PRIVATE foh_sanitizers)
 if(NOT MSVC)

@@ -5,6 +5,11 @@ void AnalysisEngine::setCal(std::shared_ptr<const foh::MicCal> c, const juce::St
     std::lock_guard<std::mutex> l(calLock); pendingCal = std::move(c); pendingCalName = name; calDirty = true;
 }
 
+void AnalysisEngine::setLoopback(std::shared_ptr<const foh::LoopbackCorrection> c, uint64_t epoch) {
+    std::lock_guard<std::mutex> l(calLock);
+    pendingLoopback = std::move(c); pendingLoopbackEpoch = epoch; loopbackDirty = true;
+}
+
 void AnalysisEngine::rebuild(double newFs) {
     fs = newFs; levelEnergy = 0; levelSamples = 0;
     tf = std::make_unique<foh::TransferFunction>(fftN, fs); rta = std::make_unique<foh::RTA>(fftN, fs, rtaFrac);
@@ -34,7 +39,9 @@ void AnalysisEngine::handle(const foh::Command& c) {
 
 void AnalysisEngine::publish() {
     auto& s = publisher.beginWrite();
-    s.tf = tf->result(smoothing); s.smoothingFraction = smoothing;
+    s.rawTf = tf->result(0);
+    s.tf = tf->result(smoothing, loopbackEpoch == inputEpoch ? loopback.get() : nullptr);
+    s.smoothingFraction = smoothing;
     if (cal) cal->apply(s.tf);
     s.rtaDb = rta->bandsDb(); s.rtaBands = rta->bands(); s.rtaFraction = rtaFrac;
     s.delay = delay; s.delaySeq = delaySeq; s.delayWasSub = delayWasSub;
@@ -67,6 +74,9 @@ void AnalysisEngine::run() {
             engine.analysisEpoch.store(epoch, std::memory_order_release);
         }
         { std::lock_guard<std::mutex> l(calLock);
+          if (loopbackDirty) {
+              loopback = pendingLoopback; loopbackEpoch = pendingLoopbackEpoch; loopbackDirty = false;
+          }
           if (calDirty) { cal = pendingCal; calName = pendingCalName.toStdString(); calDirty = false;
                           rta->setCalibrationDb(cal ? cal->correctionDb(fftN / 2 + 1, fs / fftN) : std::vector<double>{}); } }
         foh::Command c; while (commands.pop(c)) handle(c);

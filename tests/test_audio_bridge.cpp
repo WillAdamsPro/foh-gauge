@@ -688,3 +688,27 @@ TEST_CASE("Settings and calibration changes overlap a synthetic measurement", "[
         REQUIRE(snapshot.inputEpoch == engine.captureEpoch.load());
     }
 }
+
+TEST_CASE("Analysis applies stored loopback only to its capture epoch", "[app][audio][loopback]") {
+    AudioEngine engine; AnalysisEngine analysis(engine);
+    engine.captureEpoch.store(1); analysis.start();
+    REQUIRE(waitFor([&] { return engine.analysisEpoch.load() == 1; }));
+    foh::LoopbackCorrection c; c.sampleRate = 48000; c.fftSize = 16384;
+    c.H.assign(8193, foh::cpx(.5, 0)); REQUIRE(c.valid());
+    analysis.setLoopback(std::make_shared<foh::LoopbackCorrection>(c), 1);
+    foh::PinkNoise noise(23); std::vector<float> ref(16384), mic(ref.size());
+    for (size_t i = 0; i < ref.size(); ++i) { ref[i] = noise.next(); mic[i] = .5f * ref[i]; }
+    for (int block = 0; block < 4; ++block) {
+        capture(engine, mic.data(), ref.data(), (int)ref.size());
+        REQUIRE(waitFor([&] { return engine.micRing.available() == 0; }));
+    }
+    REQUIRE(waitFor([&] { return analysis.latest().tf.averages >= 3; }));
+    auto snapshot = analysis.latest();
+    CHECK(std::abs(snapshot.tf.magDb[100]) < .1);
+    CHECK(std::abs(snapshot.rawTf.magDb[100] + 6.0206) < .1);
+    analysis.setLoopback(std::make_shared<foh::LoopbackCorrection>(c), 0); // stale routing
+    auto seq = snapshot.seq;
+    REQUIRE(waitFor([&] { return analysis.latest().seq > seq; }));
+    CHECK(std::abs(analysis.latest().tf.magDb[100] + 6.0206) < .1);
+    analysis.stop();
+}

@@ -135,6 +135,20 @@ struct TFResult {
     bool isBlanked(size_t k) const { return k < blanked.size() && blanked[k] != 0; }
     TrafficLight light(size_t k) const { return k < coherence.size() ? classifyCoherence(coherence[k]) : TrafficLight::Red; }
 };
+// Stored complex Out->In response, including its latency. Worker/message thread only.
+// Corrections require the same FFT grid and sample rate; incompatible data is untouched.
+class Json;
+struct LoopbackCorrection {
+    double sampleRate = 0;
+    int fftSize = 0;
+    std::vector<cpx> H;
+    bool valid() const;
+    static LoopbackCorrection measure(const TFResult& raw);
+    bool apply(TFResult& tf) const;
+    Json toJson() const;
+    static LoopbackCorrection fromJson(const Json&);
+};
+
 // Band summary for the status pill: mean coherence over [lo, hi] Hz and its light.
 struct CoherenceSummary {
     double meanCoherence = 0; TrafficLight light = TrafficLight::Red; int bins = 0;
@@ -224,7 +238,7 @@ public:
     void setCoherenceBlankThreshold(double t) { blankThr = !std::isfinite(t) || t < 0 ? 0 : (t > 1 ? 1 : t); }
     double coherenceBlankThreshold() const { return blankThr; }
     void reset();
-    TFResult result(int smoothingFraction = 0) const;
+    TFResult result(int smoothingFraction = 0, const LoopbackCorrection* loopback = nullptr) const;
     int frames() const { return frameCount; }
     void setConvergence(const ConvergenceSettings& c) { conv = c; resetConvergence(); }
     const ConvergenceSettings& convergenceSettings() const { return conv; }
@@ -410,6 +424,7 @@ private:
 struct AnalysisSnapshot {
     uint64_t seq = 0;           // increments on every publish
     TFResult tf;                // smoothed + blanked TF
+    TFResult rawTf;             // uncorrected, unsmoothed; loopback capture only
     int smoothingFraction = 0;  // smoothing applied to tf (0,3,6,12,24,48)
     std::vector<double> rtaDb;  // per-band dBFS, same order/size as rtaBands
     std::vector<Band> rtaBands; // RTA band centre + edges (fCenter, fLo, fHi)
