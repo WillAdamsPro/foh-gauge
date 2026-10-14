@@ -443,6 +443,42 @@ private:
     ListBox list; TextButton del {"Delete trace"};
 };
 
+// ===================== Indicative SPL / Leq =====================
+class SplLeqPanel : public Panel {
+public:
+    explicit SplLeqPanel(AppModel& m) : Panel(m, "SPLNumbers", "SPL / Leq (indicative)") {
+        addAndMakeVisible(weighting); weighting.addItemList({"A", "C", "Z"}, 1); weighting.setSelectedId(1);
+        addAndMakeVisible(preset); preset.addItemList({"WHO", "NIOSH"}, 1); preset.setSelectedId(1);
+        weighting.onChange = preset.onChange = [this] { repaint(); };
+        helpText = "Indicative calibrated SPL. Leq averages energy, with rolling 1 min and 15 min windows in 100 ms buckets. Before a window fills it uses elapsed measured time. Session starts with the input and resets on input or calibration changes. Paused audio is excluded. Warnings always use A weighting. WHO: 100 dBA LAeq-15. NIOSH: 85 dBA for 8 h, 3 dB exchange. This is not a certified sound level meter.";
+    }
+    fohws::Size minSize() const override { return {230, 240}; }
+    void resized() override { auto r=getLocalBounds().reduced(pad).removeFromTop(26); weighting.setBounds(r.removeFromLeft(70)); r.removeFromLeft(8); preset.setBounds(r); }
+    void modelChanged(int) override { repaint(); }
+    void paint(Graphics& g) override {
+        g.setColour(C::textPrimary()); g.setFont(FohLookAndFeel::font(T::small));
+        auto r=getLocalBounds().reduced(pad); r.removeFromTop(34);
+        auto line=[&](const String& text) { g.drawText(text,r.removeFromTop(24),Justification::centredLeft); };
+        const auto c=model.splCal();
+        if (!c.calibrated) { line("Calibrate SPL in Setup"); return; }
+        if (!model.micLevelReady() || model.leqRevision != model.analysis.leqRevision.load() || model.leq.seconds<=0) { line("-- SPL / Leq (no live signal)"); return; }
+        size_t w=static_cast<size_t>(weighting.getSelectedId()-1);
+        auto level=[&](double db) { return c.level(db-(model.calOn ? model.cal.dbAt(1000) : 0), model.splSensitivity()); };
+        auto value=[&](const char* label, double db) { line(String(label)+String(level(db),1)+" dB"+weighting.getText()); };
+        value("SPL  ",model.leq.level[w]); value("Leq 1 min  ",model.leq.minute[w]);
+        value("Leq 15 min  ",model.leq.fifteenMinutes[w]); value("Leq session  ",model.leq.session[w]);
+        line("Measured " + String(model.leq.seconds,1) + " s" + (model.leq.seconds<900 ? " (partial windows)" : ""));
+        auto selected=preset.getSelectedId()==1 ? foh::ExposurePreset::WHO : foh::ExposurePreset::NIOSH;
+        auto warning=foh::exposureWarning(selected,level(model.leq.fifteenMinutes[0]),level(model.leq.session[0]),model.leq.seconds);
+        if (model.micPeak>=0.99f) line("WARNING: input clipping");
+        else if (warning.exceeded) line("WARNING: " + preset.getText() + " limit reached");
+        else line(preset.getText()+" limit not reached");
+        line(selected==foh::ExposurePreset::WHO ? "100 dBA Leq-15" : "85 dBA / 8 h, 3 dB exchange");
+    }
+private:
+    ComboBox weighting, preset;
+};
+
 // ===================== Inspector =====================
 class InspectorPanel : public Panel {
 public:
@@ -491,7 +527,7 @@ PanelRegistry& PanelRegistry::standard() {
         ph("LimitPreset", "Limit Preset", "SPL limit preset for exposure monitoring.");
         ph("EQSuggestions", "EQ Suggestions", "Suggested EQ moves from the transfer function, coherence-weighted.");
         ph("SPLHistory", "SPL History", "SPL over time with LAeq / LCeq traces.");
-        ph("SPLNumbers", "SPL Numbers", "LAeq-15 / LCeq-15 / LAeq-1 readouts.");
+        add("SPLNumbers", "SPL / Leq", [](AppModel& m) { return std::make_unique<SplLeqPanel>(m); });
         ph("Dose", "Dose", "Noise dose against the selected limit.");
         ph("Events", "Events", "Log of clipping, limit breaches and captures.");
         return x; }();
