@@ -29,8 +29,13 @@ public:
     void testConnection(int output, int expectedInput) noexcept;
     void cancelConnectionTest() noexcept;
     foh::ConnectionResult connectionResult() const noexcept;
+    // Analysis-worker request; only atomics cross to the audio callback.
+    void startSweepMeasurement() noexcept {
+        sweepPlaybackDone.store(false); gen.store(Sweep); sweepRequest.store(true, std::memory_order_release);
+    }
     enum Gen { Off = 0, Pink = 1, Sweep = 2 };
     std::atomic<int> gen{Off}, micCh{0}, refCh{1}, outA{0}, outB{1};
+    std::atomic<bool> sweepPlaybackDone {false}; // callback -> analysis, automatic end vs user stop
     std::atomic<float> genGainDb{-20.f};
     std::atomic<bool> monitoringSilent{false}; // W7: suppress all generated playback
     static_assert(std::atomic<int>::is_always_lock_free);
@@ -64,6 +69,10 @@ private:
     foh::ConnectionDetector connectionDetector;
     int testSamplesRemaining = 0, chimeOutput = -1;
     double chimePosition = 28800;
+    std::atomic<bool> sweepRequest {false};
+    // Audio-thread-owned playback state; reset only with JUCE I/O quiesced.
+    int sweepRemaining = 0, previousGen = Off;
+    double sweepLevel = 0; bool sweepRestart = false, sweepOneShot = false;
     foh::PinkNoise pink; foh::LogSweep sweep; float lastGain = -999;
 };
 
@@ -106,6 +115,7 @@ class ImpulseComponent : public juce::Component {
 public:
     void setResult(const foh::DelayResult& r, double fs) { res = r; sampleRate = fs; repaint(); }
     void paint(juce::Graphics&) override;
+    bool showEtc = false; std::vector<double> etcDb;
     foh::DelayResult res; double sampleRate = 48000; double preMs = 5, postMs = 45;
 };
 
