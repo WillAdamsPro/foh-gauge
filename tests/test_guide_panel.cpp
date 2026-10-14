@@ -848,9 +848,9 @@ TEST_CASE("W2 failed or absent sub captures cannot reuse a previous run", "[app]
     }
 }
 
-TEST_CASE("W6 Back hiding and session reload discard in-flight box sweeps", "[app][guide][edges][polarity]") {
+TEST_CASE("W6 Back hiding session reload and rig edits discard in-flight box sweeps", "[app][guide][edges][polarity]") {
     juce::ScopedJuceInitialiser_GUI gui;
-    for (int navigation = 0; navigation < 3; ++navigation) {
+    for (int navigation = 0; navigation < 4; ++navigation) {
         AppModel model; auto panel = makeGuidePanel(model); panel->setSize(260, 780);
         panel->setVisible(true);
         auto state = fohws::Json::object(); state.set("guide", 5); state.set("step", 1); panel->loadState(state);
@@ -860,6 +860,7 @@ TEST_CASE("W6 Back hiding and session reload discard in-flight box sweeps", "[ap
         if (navigation == 0) button(*panel, "Back").onClick();
         if (navigation == 1) panel->setVisible(false);
         if (navigation == 2) model.notify(AppModel::Session);
+        if (navigation == 3) { model.rigProfile = foh::RigProfile{}; model.notify(AppModel::Rig); }
         const int step = panel->saveState()["step"].asInt();
         model.sweepCapturing = false; model.sweep.response.impulse = {0, 1, 0};
         model.sweep.response.arrivals.push_back({}); model.notify(AppModel::Snapshot);
@@ -967,4 +968,53 @@ TEST_CASE("W6 ambiguous impulse releases pending sweep and permits retry", "[app
     complete(inverted);
     CHECK(panel->saveState()["step"].asInt() == 2);
     CHECK(labelContains(*panel, "This box: INVERTED"));
+}
+
+TEST_CASE("Rig edits and Skip retire measurements even when the selected W guide remains listed", "[app][guide][rig][edges]") {
+    juce::ScopedJuceInitialiser_GUI gui;
+    for (int change = 0; change < 3; ++change) {
+        for (int guide = 0; guide < 5; ++guide) {
+            CAPTURE(change, guide);
+            AppModel model; CaptureStub capture;
+            model.rigProfile = foh::RigProfile{};
+            model.rigProfile->subs = model.rigProfile->frontFills = true;
+            if (change == 1) model.rigProfile->control = foh::RigProfile::Control::Individual;
+            auto panel = makeGuidePanel(model); panel->setSize(260, 780);
+            auto state = fohws::Json::object(); state.set("guide", guide); state.set("step", 100);
+            panel->loadState(state);
+            button(*panel, "Measure before change").onClick(); capture.finish(model);
+            button(*panel, guide == 4 ? "DSP state confirmed" : "I entered the change").onClick();
+            button(*panel, "Re-measure to verify").onClick();
+            if (change == 0) model.rigProfile->control = foh::RigProfile::Control::Individual;
+            if (change == 1) model.rigProfile->control = foh::RigProfile::Control::Grouped;
+            if (change == 2) model.rigProfile.reset(); // Skip restores the default list.
+            model.notify(AppModel::Rig);
+            CHECK(panel->saveState()["guide"].asInt() == guide);
+            CHECK(panel->saveState()["step"].asInt() == 0);
+            capture.finish(model, 3); // A queued completion from the old answers.
+            CHECK(panel->saveState()["step"].asInt() == 0);
+            CHECK_FALSE(labelContains(*panel, "Mean change:"));
+            cannotPass(*panel);
+            // Returning to Store starts a fresh run instead of staying disabled.
+            panel->loadState(state);
+            CHECK(button(*panel, "Measure before change").isEnabled());
+            button(*panel, "Measure before change").onClick(); capture.finish(model);
+            CHECK(panel->saveState()["step"].asInt() == (guide == 0 ? 5 : 4));
+        }
+    }
+}
+
+TEST_CASE("Rig edits retire early delay completions without leaving the guide busy", "[app][guide][rig][edges]") {
+    juce::ScopedJuceInitialiser_GUI gui;
+    AppModel model;
+    auto panel = makeGuidePanel(model); panel->setSize(260, 780);
+    auto state = fohws::Json::object(); state.set("guide", 0); state.set("step", 2);
+    panel->loadState(state);
+    button(*panel, "Find + lock delay").onClick();
+    auto stale = std::move(guideDelay); REQUIRE(stale);
+    model.rigProfile = foh::RigProfile{}; model.notify(AppModel::Rig);
+    stale();
+    CHECK(panel->saveState()["step"].asInt() == 0);
+    CHECK(button(*panel, "Open Setup").isEnabled());
+    CHECK_FALSE(labelContains(*panel, "No lock."));
 }
