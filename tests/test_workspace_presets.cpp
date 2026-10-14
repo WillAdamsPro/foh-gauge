@@ -1,6 +1,8 @@
 #include <catch2/catch_test_macros.hpp>
 #include "WorkspaceManager.h"
 #include "WorkspacePresetCommands.h"
+#include "WorkspaceView.h"
+#include <set>
 #include <algorithm>
 
 namespace {
@@ -79,4 +81,88 @@ TEST_CASE("each preset restores its own edited panel set and can reset independe
     }
     WorkspaceManager reset(temporary.folder);
     for (int i = 0; i < 4; ++i) CHECK(panels(reset.at(i)) == panels(defaults[(size_t) i]));
+}
+
+TEST_CASE("Save As keeps live workspace and floating state references valid", "[app][workspace][stress]") {
+    TemporaryWorkspaces temporary;
+    WorkspaceManager manager(temporary.folder);
+    auto* workspace = &manager.at(2);
+    fohws::removePanel(workspace->root, "RTA");
+    workspace->floating.push_back({"RTA", {40, 65, 500, 300}, "main"});
+    auto* floating = &workspace->floating.front();
+    for (int i = 0; i < 64; ++i) {
+        const int copy = manager.saveAs(2, "Synthetic copy");
+        REQUIRE(&manager.at(2) == workspace);
+        REQUIRE(&manager.at(2).floating.front() == floating);
+        CHECK(manager.at(copy).floating.front().bounds == floating->bounds);
+    }
+    floating->bounds.x = 80;
+    manager.saveCurrent(2);
+    WorkspaceManager restored(temporary.folder);
+    REQUIRE(restored.at(2).floating.size() == 1);
+    CHECK(restored.at(2).floating.front().bounds.x == 80);
+}
+
+TEST_CASE("workspace view survives repeated shortcuts rebuilds and Show toggles", "[app][workspace][stress]") {
+    juce::ScopedJuceInitialiser_GUI initialiser;
+    AppModel model;
+    PanelRegistry registry;
+    auto workspaces = fohws::builtInPresets();
+    std::set<std::string> ids;
+    for (auto& w : workspaces) { std::vector<std::string> p; w.root.collectPanels(p); ids.insert(p.begin(), p.end()); }
+    int live = 0, created = 0;
+    struct CountedPanel : Panel {
+        int& live;
+        CountedPanel(AppModel& m, const std::string& id, int& count) : Panel(m, id, id), live(count) { ++live; }
+        ~CountedPanel() override { --live; }
+    };
+    for (const auto& id : ids) registry.add({id, id, [&, id](AppModel& m) {
+        ++created; return std::make_unique<CountedPanel>(m, id, live);
+    }});
+    {
+        WorkspaceView view(model, registry);
+        view.setSize(1440, 900);
+        WorkspacePresetCommands commands([&](int index) { view.setWorkspace(&workspaces[(size_t) index]); });
+        for (int i = 0; i < 1000; ++i) {
+            const int index = (i / 4) % 2 ? 3 - i % 4 : i % 4;
+            REQUIRE(commands.commandManager().invokeDirectly(WorkspacePresetCommands::firstPreset + index, false));
+            CHECK(view.workspace() == &workspaces[(size_t) index]);
+            const auto saved = fohws::toJson(view.workspace()->root).dump();
+            view.setShowMode(true);
+            view.activateTab({}, -1);
+            view.closePanel("RTA");
+            view.setSize(600, 360);
+            view.setShowMode(false);
+            view.setSize(1440, 900);
+            view.rebuild();
+            CHECK(fohws::toJson(view.workspace()->root).dump() == saved);
+            CHECK(created <= (int) ids.size());
+            CHECK(live == created);
+        }
+        auto tabs = fohws::builtInPresets()[2]; tabs.root = fohws::LayoutNode::tabs({"RTA", "Phase"});
+        view.setWorkspace(&tabs);
+        view.activateTab({}, -1); view.activateTab({}, 2); view.activateTab({99}, 0);
+        CHECK(tabs.root.active == 0);
+        view.activateTab({}, 1); CHECK(tabs.root.active == 1);
+        view.setWorkspace(nullptr);
+        view.activateTab({}, 0);
+    }
+    CHECK(live == 0);
+}
+
+TEST_CASE("bundled typefaces are released with the UI before JUCE shutdown", "[app][workspace][stress]") {
+    juce::ScopedJuceInitialiser_GUI initialiser;
+    juce::Typeface::Ptr regular, semibold, bold;
+    {
+        FohLookAndFeel look;
+        REQUIRE(look.regular != nullptr);
+        REQUIRE(look.semibold != nullptr);
+        REQUIRE(look.bold != nullptr);
+        regular = look.regular; semibold = look.semibold; bold = look.bold;
+    }
+    // Only these test references may remain. Static ownership would keep an
+    // extra reference alive until after JUCE's font machinery was destroyed.
+    CHECK(regular->getReferenceCount() == 1);
+    CHECK(semibold->getReferenceCount() == 1);
+    CHECK(bold->getReferenceCount() == 1);
 }

@@ -41,10 +41,15 @@ public:
             centreWithSize(getWidth(), getHeight());
             constrainToDisplay();
             main->fitSavedScale();
+            commands.registerAllCommandsForTarget(main);
             commands.registerAllCommandsForTarget(this);
             commands.setFirstCommandTarget(this);
             addKeyListener(commands.getKeyMappings());
+#if JUCE_MAC
             juce::MenuBarModel::setMacMainMenu(this);
+#else
+            setMenuBar(this);
+#endif
             setVisible(true);
 #if JUCE_MAC
             startTimer(1000); // Refresh consent after a change in System Settings.
@@ -52,7 +57,11 @@ public:
         }
         ~Window() override {
             stopTimer();
+#if JUCE_MAC
             juce::MenuBarModel::setMacMainMenu(nullptr);
+#else
+            setMenuBar(nullptr);
+#endif
             removeKeyListener(commands.getKeyMappings());
         }
         void updateMicrophoneConsent() {
@@ -79,8 +88,8 @@ public:
         void moved() override { constrainToDisplay(); }
         void resized() override { DocumentWindow::resized(); constrainToDisplay(); }
         juce::StringArray getMenuBarNames() override { return { "File", "View" }; }
-        juce::PopupMenu getMenuForIndex(int index, const juce::String& name) override {
-            if (index == 0) return main->getMenuForIndex(0, name);
+        juce::PopupMenu getMenuForIndex(int index, const juce::String&) override {
+            if (index == 0) return main->getFileMenu(commands);
             juce::PopupMenu menu;
             for (int id : { resetScale, scale125, scale150, scale200, largerScale, smallerScale })
                 menu.addCommandItem(&commands, id);
@@ -89,8 +98,9 @@ public:
             menu.addCommandItem(&commands, sunlightTheme);
             return menu;
         }
-        void menuItemSelected(int id, int index) override { if (index == 0) main->menuItemSelected(id, 0); }
-        juce::ApplicationCommandTarget* getNextCommandTarget() override { return nullptr; }
+        // Command items dispatch through the manager to Window (View) or MainComponent (File).
+        void menuItemSelected(int, int) override {}
+        juce::ApplicationCommandTarget* getNextCommandTarget() override { return main; }
         void getAllCommands(juce::Array<juce::CommandID>& ids) override {
             for (int id : { resetScale, largerScale, smallerScale, scale125, scale150, scale200, darkTheme, sunlightTheme }) ids.add(id);
         }

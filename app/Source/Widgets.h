@@ -75,7 +75,8 @@ public:
     void drawDocumentWindowTitleBar(juce::DocumentWindow&, juce::Graphics&, int w, int h, int titleSpaceX, int titleSpaceW, const juce::Image*, bool drawTitleTextOnLeft) override; // floating panel chrome (ws spec §5)
     static juce::Font font(float size, bool bold = false, bool semibold = false);
     static juce::Font numeric(float size, bool bold = true); // readouts: monospaced digits (no OpenType tnum in JUCE)
-    static juce::Typeface::Ptr regular, semibold, bold;
+    // Release bundled typefaces with the UI, before JUCE tears down CoreText.
+    juce::Typeface::Ptr regular, semibold, bold;
 };
 
 class PlotComponent : public juce::Component {

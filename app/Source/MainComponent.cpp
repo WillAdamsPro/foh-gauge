@@ -108,8 +108,10 @@ void MainComponent::updateSwitcher() { // "•" after a modified layout: a shape
 
 // ---- floating panels (spec §5)
 void MainComponent::openFloatingWindows() {
-    auto* w = view.workspace(); if (!w || setup.isVisible()) return;
-    for (auto& f : w->floating) { auto* p = view.panel(f.panel); if (!p) continue; view.releasePanel(f.panel, p);
+    auto* w = view.workspace(); if (!w || setup.isVisible() || showMode) return;
+    for (auto& f : w->floating) {
+        if (std::any_of(floats.begin(), floats.end(), [&](auto* win) { return win->panel.panelId() == f.panel; })) continue;
+        auto* p = view.panel(f.panel); if (!p) continue; view.releasePanel(f.panel, p);
         auto* win = floats.add(new FloatingPanelWindow(*p, f)); std::string id = f.panel;
         win->addKeyListener(presetCommands.keyMappings());
         auto window = SafePointer<FloatingPanelWindow>(win);
@@ -192,8 +194,6 @@ bool MainComponent::keyPressed(const KeyPress& k) {
         if (code == '0') { setUiScale(100); return true; }
         if (code == '=' || code == '+') { stepUiScale(1); return true; }
         if (code == '-') { stepUiScale(-1); return true; }
-        if (code == 'S' || code == 's') { saveSession(m.isShiftDown()); return true; }
-        if (code == 'O' || code == 'o') { openSession(); return true; }
     }
     if (showMode) {
         if (code == KeyPress::escapeKey) { setShowMode(false); return true; }
