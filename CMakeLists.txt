@@ -5,7 +5,10 @@ if(CMAKE_HOST_APPLE)
 endif()
 # A standalone Windows artifact must not require a separately installed MSVC runtime.
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
-project(FOHGauge VERSION 0.0.0 LANGUAGES C CXX)
+project(FOHGauge VERSION 0.1.0 LANGUAGES C CXX)
+# Release CI derives these from the tag (v0.1.0-rc5 -> 0.1.0) and the run number.
+set(FOH_APP_VERSION "${PROJECT_VERSION}" CACHE STRING "CFBundleShortVersionString")
+set(FOH_BUILD_NUMBER "${PROJECT_VERSION}" CACHE STRING "CFBundleVersion")
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 if(MSVC)
