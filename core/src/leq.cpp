@@ -23,7 +23,7 @@ LeqMeter::LeqMeter(double rate) : fs(rate), bucketSamples(1) {
     }
 }
 void LeqMeter::reset() noexcept {
-    history={}; partial={}; total={}; recent={}; fill=head=count=recentSamples=0; samples=0;
+    history={}; partial={}; total={}; totalCorrection={}; recent={}; fill=head=count=recentSamples=0; samples=0;
     for (auto& f:filters) for (auto& p:f) p.x=p.y=0;
 }
 void LeqMeter::process(const float* data, int n) noexcept {
@@ -32,10 +32,22 @@ void LeqMeter::process(const float* data, int n) noexcept {
         double x=std::isfinite(data[i]) ? std::clamp(double(data[i]), -1.0, 1.0) : 0;
         Energy values {{x,x,x}};
         for (int w=0; w<2; ++w) { for (auto& p:filters[w]) values[w]=p.tick(values[w]); values[w]*=gain[w]; }
-        for (int w=0; w<3; ++w) { double e=2*values[w]*values[w]; partial[w]+=e; total[w]+=e; }
-        ++samples;
-        if (++fill==bucketSamples) { recent=partial; recentSamples=bucketSamples; history[head]=partial; head=(head+1)%9000; count=std::min(count+1,9000); partial={}; fill=0; }
+        for (int w=0; w<3; ++w) { double e=2*values[w]*values[w]; partial[w]+=e; }
+        if (++fill==bucketSamples) finishBucket();
     }
+}
+void LeqMeter::finishBucket() noexcept {
+    // Add energy once per bucket, with compensation: quiet programme must still
+    // contribute after a loud, multi-hour session. No storage grows with duration.
+    for (int w=0; w<3; ++w) {
+        const double value = partial[w] - totalCorrection[w];
+        const double next = total[w] + value;
+        totalCorrection[w] = (next - total[w]) - value;
+        total[w] = next;
+    }
+    samples += uint64_t(bucketSamples);
+    recent=partial; recentSamples=bucketSamples; history[head]=partial;
+    head=(head+1)%9000; count=std::min(count+1,9000); partial={}; fill=0;
 }
 LeqMeter::Energy LeqMeter::window(int buckets) const noexcept {
     Energy energy=partial;
@@ -45,14 +57,15 @@ LeqMeter::Energy LeqMeter::window(int buckets) const noexcept {
         const auto& e=history[(head-1-i+9000)%9000];
         for (int w=0; w<3; ++w) energy[w]+=e[w]*fraction;
     }
-    double denom=double(std::min<uint64_t>(samples,uint64_t(buckets)*bucketSamples));
+    double denom=double(std::min<uint64_t>(samples+uint64_t(fill),uint64_t(buckets)*bucketSamples));
     for (auto& e:energy) e=denom>0 ? 10*std::log10(std::max(e/denom,1e-12)) : -120;
     return energy;
 }
 LeqReading LeqMeter::reading() const noexcept {
-    LeqReading r; r.seconds=double(samples)/fs; r.minute=window(600); r.fifteenMinutes=window(9000);
+    const auto observed = samples + uint64_t(fill);
+    LeqReading r; r.seconds=double(observed)/fs; r.minute=window(600); r.fifteenMinutes=window(9000);
     for (int w=0; w<3; ++w) {
-        r.session[w]=samples ? 10*std::log10(std::max(total[w]/samples,1e-12)) : -120;
+        r.session[w]=observed ? 10*std::log10(std::max((total[w]+partial[w])/observed,1e-12)) : -120;
         r.level[w]=recentSamples ? 10*std::log10(std::max(recent[w]/recentSamples,1e-12)) : -120;
     }
     return r;

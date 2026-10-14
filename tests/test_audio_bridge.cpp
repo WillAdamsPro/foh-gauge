@@ -16,8 +16,8 @@ void capture(AudioEngine& engine, const float* mic, const float* ref, int n) {
     engine.audioDeviceIOCallbackWithContext(inputs, 2, nullptr, 0, n, {});
 }
 template <typename Predicate>
-bool waitFor(Predicate predicate) {
-    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+bool waitFor(Predicate predicate, std::chrono::seconds timeout = std::chrono::seconds(3)) {
+    const auto deadline = std::chrono::steady_clock::now() + timeout;
     while (std::chrono::steady_clock::now() < deadline) {
         if (predicate()) return true;
         std::this_thread::sleep_for(std::chrono::milliseconds(5));
@@ -841,7 +841,9 @@ TEST_CASE("Sweep measurement captures loopback and publishes impulse and ETC", "
         engine.audioDeviceIOCallbackWithContext(inputs, 2, outputs, 2, block, {});
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
-    REQUIRE(waitFor([&] { return !analysis.latest().sweepCapturing; }));
+    // Instrumented Debug deconvolution of 6.5 s is slower than the usual
+    // control acknowledgement. Keep other waits at their three-second limit.
+    REQUIRE(waitFor([&] { return !analysis.latest().sweepCapturing; }, std::chrono::seconds(20)));
     const auto result = analysis.latest().sweep;
     REQUIRE(result.response.ok());
     CHECK(result.response.arrivals[0].delayMs == Catch::Approx(4.8).margin(0.02));

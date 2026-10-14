@@ -159,3 +159,47 @@ TEST_CASE("Show mode exposes W7 even with an older saved workspace", "[app][show
     REQUIRE(view.panel("RTA")->getParentComponent());
     REQUIRE_FALSE(monitoring->getParentComponent());
 }
+
+TEST_CASE("W7 timers and plots survive repeated monitoring restarts and destruction", "[app][show][stress]") {
+    juce::ScopedJuceInitialiser_GUI initialise;
+    AppModel model;
+    REQUIRE(model.traces.store("Synthetic reference", syntheticTF(), 0));
+    model.engine.state = AudioEngine::Ready;
+    for (int i = 0; i < 200; ++i) {
+        auto panel = PanelRegistry::standard().create("ShowMonitoring", model);
+        selectReference(*panel);
+        for (int restart = 0; restart < 5; ++restart) {
+            click(*panel, "Monitor"); CHECK(model.engine.monitoringSilent.load());
+            click(*panel, "Stop monitoring"); CHECK_FALSE(model.engine.monitoringSilent.load());
+        }
+        click(*panel, "Monitor");
+        // Destroy with its timer still armed; all callbacks must expire.
+        panel.reset();
+        CHECK_FALSE(model.engine.monitoringSilent.load());
+    }
+    auto panel = PanelRegistry::standard().create("ShowMonitoring", model);
+    selectReference(*panel); click(*panel, "Monitor");
+    panel->setSize(1000, 700); panel->addToDesktop(0); panel->setVisible(true);
+    model.tf = syntheticTF(); model.micLevelValid = true; model.refPeak = 0.1f;
+    juce::MessageManager::getInstance()->runDispatchLoopUntil(1100);
+    for (auto* child : panel->getChildren()) if (auto* plot = dynamic_cast<PlotComponent*>(child)) {
+        CHECK(plot->series.size() <= 2);
+        for (const auto& series : plot->series) CHECK(series.f.size() <= model.tf.freq.size());
+    }
+    panel.reset(); CHECK_FALSE(model.engine.monitoringSilent.load());
+    juce::Timer::callPendingTimersSynchronously();
+    juce::MessageManager::getInstance()->runDispatchLoopUntil(20);
+    CHECK_FALSE(model.engine.monitoringSilent.load());
+}
+
+TEST_CASE("W7 alert counters remain bounded across twelve hours of synthetic updates", "[app][show][stress]") {
+    fohui::ShowDriftAlert alert;
+    bool correct = true;
+    for (int second = 0; second < 12 * 3600; ++second) {
+        const int phase = second % 60;
+        const auto drift = phase < 30 ? fohui::ShowDrift{true, 4} : fohui::ShowDrift{};
+        correct &= alert.update(drift) == (phase >= 2 && phase < 30);
+        correct &= alert.consecutive >= 0 && alert.consecutive <= 3;
+    }
+    CHECK(correct);
+}

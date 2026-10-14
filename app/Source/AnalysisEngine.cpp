@@ -102,6 +102,34 @@ void AnalysisEngine::publish() {
     publisher.publish();
 }
 
+int AnalysisEngine::serviceCommands() {
+    // A producer replenishing the queue must not keep this worker in commands
+    // indefinitely. Each pass services at most the fixed queue capacity.
+    foh::Command c;
+    int handled = 0;
+    while (handled < foh::CommandQueue::capacity() && commands.pop(c)) { handle(c); ++handled; }
+    return handled;
+}
+
+void AnalysisEngine::processBlock(const float* m, const float* r, int n) {
+    if (sweepCapturing) {
+        const size_t count = std::min(size_t(n), size_t(fs * 6.5) - sweepRef.size());
+        sweepRef.insert(sweepRef.end(), r, r + count);
+        sweepMic.insert(sweepMic.end(), m, m + count);
+        if (sweepRef.size() == size_t(fs * 6.5)) {
+            sweepCapturing = false;
+            sweepResult = foh::deconvolveSweep(sweepRef, sweepMic, fs);
+            sweepRef.clear(); sweepMic.clear();
+        }
+    }
+    for (int i = 0; i < n; ++i) levelEnergy += double(m[i]) * m[i];
+    levelSamples += n;
+    leq->process(m, n);
+    tf->process(r, m, n); rta->process(m, n);
+    int H = (int) histRef.size();
+    for (int i = 0; i < n; ++i) { histRef[(size_t) histPos] = r[(size_t) i]; histMic[(size_t) histPos] = m[(size_t) i]; histPos = (histPos + 1) % H; }
+}
+
 void AnalysisEngine::run() {
     foh::ScopedFlushDenormals ftz;
     std::vector<float> m((size_t) fftN), r((size_t) fftN);
@@ -128,7 +156,7 @@ void AnalysisEngine::run() {
           if (calDirty) { positions = {}; positionMask = 0; positionAverage = {}; positionCount = 0;
                           cal = pendingCal; calName = pendingCalName.toStdString(); calDirty = false;
                           rta->setCalibrationDb(cal ? cal->correctionDb(fftN / 2 + 1, fs / fftN) : std::vector<double>{}); } }
-        foh::Command c; while (commands.pop(c)) handle(c);
+        serviceCommands();
         const auto revision = leqRevision.load();
         if (revision != meterRevision) { leq->reset(); meterRevision = revision; }
         if (sweepCapturing && (paused.load() || engine.deviceFailed.load()
@@ -142,22 +170,7 @@ void AnalysisEngine::run() {
             int n = std::min({ engine.micRing.available(), engine.refRing.available(), fftN });
             engine.micRing.pop(m.data(), n); engine.refRing.pop(r.data(), n); any = true;
             if (paused.load()) continue;
-            if (sweepCapturing) {
-                const size_t count = std::min(size_t(n), size_t(fs * 6.5) - sweepRef.size());
-                sweepRef.insert(sweepRef.end(), r.begin(), r.begin() + count);
-                sweepMic.insert(sweepMic.end(), m.begin(), m.begin() + count);
-                if (sweepRef.size() == size_t(fs * 6.5)) {
-                    sweepCapturing = false;
-                    sweepResult = foh::deconvolveSweep(sweepRef, sweepMic, fs);
-                    sweepRef.clear(); sweepMic.clear();
-                }
-            }
-            for (int i = 0; i < n; ++i) levelEnergy += double(m[i]) * m[i];
-            levelSamples += n;
-            leq->process(m.data(), n);
-            tf->process(r.data(), m.data(), n); rta->process(m.data(), n);
-            int H = (int) histRef.size();
-            for (int i = 0; i < n; ++i) { histRef[(size_t) histPos] = r[(size_t) i]; histMic[(size_t) histPos] = m[(size_t) i]; histPos = (histPos + 1) % H; }
+            processBlock(m.data(), r.data(), n);
         }
         auto now = juce::Time::getMillisecondCounterHiRes();
         // W7 needs only one snapshot per second; avoid rebuilding smoothed TF/RTA

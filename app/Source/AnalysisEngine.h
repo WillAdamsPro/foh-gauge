@@ -28,6 +28,9 @@ public:
     std::atomic<bool> paused { false };
 
 private:
+    friend struct AnalysisEngineSoakAccess; // runs worker steps without wall-clock waits
+    void processBlock(const float* mic, const float* ref, int n);
+    int serviceCommands();
     void run() override;
     void rebuild(double fs);
     void handle(const foh::Command& c);
