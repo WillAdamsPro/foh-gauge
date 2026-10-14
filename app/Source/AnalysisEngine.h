@@ -28,6 +28,10 @@ public:
     std::atomic<bool> paused { false };
 
 private:
+    // Tests may drive the same consumer pass without starting a worker thread.
+    friend class AnalysisEngineTestAccess;
+    bool processPendingAudio(std::vector<float>& mic, std::vector<float>& ref,
+                             const std::vector<float>& silence, uint64_t& epoch);
     void run() override;
     void rebuild(double fs);
     void handle(const foh::Command& c);
