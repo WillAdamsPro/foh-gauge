@@ -108,3 +108,23 @@ TEST_CASE("Missing-display recovery persists every floating panel on a smaller m
         CHECK_FALSE(recovered.at(2).root.contains(panels[i].panel));
     }
 }
+
+TEST_CASE("Corrupt current workspace falls back to the previous saved layout", "[app][workspace][files]") {
+    TemporaryWorkspaces temp;
+    fohws::Json saved;
+    {
+        WorkspaceManager manager(temp.folder); manager.at(1).name = "Synthetic saved layout";
+        saved = fohws::toJson(manager.at(1)); manager.save(1);
+    }
+    auto current = temp.folder.getChildFile("alignment.current.json");
+    SECTION("truncated") { REQUIRE(current.replaceWithText("{\"root\":")); }
+    SECTION("empty") { REQUIRE(current.replaceWithText("")); }
+    SECTION("garbled") { REQUIRE(current.replaceWithText("garbled")); }
+    SECTION("wrong encoding") { const char bytes[] = "\xff\xfe{}"; REQUIRE(current.replaceWithData(bytes, sizeof(bytes) - 1)); }
+    SECTION("absurd bounds") {
+        auto json = saved; auto root = json["root"]; auto sizes = fohws::Json::array(); sizes.push(1e100); sizes.push(-1); root.set("sizes", sizes); json.set("root", root);
+        REQUIRE(current.replaceWithText(juce::String(json.dump())));
+    }
+    WorkspaceManager loaded(temp.folder);
+    REQUIRE(fohws::toJson(loaded.at(1)) == saved); REQUIRE_FALSE(loaded.loadErrors().isEmpty());
+}

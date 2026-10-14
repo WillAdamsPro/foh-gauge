@@ -18,7 +18,7 @@ Json SplCal::toJson() const {
 SplCal SplCal::fromJson(const Json& j) {
     if (j["offsetDb"].type() != Json::Number || j["sensitivityDb"].type() != Json::Number) return {};
     double offset = j["offsetDb"].asNumber(), sens = j["sensitivityDb"].asNumber();
-    if (!std::isfinite(offset) || !std::isfinite(sens)) return {};
+    if (!std::isfinite(offset) || !std::isfinite(sens) || offset <= 0 || offset >= 260 || std::abs(sens) > 200) return {};
     return {offset, sens, true};
 }
 }

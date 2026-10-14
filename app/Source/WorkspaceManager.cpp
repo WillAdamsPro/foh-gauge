@@ -1,4 +1,5 @@
 #include "WorkspaceManager.h"
+#include <fohcore/input.h>
 using namespace juce;
 using namespace fohws;
 
@@ -11,9 +12,17 @@ File WorkspaceManager::defaultFolder() {
 }
 
 bool WorkspaceManager::readFile(const File& f, Workspace& w) const {
-    if (!f.existsAsFile()) return false; std::string err;
-    Workspace tmp; if (!fromJson(Json::parse(f.loadFileAsString().toStdString(), &err), tmp, err)) { DBG("workspace " << f.getFullPathName() << ": " << err); return false; }
-    w = std::move(tmp); return true;
+    if (!f.existsAsFile()) return false;
+    try {
+        std::string err;
+        auto json = Json::parse(foh::input::read(f.getFullPathName().toStdString()), &err);
+        Workspace tmp;
+        if (!err.empty() || !fromJson(json, tmp, err)) throw std::runtime_error(err);
+        w = std::move(tmp); return true;
+    } catch (const std::exception& e) {
+        errors.add(f.getFileName() + ": " + String(e.what()));
+        return false;
+    }
 }
 void WorkspaceManager::writeFile(const File& f, const Workspace& w) const {
     dir.createDirectory(); auto tmp = f.getSiblingFile(f.getFileName() + ".tmp");

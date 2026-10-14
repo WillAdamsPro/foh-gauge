@@ -48,6 +48,7 @@ MainComponent::MainComponent() {
     if (auto* pf = model.settings.getUserSettings()) if (pf->getBoolValue("showMode", false)) setShowMode(true);
     if (auto* f = std::getenv("FOH_FLOAT")) { std::string id = f; Timer::callAfterDelay(800, [sp = SafePointer<MainComponent>(this), id] { if (sp) sp->floatPanel(id); }); } // dev/screenshot aid
     if (!model.settings.getUserSettings() || !model.settings.getUserSettings()->getBoolValue("setupComplete", false)) openSetup();
+    if (!mgr.loadErrors().isEmpty()) AlertWindow::showMessageBoxAsync(AlertWindow::WarningIcon, "Workspace load failed", mgr.loadErrors().joinIntoString("\n"));
     startTimerHz(15);
 }
 MainComponent::~MainComponent() { removeKeyListener(presetCommands.keyMappings()); stopTimer(); leaveWorkspace(); view.setWorkspace(nullptr); model.removeListener(this); foh::theme::ThemeManager::get().removeChangeListener(this); floats.clear(); LookAndFeel::setDefaultLookAndFeel(nullptr); setLookAndFeel(nullptr); }

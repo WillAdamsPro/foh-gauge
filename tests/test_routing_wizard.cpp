@@ -48,6 +48,10 @@ TEST_CASE("Optional routing walkthrough applies physical channels only on Finish
     const float a[] {0.1f}, b[] {0.2f}, mic[] {0.3f}, ref[] {0.4f};
     const float* inputs[] {a, b, mic, ref};
     engine.audioDeviceIOCallbackWithContext(inputs, 4, nullptr, 0, 1, {});
+    // The first block publishes the changed input epoch; emulate the worker's
+    // reset acknowledgement before expecting new samples in the rings.
+    engine.analysisEpoch.store(engine.captureEpoch.load());
+    engine.audioDeviceIOCallbackWithContext(inputs, 4, nullptr, 0, 1, {});
     float capturedMic = 0, capturedRef = 0;
     REQUIRE(engine.micRing.pop(&capturedMic, 1) == 1);
     REQUIRE(engine.refRing.pop(&capturedRef, 1) == 1);

@@ -93,7 +93,7 @@ bool MainComponent::readSession(const File& folder) {
     model.calText = s.micCalText; model.cal = foh::parseMicCal(s.micCalText); model.calFile = String(s.micCalName); model.setCalEnabled(s.micCalEnabled);
     model.traces.clear();
     for (const auto& t : s.captures) { model.traces.store(t.name, t.tf, t.refDelayMs); model.traces.at(model.traces.count() - 1).visible = t.visible; }
-    model.loadSplCalJson(s.splCal.value_or(foh::Json{}));
+    model.loadSplCalJson(s.splCal.value_or(foh::Json::object()));
     if (auto* prefs = model.settings.getUserSettings()) { prefs->setValue("splCalibration", String(model.splCalJson().dump())); prefs->saveIfNeeded(); } sessionTargets = s.targets;
     model.setSmoothing(s.measurement["smoothing"].asInt(12)); model.setAverages(s.measurement["averages"].asInt(16)); model.setRtaFraction(s.measurement["rtaFraction"].asInt(3)); model.setBlankThreshold(s.measurement["blankThreshold"].asNumber(0.5));
     model.lockedDelayMs = s.measurement["refDelayMs"].asNumber(); model.send(foh::Command::referenceDelay(model.lockedDelayMs * model.engine.sampleRate.load() / 1000.0));

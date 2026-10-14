@@ -1,4 +1,5 @@
 #include "Panels.h"
+#include <fohcore/input.h>
 #include "BinaryData.h"
 #include "SetupPage.h"
 #include "SettleStatus.h"
@@ -46,7 +47,9 @@ public:
             chooser->launchAsync(FileBrowserComponent::openMode | FileBrowserComponent::canSelectFiles,
                 [safe = Component::SafePointer<TargetControls>(this)](const FileChooser& fc) {
                     if (!safe || fc.getResult() == File{}) return;
-                    auto text = fc.getResult().loadFileAsString().toStdString();
+                    std::string text;
+                    try { text = foh::input::read(fc.getResult().getFullPathName().toStdString()); }
+                    catch (const std::exception& e) { AlertWindow::showMessageBoxAsync(AlertWindow::WarningIcon, "Target import", String(e.what())); return; }
                     auto parsed = foh::parseTarget(text);
                     if (!parsed.ok()) {
                         AlertWindow::showMessageBoxAsync(AlertWindow::WarningIcon, "Target import", String(parsed.error)); return;
@@ -97,7 +100,7 @@ public:
             if (parsed.ok()) { source = std::move(text); target = std::move(parsed);
                 if (choice.getNumItems() == 3) choice.addItem(String(j["targetName"].asString("Imported target")), 4);
                 choice.setSelectedId(4, dontSendNotification); }
-            else { choice.setSelectedId(1, dontSendNotification); selectBuiltin(); }
+            else { AlertWindow::showMessageBoxAsync(AlertWindow::WarningIcon, "Saved target", String(parsed.error)); return; }
         } else { choice.setSelectedId(jlimit(1, 3, id), dontSendNotification); selectBuiltin(); }
         shown.setToggleState(j["targetShown"].asBool(), dontSendNotification);
         band.setToggleState(j["targetBand"].asBool(target.useTolerance), dontSendNotification);
