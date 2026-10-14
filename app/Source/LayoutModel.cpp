@@ -6,6 +6,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <set>
 
 namespace fohws {
 
@@ -112,9 +113,12 @@ void enforceMinSizes(LayoutNode& n, int width, int height, const std::function<S
 // ===================== displays =====================
 Rect clampToDisplays(FloatingPanel& fp, const std::vector<DisplayInfo>& displays, int minW, int minH) {
     Rect r = fp.bounds; if (displays.empty()) return r;
-    const DisplayInfo* d = nullptr; for (auto& x : displays) if (x.id == fp.displayId) d = &x;
+    const auto usable = [](const DisplayInfo& x) { return x.area.w > 0 && x.area.h > 0; };
+    const DisplayInfo* d = nullptr; for (auto& x : displays) if (usable(x) && x.id == fp.displayId) d = &x;
     if (!d) { // display gone: move onto the main display with an inset so the title bar is accessible
-        const DisplayInfo* m = &displays.front(); for (auto& x : displays) if (x.isMain) m = &x;
+        const DisplayInfo* m = nullptr;
+        for (auto& x : displays) if (usable(x) && (!m || x.isMain)) m = &x;
+        if (!m) return r; // transient display refresh: preserve the last valid position
         r.x = m->area.x + 40; r.y = m->area.y + 40; d = m; fp.displayId = m->id;
     }
     const Rect& a = d->area;
