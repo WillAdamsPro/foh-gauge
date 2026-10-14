@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/catch_approx.hpp>
 #include "fohcore/fohcore.h"
@@ -91,11 +92,13 @@ TEST_CASE("RTA: 1 kHz full-scale sine reads ~0 dBFS in 1 kHz band (1/3 and 1/6)"
         REQUIRE(b[k]==Approx(0).margin(0.5)); REQUIRE(b[k+2] < -40); }
     REQUIRE(octaveBands(3).size()==31); REQUIRE(octaveBands(6).size()==61);
 }
-TEST_CASE("Mic cal: Will's ECM8000 CSV") {
-    auto c = loadMicCal(std::string(FOH_TEST_DATA) + "/ecm8000-cal.csv");
-    REQUIRE(c.ok()); REQUIRE(c.hz.size()==124); REQUIRE(c.hasPhase);
-    REQUIRE(c.dbAt(20)==Approx(-0.07)); REQUIRE(c.dbAt(21999)==Approx(-4.92)); REQUIRE(c.dbAt(5)==Approx(-0.07)); REQUIRE(c.dbAt(30000)==Approx(-4.92));
-    double mid = c.dbAt(std::sqrt(20.0*25.1785)); REQUIRE(mid==Approx((-0.07+0.137)/2).margin(1e-6));
+TEST_CASE("Mic cal: synthetic ECM8000-style CSV (mixed separators, CRLF, comments, out-of-order row)") {
+    auto c = loadMicCal(std::string(FOH_TEST_DATA) + "/synthetic-mic-cal.csv");
+    REQUIRE(c.ok()); REQUIRE(c.hz.size()==77); REQUIRE(c.hasPhase); REQUIRE(c.sensitivityOffsetDb==Approx(-2.10));
+    REQUIRE(std::is_sorted(c.hz.begin(), c.hz.end())); REQUIRE(c.hz.front()==5.0); REQUIRE(c.hz.back()==30000.0);
+    REQUIRE(c.dbAt(5)==Approx(-2.234)); REQUIRE(c.dbAt(30000)==Approx(-2.468)); // ends
+    REQUIRE(c.dbAt(2)==Approx(-2.234)); REQUIRE(c.dbAt(40000)==Approx(-2.468)); // clamped outside 5 Hz-30 kHz
+    double mid = c.dbAt(std::sqrt(5.0*5.6123)); REQUIRE(mid==Approx((-2.234-2.191)/2).margin(1e-6));
 }
 TEST_CASE("Mic cal: tolerant parsing of .txt / .frd / headers / comments") {
     auto c = parseMicCal("\xEF\xBB\xBF\"Sens Factor =-1.5dB, SERNO: 123\"\n* comment\n# another\nFreq(Hz)\tSPL(dB)\tPhase\n\n20\t0.5\n100  0.0\r\n1000;1.0\n50,0.2,10\n");
@@ -104,7 +107,7 @@ TEST_CASE("Mic cal: tolerant parsing of .txt / .frd / headers / comments") {
     REQUIRE(!parseMicCal("hello\nworld\n").ok());
 }
 TEST_CASE("Mic cal applied to TF removes the mic response") {
-    auto c = loadMicCal(std::string(FOH_TEST_DATA) + "/ecm8000-cal.csv");
+    auto c = loadMicCal(std::string(FOH_TEST_DATA) + "/synthetic-mic-cal.csv");
     // synthetic TF equal to the mic response
     TFResult tf; tf.sampleRate=48000; tf.fftSize=16384; size_t M=8193; tf.freq.resize(M); tf.H.resize(M); tf.magDb.resize(M); tf.phaseDeg.resize(M); tf.coherence.assign(M,1);
     for (size_t k=0;k<M;++k){ tf.freq[k]=k*48000.0/16384; tf.H[k]=std::polar(std::pow(10.0,c.dbAt(tf.freq[k])/20), c.phaseAt(tf.freq[k])*M_PI/180); }
