@@ -19,6 +19,9 @@ AppModel::~AppModel() = default;
 void AppModel::timerCallback() {}
 foh::SplCal AppModel::splCal() const { return {}; }
 bool AppModel::calibrateSpl(double) { throw std::logic_error("Unexpected SPL calibration"); }
+bool AppModel::micLevelReady() const { return false; }
+void AppModel::loadCalFile(const juce::File&) { throw std::logic_error("Unexpected calibration file load"); }
+void AppModel::setCalEnabled(bool) { throw std::logic_error("Unexpected calibration change"); }
 void AppModel::clearSpl() { throw std::logic_error("Unexpected SPL calibration"); }
 bool AppModel::micLevelReady() const { return false; }
 foh::Json AppModel::splCalJson() const { return foh::Json::object(); }

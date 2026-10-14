@@ -7,13 +7,16 @@
 #include "WorkspaceManager.h"
 #include "WorkspacePresetCommands.h"
 
-class MainComponent : public juce::Component, public juce::MenuBarModel, private juce::Timer, private juce::ChangeListener, private AppModel::Listener {
+class MainComponent : public juce::Component, public juce::ApplicationCommandTarget, private juce::Timer, private juce::ChangeListener, private AppModel::Listener {
 public:
     explicit MainComponent(juce::File workspaceFolder = WorkspaceManager::defaultFolder());
     ~MainComponent() override;
-    juce::StringArray getMenuBarNames() override { return {"File"}; }
-    juce::PopupMenu getMenuForIndex(int, const juce::String&) override;
-    void menuItemSelected(int, int) override;
+    enum : juce::CommandID { openSessionCommand = 0x3000, saveSessionCommand, saveSessionAsCommand };
+    juce::PopupMenu getFileMenu(juce::ApplicationCommandManager&);
+    juce::ApplicationCommandTarget* getNextCommandTarget() override { return nullptr; }
+    void getAllCommands(juce::Array<juce::CommandID>&) override;
+    void getCommandInfo(juce::CommandID, juce::ApplicationCommandInfo&) override;
+    bool perform(const InvocationInfo&) override;
     void saveSession(bool saveAs);
     void openSession();
     bool writeSession(const juce::File&);
@@ -23,6 +26,7 @@ public:
     void setUiScale(int percent);
     void stepUiScale(int direction);
     void fitSavedScale();
+    void setMicrophoneAccessBlocked(bool blocked);
     bool isSunlightTheme() const { return foh::theme::ThemeManager::get().current().isLight; }
     void setSunlightTheme(bool enabled);
     void selectWorkspace(int index);
@@ -62,6 +66,9 @@ protected:
     void saveWorkspaceAs(const juce::String& name);
     WorkspaceView view { model, PanelRegistry::standard() };
     juce::Label audioNotice;
+    // Keep consent controls in window coordinates so they fit even at 200% UI scale.
+    juce::Label microphoneNotice;
+    juce::TextButton microphoneSettingsBtn { "Open System Settings" };
     juce::Label toolbarTitle; SegmentedControl switcher {{"Setup", "Alignment", "Tuning", "RTA/Show"}};
     StatusPills status; juce::TextButton pauseBtn;
     SegmentedControl appearance {{"Dark", "Sunlight"}}; juce::ComboBox scaleBox;

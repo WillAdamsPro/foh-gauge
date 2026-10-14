@@ -28,6 +28,25 @@ App and JUCE lifetime checks on macOS (Debug also enables JUCE's leak detector):
 The same option instruments both `FOHGauge` and `fohapp_tests`, including their JUCE module sources.
 Use an unsanitized Debug app for macOS `leaks --atExit`; quit normally so JUCE shutdown runs.
 
+Opt-in ThreadSanitizer build (Clang or GCC; separate from ASan/UBSan):
+
+    cmake -S . -B build-thread -DFOH_BUILD_APP=OFF -DFOH_TSAN=ON -DCMAKE_BUILD_TYPE=RelWithDebInfo
+    cmake --build build-thread --parallel
+    TSAN_OPTIONS=halt_on_error=1 ctest --test-dir build-thread --output-on-failure
+
+For the macOS app and both core/app test suites, use a separate directory:
+
+    cmake -S . -B build-thread-app -DFOH_BUILD_APP=ON -DFOH_TSAN=ON -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCMAKE_OSX_DEPLOYMENT_TARGET=26.0
+    cmake --build build-thread-app --parallel
+    TSAN_OPTIONS=halt_on_error=1 ctest --test-dir build-thread-app --output-on-failure
+
+`FOH_TSAN` defaults to OFF and cannot be combined with `FOH_SANITIZE`.
+It instruments the core, app and app tests (including their JUCE modules).
+The synthetic `[concurrent]` app tests exercise live sample-rate restarts,
+capture reset/pause/resume, and settings/calibration changes without hardware.
+Audio callbacks use only atomics and SPSC buffers for cross-thread communication;
+device lifecycle callbacks must remain serialized with I/O as required by JUCE.
+
 macOS app (JUCE fetched by CMake; needs Xcode 26):
 
     cmake -S . -B build-app -G Xcode -DCMAKE_OSX_DEPLOYMENT_TARGET=26.0

@@ -1,3 +1,4 @@
+#include <array>
 #include <algorithm>
 #include <limits>
 #include <catch2/catch_test_macros.hpp>
@@ -775,5 +776,41 @@ TEST_CASE("D-SGN negative lags: swapped inputs give a negative delay only when e
         REQUIRE(def.impulse.size() == sw.impulse.size()); // impulse stays positive-lag only
         auto inv = mic; for (auto& v : inv) v = -v; auto si = findDelay(inv, src, fs, sym);
         REQUIRE(si.arrivals[0].delaySamples == Approx(-d).margin(0.1)); REQUIRE(si.arrivals[0].inverted);
+    }
+}
+
+TEST_CASE("session rings and capture store remain bounded over three hours of synthetic blocks", "[stress]") {
+    RingBuffer ring(1 << 19);
+    std::array<float, 512> input {}, output {};
+    const int capacity = ring.capacity();
+    // Advance the actual ring cursors by three hours at 48 kHz without waiting
+    // in real time. Include regular full-queue/drop/recovery cycles.
+    constexpr int blocks = 3 * 60 * 60 * 48000 / 512;
+    bool intact = true;
+    uint64_t expectedDrops = 0;
+    for (int i = 0; i < blocks; ++i) {
+        input.fill((float) (i % 1000));
+        intact &= ring.push(input.data(), (int) input.size());
+        intact &= ring.pop(output.data(), (int) output.size()) == (int) output.size();
+        intact &= input == output;
+        if (i % 10000 == 0) {
+            for (int j = 0; j < capacity / 512; ++j) intact &= ring.push(input.data(), 512);
+            intact &= !ring.push(input.data(), 512); ++expectedDrops;
+            while (ring.available() > 0) ring.pop(output.data(), 512);
+        }
+    }
+    CHECK(intact);
+    CHECK(ring.capacity() == capacity);
+    CHECK(ring.available() == 0);
+    CHECK(ring.dropped() == expectedDrops);
+
+    TraceStore traces;
+    TFResult synthetic; synthetic.freq = {100, 1000}; synthetic.magDb = {0, -3};
+    for (int i = 0; i < TraceStore::kMax; ++i) REQUIRE(traces.store("Synthetic", synthetic, 0));
+    for (int i = 0; i < 10000; ++i) {
+        REQUIRE_FALSE(traces.store("Full", synthetic, 0));
+        REQUIRE(traces.remove(0));
+        REQUIRE(traces.store("Synthetic", synthetic, 0));
+        REQUIRE(traces.count() == TraceStore::kMax);
     }
 }

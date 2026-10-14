@@ -3,6 +3,9 @@
 #include "Widgets.h"
 #include "AnalysisEngine.h"
 #include "SettleStatus.h"
+#include "Panels.h"
+#include "SetupPage.h"
+#include <fohcore/session.h>
 #include <chrono>
 #include <string_view>
 #include <thread>
@@ -213,7 +216,7 @@ TEST_CASE("Output chime is bounded, routed and stops at each sample rate", "[app
     for (double fs : {44100.0, 48000.0, 96000.0}) {
         AudioEngine engine;
         engine.sampleRate = fs;
-        engine.outA = 1; engine.outB = -1;
+        engine.outA = 1; engine.outB = 0; // Both generator routes are enabled.
         engine.captureEpoch = 1; // Playback must work even during an analysis restart.
         constexpr int block = 256;
         float unused[block], selected[block]; float* outputs[] {unused, selected};
@@ -232,11 +235,20 @@ TEST_CASE("Output chime is bounded, routed and stops at each sample rate", "[app
         REQUIRE(peak <= expectedPeak + 1e-6f);
         REQUIRE(peak > expectedPeak * 0.99f);
         for (float s : selected) REQUIRE(s == 0.f);
-        engine.outB = 0; engine.playChime();
+        engine.gen = AudioEngine::Pink;
+        engine.playChime();
         engine.audioDeviceIOCallbackWithContext(nullptr, 0, outputs, 2, block, {});
         REQUIRE(selected[0] == 0.f); // Retrigger starts with the attack ramp.
         REQUIRE(selected[100] != 0.f);
         for (int i = 0; i < block; ++i) REQUIRE(unused[i] == 0.f);
+
+        // The wizard can test the loopback output independently of the PA route,
+        // even while the measurement generator is enabled on both outputs.
+        engine.playChime(0);
+        engine.audioDeviceIOCallbackWithContext(nullptr, 0, outputs, 2, block, {});
+        REQUIRE(unused[0] == 0.f);
+        REQUIRE(unused[100] != 0.f);
+        for (float s : selected) REQUIRE(s == 0.f);
     }
 }
 
@@ -321,6 +333,96 @@ public:
     int getOutputLatencyInSamples() override { return 0; }
     int getInputLatencyInSamples() override { return 0; }
 };
+}
+
+namespace {
+class SyntheticDeviceType : public juce::AudioIODeviceType {
+public:
+    SyntheticDeviceType() : AudioIODeviceType("Synthetic") {}
+    void scanForDevices() override {}
+    juce::StringArray getDeviceNames(bool) const override { return {"Synthetic"}; }
+    int getDefaultDeviceIndex(bool) const override { return 0; }
+    int getIndexOfDevice(juce::AudioIODevice*, bool) const override { return 0; }
+    bool hasSeparateInputsAndOutputs() const override { return false; }
+    juce::AudioIODevice* createDevice(const juce::String&, const juce::String&) override {
+        return new SyntheticDevice;
+    }
+};
+
+juce::ComboBox* routingChoice(SetupPage& setup, const juce::String& prefix) {
+    for (int i = 0; i < setup.getNumChildComponents(); ++i)
+        if (auto* box = dynamic_cast<juce::ComboBox*>(setup.getChildComponent(i)))
+            if (box->getItemText(0) == prefix + ": None") return box;
+    return nullptr;
+}
+}
+
+TEST_CASE("Session panel restore updates engine routing and every Setup page", "[app][session][routing]") {
+    juce::ScopedJuceInitialiser_GUI initialise;
+    AppModel model; // Existing isolated test model: no preferences or analysis worker.
+    model.dm.addAudioDeviceType(std::make_unique<SyntheticDeviceType>());
+    model.dm.setCurrentAudioDeviceType("Synthetic", true);
+    auto deviceSetup = model.dm.getAudioDeviceSetup();
+    deviceSetup.inputDeviceName = deviceSetup.outputDeviceName = "Synthetic";
+    deviceSetup.useDefaultInputChannels = deviceSetup.useDefaultOutputChannels = false;
+    deviceSetup.inputChannels = deviceSetup.outputChannels = juce::BigInteger(3);
+    REQUIRE(model.dm.setAudioDeviceSetup(deviceSetup, true).isEmpty());
+    REQUIRE(model.dm.getCurrentAudioDevice() != nullptr);
+
+    auto panel = PanelRegistry::standard().create("InputsAndDevices", model);
+    REQUIRE(panel != nullptr);
+    auto* embedded = dynamic_cast<SetupPage*>(panel->getChildComponent(0));
+    REQUIRE(embedded != nullptr);
+    SetupPage standalone(model);
+    const char* prefixes[] {"Mic", "Reference", "Generator output", "Loopback output"};
+    auto checkSelections = [&](const int (&channels)[4]) {
+        for (auto* setup : {embedded, &standalone})
+            for (int i = 0; i < 4; ++i) {
+                auto* box = routingChoice(*setup, prefixes[i]);
+                REQUIRE(box != nullptr);
+                CHECK(box->getSelectedId() == channels[i] + 2);
+            }
+    };
+    const int defaults[] {0, 1, 0, 1};
+    checkSelections(defaults);
+
+    // Round-trip a synthetic bundle, then restore its InputsAndDevices state as
+    // WorkspaceView does. No other Settings notifications can mask a missing one.
+    struct Bundle {
+        std::filesystem::path path = std::filesystem::temp_directory_path()
+            / ("foh-synthetic-routing-" + juce::Uuid().toString().toStdString() + ".fohsession");
+        ~Bundle() { std::error_code error; std::filesystem::remove_all(path, error); }
+    } bundle;
+    foh::Session session;
+    session.deviceType = session.inputDevice = session.outputDevice = "Synthetic";
+    session.inputChannels = session.outputChannels = "11";
+    session.mic = 1; session.reference = 0; session.outputA = 1; session.outputB = 0;
+    auto routing = fohws::Json::object();
+    routing.set("mic", session.mic); routing.set("ref", session.reference);
+    routing.set("outA", session.outputA); routing.set("outB", session.outputB);
+    auto states = fohws::Json::object(); states.set("InputsAndDevices", routing);
+    session.workspace.set("panelState", states);
+    std::string error;
+    REQUIRE(foh::saveSession(bundle.path, session, error));
+    foh::Session loaded;
+    REQUIRE(foh::loadSession(bundle.path, loaded, error));
+    panel->loadState(loaded.workspace["panelState"]["InputsAndDevices"]);
+    CHECK(model.engine.micCh.load() == loaded.mic);
+    CHECK(model.engine.refCh.load() == loaded.reference);
+    CHECK(model.engine.outA.load() == loaded.outputA);
+    CHECK(model.engine.outB.load() == loaded.outputB);
+    const int restored[] {1, 0, 1, 0};
+    checkSelections(restored);
+    CHECK(panel->saveState() == routing);
+
+    // Explicit None selections must survive restore too.
+    for (const auto* key : {"mic", "ref", "outA", "outB"}) routing.set(key, -1);
+    panel->loadState(routing);
+    CHECK(model.engine.micCh.load() == -1); CHECK(model.engine.refCh.load() == -1);
+    CHECK(model.engine.outA.load() == -1); CHECK(model.engine.outB.load() == -1);
+    const int none[] {-1, -1, -1, -1};
+    checkSelections(none);
+    CHECK(panel->saveState() == routing);
 }
 
 TEST_CASE("Device stop and rate/buffer restarts cancel playback and clear analysis", "[app][audio]") {
@@ -474,4 +576,115 @@ TEST_CASE("Device errors from another thread silence playback until restart", "[
     CHECK(engine.gen.load() == AudioEngine::Off);
     engine.audioDeviceIOCallbackWithContext(nullptr, 0, outputs, 1, 256, {});
     for (float s : output) CHECK(s == 0); // no stale chime resumes
+}
+
+namespace {
+// Owns the producer and all lifecycle callbacks, just as JUCE serializes device
+// restarts with I/O. The test thread acts only as the message-thread consumer.
+class ConcurrentCapture {
+public:
+    explicit ConcurrentCapture(AudioEngine& e) : engine(e), worker([this] { run(); }) {}
+    ~ConcurrentCapture() { done.store(true); worker.join(); }
+    std::atomic<double> requestedRate{48000}, runningRate{0};
+    std::atomic<uint64_t> blocks{0};
+private:
+    void run() {
+        SyntheticDevice device;
+        float signal[1024];
+        foh::PinkNoise noise(43);
+        noise.process(signal, 1024);
+        engine.audioDeviceAboutToStart(&device);
+        runningRate.store(device.rate);
+        while (!done.load()) {
+            const auto rate = requestedRate.load();
+            if (rate != device.rate) {
+                engine.audioDeviceStopped();
+                device.rate = rate;
+                engine.audioDeviceAboutToStart(&device);
+                runningRate.store(rate);
+            }
+            capture(engine, signal, signal, 1024);
+            blocks.fetch_add(1);
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        engine.audioDeviceStopped();
+    }
+    AudioEngine& engine;
+    std::atomic<bool> done{false};
+    std::thread worker;
+};
+}
+
+TEST_CASE("Sample-rate changes overlap live analysis and snapshot reads", "[app][audio][concurrent]") {
+    AudioEngine engine; AnalysisEngine analysis(engine);
+    analysis.start();
+    ConcurrentCapture producer(engine);
+    REQUIRE(waitFor([&] { return analysis.latest().tf.averages > 0; }));
+    for (double rate : {96000.0, 44100.0, 48000.0, 96000.0, 48000.0}) {
+        producer.requestedRate.store(rate);
+        REQUIRE(waitFor([&] {
+            const auto& s = analysis.latest();
+            return producer.runningRate.load() == rate && s.tf.sampleRate == rate
+                && s.inputEpoch == engine.captureEpoch.load() && s.tf.averages > 0;
+        }));
+        const auto snapshot = analysis.latest();
+        REQUIRE(snapshot.tf.sampleRate == rate);
+        REQUIRE(snapshot.rtaDb.size() == snapshot.rtaBands.size());
+        for (auto level : snapshot.rtaDb) REQUIRE(std::isfinite(level));
+    }
+}
+
+TEST_CASE("Capture reset and pause commands overlap the analysis job", "[app][audio][concurrent]") {
+    AudioEngine engine; AnalysisEngine analysis(engine);
+    analysis.start();
+    ConcurrentCapture producer(engine);
+    REQUIRE(waitFor([&] { return analysis.latest().tf.averages > 0; }));
+    for (uint64_t id = 1; id <= 8; ++id) {
+        // Same handoffs used by beginCapture and the toolbar Stop/Start controls.
+        analysis.paused.store(true);
+        REQUIRE(analysis.send(foh::Command::resetAverages(id)));
+        REQUIRE(waitFor([&] { return analysis.latest().resetSeq == id; }));
+        const auto stopped = analysis.latest();
+        REQUIRE(stopped.tf.averages == 0);
+        REQUIRE_FALSE(stopped.micLevelValid);
+        const auto blocks = producer.blocks.load();
+        REQUIRE(waitFor([&] {
+            return producer.blocks.load() >= blocks + 8 && analysis.latest().seq > stopped.seq;
+        }));
+        REQUIRE(analysis.latest().tf.averages == 0);
+        analysis.paused.store(false);
+        REQUIRE(waitFor([&] { return analysis.latest().tf.averages > 0; }));
+        REQUIRE(analysis.latest().resetSeq == id);
+    }
+}
+
+TEST_CASE("Settings and calibration changes overlap a synthetic measurement", "[app][audio][concurrent]") {
+    AudioEngine engine; AnalysisEngine analysis(engine);
+    analysis.start();
+    ConcurrentCapture producer(engine);
+    REQUIRE(waitFor([&] { return analysis.latest().tf.averages > 0; }));
+    const auto calibration = std::make_shared<const foh::MicCal>(
+        foh::parseMicCal("20 0\n1000 0\n20000 0\n"));
+    REQUIRE(calibration->ok());
+    for (uint64_t id = 1; id <= 8; ++id) {
+        const int fraction = id % 2 ? 6 : 12;
+        engine.genGainDb.store(-30.f + float(id));
+        analysis.setCal(id % 2 ? calibration : nullptr, "Synthetic");
+        REQUIRE(analysis.send(foh::Command::smoothing(fraction)));
+        REQUIRE(analysis.send(foh::Command::rtaFraction(fraction)));
+        REQUIRE(analysis.send(foh::Command::averages(4)));
+        REQUIRE(analysis.send(foh::Command::blankThreshold(0.7)));
+        REQUIRE(analysis.send(foh::Command::referenceDelay(double(id))));
+        REQUIRE(analysis.send(foh::Command::resetAverages(id)));
+        REQUIRE(waitFor([&] {
+            const auto& s = analysis.latest();
+            return s.resetSeq == id && s.smoothingFraction == fraction
+                && s.rtaFraction == fraction && s.calApplied == bool(id % 2)
+                && s.tf.averages > 0;
+        }));
+        const auto snapshot = analysis.latest();
+        REQUIRE(snapshot.refDelaySamples == double(id));
+        REQUIRE(snapshot.rtaDb.size() == snapshot.rtaBands.size());
+        REQUIRE(snapshot.inputEpoch == engine.captureEpoch.load());
+    }
 }
