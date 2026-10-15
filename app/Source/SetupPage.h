@@ -10,11 +10,12 @@ public:
     explicit SetupPage(AppModel&, bool showDone = true);
     ~SetupPage() override;
     void resized() override;
+    void lookAndFeelChanged() override;
     void visibilityChanged() override { if (!isVisible()) { wizard.cancel(); questionnaire.cancel(); wizard.setVisible(false); questionnaire.setVisible(false); } }
     enum class Section { Audio, Mic, Reference, MicCalibration, ReferenceDelay };
     void focusSection(Section);
     Section focusedSection() const { return section; }
-    void focusSplCalibration() { splReference.grabKeyboardFocus(); }
+    void focusSplCalibration() { form.setViewPosition(0, splInstructions.getY()); splReference.grabKeyboardFocus(); }
     std::function<void()> onDone;
 private:
     void modelChanged(int what) override {
@@ -28,7 +29,8 @@ private:
     void applyDevice(bool inputChanged = false);
     void changeListenerCallback(juce::ChangeBroadcaster*) override { refresh(); }
     AppModel& model;
-    juce::Label title, notice, splInstructions, splStatus, loopbackInstructions, loopbackStatus;
+    ScrollableForm form;
+    juce::Label title, notice, splInstructions, splStatus, loopbackInstructions, loopbackStatus, guideSummary;
     juce::TextButton measureLoopback { "Measure interface" }, clearLoopback { "Clear correction" };
     juce::ComboBox splReference; juce::TextEditor knownLevel;
     juce::TextButton calibrate { "Calibrate SPL" }, clearSpl { "Clear SPL" };

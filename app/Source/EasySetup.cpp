@@ -4,23 +4,34 @@ using namespace juce;
 EasySetup::EasySetup(AppModel& m) : model(m) {
     addAndMakeVisible(form);
     title.setText("Easy Setup (optional)", dontSendNotification);
+    for (auto* label : {&instructions, &clusterLabel, &cabinetLabel, &controlLabel, &arrangementLabel,
+                        &fillLabel, &subLabel, &fillGroupLabel, &subGroupLabel, &placementLabel}) {
+        label->setFont(FohLookAndFeel::font(foh::theme::type::body));
+        label->setMinimumHorizontalScale(1.f);
+    }
     title.setFont(FohLookAndFeel::font(foh::theme::type::heading, false, true));
-    instructions.setText("Set each cluster separately. New clusters use the default cabinet count. Skip shows all guides.", dontSendNotification);
+    instructions.setText("Tell us about your PA so we only show the guides you need.", dontSendNotification);
     instructions.setJustificationType(Justification::topLeft);
     clusterLabel.setText("Main speaker clusters", dontSendNotification);
     cabinetLabel.setText("Default cabinets for new clusters", dontSendNotification);
     controlLabel.setText("Main cabinet control", dontSendNotification);
     arrangementLabel.setText("Sub arrangement", dontSendNotification);
-    fillLabel.setText("Front fills (0-256)", dontSendNotification);
-    subLabel.setText("Subs (0-256)", dontSendNotification);
+    fillLabel.setText("Front fills (0-64)", dontSendNotification);
+    subLabel.setText("Subs (0-64)", dontSendNotification);
     fillGroupLabel.setText("Fill groups", dontSendNotification);
     subGroupLabel.setText("Sub groups", dontSendNotification);
     placementLabel.setText("Sub placement", dontSendNotification);
     for (auto* c : std::initializer_list<Component*>{&title, &instructions, &clusterLabel, &cabinetLabel, &controlLabel,
-         &arrangementLabel, &status, &clusters, &cabinets, &control, &arrangement, &fillLabel, &subLabel, &fillGroupLabel, &subGroupLabel, &placementLabel,
+         &arrangementLabel, &clusters, &cabinets, &control, &arrangement, &fillLabel, &subLabel, &fillGroupLabel, &subGroupLabel, &placementLabel,
          &fillCount, &subCount, &fillGroups, &subGroups, &fillControl, &subControl, &placement, &match, &skip, &apply}) form.canvas.addAndMakeVisible(c);
-    clusters.setInputRestrictions(3, "0123456789"); cabinets.setInputRestrictions(3, "0123456789");
-    clusters.setName("Clusters"); cabinets.setName("Default cabinets");
+    clusterHint.setText("1-64 groups of main speakers; usually 2 (left and right).", dontSendNotification);
+    cabinetHint.setText("1-64 speakers per new cluster; usually 1. Adjust each below.", dontSendNotification);
+    for (auto* hint : {&clusterHint, &cabinetHint}) {
+        form.canvas.addAndMakeVisible(hint);
+        hint->setFont(FohLookAndFeel::font(foh::theme::type::body));
+        hint->setMinimumHorizontalScale(1.f);
+        hint->setJustificationType(Justification::topLeft);
+    }
     control.addItem("Grouped per cluster", 1); control.addItem("Individual cabinets", 2);
     arrangement.addItem("Center", 1); arrangement.addItem("Left / right", 2);
     arrangement.addItem("Distributed", 3); arrangement.addItem("Other", 4);
@@ -31,16 +42,16 @@ EasySetup::EasySetup(AppModel& m) : model(m) {
     auto stepper = [](Slider& slider, const char* name, int low) {
         slider.setName(name); slider.setSliderStyle(Slider::IncDecButtons);
         slider.setTextBoxStyle(Slider::TextBoxLeft, false, 80, 28);
-        slider.setRange(low, 256, 1);
+        slider.setRange(low, 64, 1);
     };
+    stepper(clusters, "Clusters", 1); stepper(cabinets, "Default cabinets", 1);
     stepper(fillCount, "Front fill count", 0); stepper(subCount, "Sub count", 0);
     stepper(fillGroups, "Fill groups", 1); stepper(subGroups, "Sub groups", 1);
     fillCount.onValueChange = subCount.onValueChange = [this] { updateGroups(); };
     fillControl.onChange = subControl.onChange = [this] { updateGroups(); };
-    clusters.onTextChange = [this] { rebuildClusters(); resized(); };
+    clusters.onValueChange = [this] { rebuildClusters(); resized(); };
     match.onClick = [this] {
-        const int n = cabinets.getText().getIntValue();
-        if (n < 1 || n > 256) { status.setText("Enter a default from 1 to 256.", dontSendNotification); return; }
+        const int n = (int)cabinets.getValue();
         for (auto& slider : clusterCounts) slider->setValue(n, dontSendNotification);
     };
     skip.onClick = [this] {
@@ -52,10 +63,7 @@ EasySetup::EasySetup(AppModel& m) : model(m) {
     apply.onClick = [this] {
         if (!active) return;
         foh::RigProfile r;
-        const int n = clusters.getText().getIntValue(), defaultCount = cabinets.getText().getIntValue();
-        if (n < 1 || n > 256 || n != (int)clusterCounts.size() || defaultCount < 1 || defaultCount > 256) {
-            status.setText("Enter cluster and default counts from 1 to 256.", dontSendNotification); return;
-        }
+        rebuildClusters(); // Commit the current bounded count before taking the draft.
         r.clusterCabinets.clear();
         for (const auto& slider : clusterCounts) r.clusterCabinets.push_back((int)slider->getValue());
         r.control = control.getSelectedId() == 2 ? foh::RigProfile::Control::Individual : foh::RigProfile::Control::Grouped;
@@ -65,7 +73,7 @@ EasySetup::EasySetup(AppModel& m) : model(m) {
         r.fillGroups = (int)fillGroups.getValue(); r.subGroups = (int)subGroups.getValue();
         r.subPlacement = static_cast<foh::RigProfile::SubPlacement>(placement.getSelectedId() - 1);
         r.subArrangement = static_cast<foh::RigProfile::SubArrangement>(arrangement.getSelectedId() - 1);
-        if (!r.valid()) { status.setText("Enter cluster and cabinet counts from 1 to 256.", dontSendNotification); return; }
+        if (!r.valid()) return;
         // A model listener may close the host during the synchronous notification.
         active = false; SafePointer<EasySetup> safe(this);
         model.rigProfile = r; model.notify(AppModel::Rig);
@@ -78,10 +86,10 @@ EasySetup::EasySetup(AppModel& m) : model(m) {
 void EasySetup::begin() {
     active = true;
     auto r = model.rigProfile && model.rigProfile->valid() ? *model.rigProfile : foh::RigProfile{};
-    cabinets.setText(String(r.clusterCabinets.front()));
-    clusters.setText(String((int)r.clusterCabinets.size()), false);
+    cabinets.setValue(r.clusterCabinets.front(), dontSendNotification);
+    clusters.setValue((double)r.clusterCabinets.size(), dontSendNotification);
     clusterCounts.clear(); clusterLabels.clear(); rebuildClusters();
-    for (size_t i = 0; i < r.clusterCabinets.size(); ++i) clusterCounts[i]->setValue(r.clusterCabinets[i], dontSendNotification);
+    for (size_t i = 0; i < clusterCounts.size(); ++i) clusterCounts[i]->setValue(r.clusterCabinets[i], dontSendNotification);
     control.setSelectedId(r.control == foh::RigProfile::Control::Individual ? 2 : 1, dontSendNotification);
     fillCount.setValue(r.frontFillCount, dontSendNotification); subCount.setValue(r.subCount, dontSendNotification);
     fillControl.setSelectedId(r.fillControl == foh::RigProfile::Control::Individual ? 1 : 2, dontSendNotification);
@@ -90,20 +98,19 @@ void EasySetup::begin() {
     fillGroups.setValue(r.fillGroups, dontSendNotification); subGroups.setValue(r.subGroups, dontSendNotification);
     placement.setSelectedId(static_cast<int>(r.subPlacement) + 1, dontSendNotification);
     arrangement.setSelectedId(static_cast<int>(r.subArrangement) + 1, dontSendNotification);
-    status.setText({}, dontSendNotification);
     resized();
     form.setViewPosition(0, 0);
 }
 void EasySetup::rebuildClusters() {
-    int n = clusters.getText().getIntValue();
-    if (n < 1 || n > 256) return;
+    const int n = (int)clusters.getValue();
     while ((int)clusterCounts.size() > n) { clusterCounts.pop_back(); clusterLabels.pop_back(); }
     while ((int)clusterCounts.size() < n) {
         auto slider = std::make_unique<Slider>();
+        form.canvas.addAndMakeVisible(*slider); // Inherit the theme before creating the text box.
         slider->setSliderStyle(Slider::IncDecButtons); slider->setTextBoxStyle(Slider::TextBoxLeft, false, 80, 28);
-        slider->setRange(1, 256, 1); slider->setValue(jlimit(1, 256, cabinets.getText().getIntValue()), dontSendNotification);
-        form.canvas.addAndMakeVisible(*slider); clusterCounts.push_back(std::move(slider));
-        auto label = std::make_unique<Label>(); form.canvas.addAndMakeVisible(*label); clusterLabels.push_back(std::move(label));
+        slider->setRange(1, 64, 1); slider->setValue(cabinets.getValue(), dontSendNotification);
+        clusterCounts.push_back(std::move(slider));
+        auto label = std::make_unique<Label>(); label->setFont(FohLookAndFeel::font(foh::theme::type::body)); form.canvas.addAndMakeVisible(*label); clusterLabels.push_back(std::move(label));
     }
     foh::RigProfile names; names.clusterCabinets.resize((size_t)n);
     for (size_t i = 0; i < clusterCounts.size(); ++i) {
@@ -126,23 +133,24 @@ void EasySetup::updateGroups() {
 }
 void EasySetup::resized() {
     form.setBounds(getLocalBounds());
-    form.sizeCanvas(form.layoutWidth(300), 940 + (int)clusterCounts.size() * 40);
+    form.sizeCanvas(form.layoutWidth(400), 936 + (int)clusterCounts.size() * 40);
     auto r = form.canvas.getLocalBounds().reduced(16);
-    title.setBounds(r.removeFromTop(32)); instructions.setBounds(r.removeFromTop(64));
-    auto buttons = r.removeFromBottom(36); skip.setBounds(buttons.removeFromLeft(70)); buttons.removeFromLeft(8); apply.setBounds(buttons);
-    status.setBounds(r.removeFromBottom(48));
+    title.setBounds(r.removeFromTop(32)); instructions.setBounds(r.removeFromTop(48));
+    auto buttons = r.removeFromBottom(28); skip.setBounds(buttons.removeFromLeft(72)); buttons.removeFromLeft(8); apply.setBounds(buttons);
+
     auto row = [&](Label& label, Component& choice) {
-        auto b = r.removeFromTop(58); label.setBounds(b.removeFromTop(24)); choice.setBounds(b.reduced(0, 2));
+        label.setBounds(r.removeFromTop(24)); choice.setBounds(r.removeFromTop(28)); r.removeFromTop(12);
     };
-    row(clusterLabel, clusters); row(cabinetLabel, cabinets);
-    match.setBounds(r.removeFromTop(32));
+    row(clusterLabel, clusters); clusterHint.setBounds(r.removeFromTop(48));
+    row(cabinetLabel, cabinets); cabinetHint.setBounds(r.removeFromTop(48));
+    match.setBounds(r.removeFromTop(28)); r.removeFromTop(8);
     for (size_t i = 0; i < clusterCounts.size(); ++i) {
         auto b = r.removeFromTop(40).reduced(0, 4);
-        clusterLabels[i]->setBounds(b.removeFromLeft(110)); clusterCounts[i]->setBounds(b);
+        clusterLabels[i]->setBounds(b.removeFromLeft(144)); b.removeFromLeft(8); clusterCounts[i]->setBounds(b);
     }
     row(controlLabel, control); row(fillLabel, fillCount);
-    fillControl.setBounds(r.removeFromTop(32)); row(fillGroupLabel, fillGroups);
-    row(subLabel, subCount); subControl.setBounds(r.removeFromTop(32)); row(subGroupLabel, subGroups);
+    fillControl.setBounds(r.removeFromTop(28)); r.removeFromTop(8); row(fillGroupLabel, fillGroups);
+    row(subLabel, subCount); subControl.setBounds(r.removeFromTop(28)); r.removeFromTop(8); row(subGroupLabel, subGroups);
     row(arrangementLabel, arrangement); row(placementLabel, placement);
 }
 

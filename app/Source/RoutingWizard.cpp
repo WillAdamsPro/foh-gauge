@@ -16,6 +16,10 @@ String endpoint(const StringArray& names, int index, const char* direction) {
 RoutingWizard::RoutingWizard(AudioEngine& e) : engine(e) {
     addAndMakeVisible(form);
     form.canvas.onPaint = [this](Graphics& g) { paintDiagram(g); };
+    for (auto* label : {&explanation, &presetNotice, &testStatus}) {
+        label->setFont(FohLookAndFeel::font(foh::theme::type::body));
+        label->setMinimumHorizontalScale(1.f);
+    }
     title.setFont(FohLookAndFeel::font(foh::theme::type::heading, false, true));
     explanation.setJustificationType(Justification::topLeft);
     for (auto* label : { &title, &explanation, &presetNotice, &testStatus }) form.canvas.addAndMakeVisible(label);
@@ -43,7 +47,7 @@ void RoutingWizard::setDevices(const String& input, const String& output) {
     if (input == inputDevice && output == outputDevice) return;
     const int interrupted = testingStep;
     cancelTest(); results.fill({});
-    if (interrupted >= 0) results[(size_t)interrupted] = "Test failed: audio device changed. Check Audio Setup and test again.";
+    if (interrupted >= 0) results[(size_t)interrupted] = "Test failed: the audio device changed. Check Audio Setup and try again.";
     inputDevice = input; outputDevice = output;
     suggestion = "Unknown interface: choose channels manually.";
     refresh();
@@ -136,18 +140,18 @@ void RoutingWizard::advance() {
 }
 void RoutingWizard::resized() {
     form.setBounds(getLocalBounds());
-    const int width = form.layoutWidth(300);
+    const int width = form.layoutWidth(400);
     GlyphArrangement text;
-    text.addJustifiedText(explanation.getFont(), explanation.getText(), 0, explanation.getFont().getAscent(), (float)(width - 42), Justification::left);
-    const int bodyH = jmax(120, (int)std::ceil(text.getBoundingBox(0, -1, true).getBottom()) + 12);
+    text.addJustifiedText(explanation.getFont(), explanation.getText(), 0, explanation.getFont().getAscent(), (float)(width - 48), Justification::left);
+    const int bodyH = jmax(120, ((int)std::ceil(text.getBoundingBox(0, -1, true).getBottom()) + 15) / 4 * 4);
     form.sizeCanvas(width, jmax(520, bodyH + 320));
     auto r = form.canvas.getLocalBounds().reduced(16);
     title.setBounds(r.removeFromTop(32));
-    auto buttons = r.removeFromBottom(36);
-    back.setBounds(buttons.removeFromLeft(70)); skip.setBounds(buttons.removeFromLeft(70).reduced(4, 0));
+    auto buttons = r.removeFromBottom(32);
+    back.setBounds(buttons.removeFromLeft(72)); skip.setBounds(buttons.removeFromLeft(72).reduced(4, 0));
     next.setBounds(buttons.removeFromRight(80));
     auto testRow = r.removeFromBottom(72);
-    test.setBounds(testRow.removeFromTop(28).removeFromLeft(130));
+    test.setBounds(testRow.removeFromTop(28).removeFromLeft(136));
     testStatus.setBounds(testRow);
     channel.setBounds(r.removeFromBottom(40).reduced(0, 4));
     presetNotice.setBounds(r.removeFromTop(36));
@@ -171,7 +175,7 @@ void RoutingWizard::paintDiagram(Graphics& g) {
     auto left = row.removeFromLeft(width).toFloat(); auto right = row.removeFromRight(width).toFloat();
     g.setColour(findColour(Label::textColourId));
     g.drawRoundedRectangle(left.reduced(1), 6, 1); g.drawRoundedRectangle(right.reduced(1), 6, 1);
-    g.setFont(14); g.drawFittedText(from, left.toNearestInt().reduced(6), Justification::centred, 3);
+    g.setFont(FohLookAndFeel::font(foh::theme::type::body)); g.drawFittedText(from, left.toNearestInt().reduced(6), Justification::centred, 3);
     g.drawFittedText(to, right.toNearestInt().reduced(6), Justification::centred, 3);
     const float y = left.getCentreY(), end = right.getX() - 4;
     g.drawArrow(Line<float>(left.getRight() + 4, y, end, y), 2, 7, 7);

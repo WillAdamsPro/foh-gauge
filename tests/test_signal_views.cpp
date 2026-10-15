@@ -201,13 +201,22 @@ TEST_CASE("Target popover preserves edits and closes safely with its panel", "[a
             auto file = juce::File(directory).getChildFile(theme.id + "-target-" + juce::String(scale) + ".png");
             file.deleteFile(); auto stream = file.createOutputStream(); REQUIRE(stream); juce::PNGImageFormat().writeImageToStream(image, *stream);
         }
-        callout->dismiss(); juce::MessageManager::getInstance()->runDispatchLoopUntil(250);
+        // Dismissal and deletion are queued by JUCE. Wait for the callback rather
+        // than assuming a loaded macOS runner drains its queue within 250 ms.
+        auto waitFor = [](auto ready) {
+            const auto deadline = juce::Time::getMillisecondCounterHiRes() + 2000;
+            while (!ready() && juce::Time::getMillisecondCounterHiRes() < deadline)
+                juce::MessageManager::getInstance()->runDispatchLoopUntil(10);
+            return ready();
+        };
+        juce::Component::SafePointer<juce::CallOutBox> closing(callout);
+        callout->dismiss();
+        REQUIRE(waitFor([&] { return closing == nullptr; }));
         REQUIRE_FALSE(panel->isCurrentlyBlockedByAnotherModalComponent());
         // Reopening keeps the same controls and edited values.
         button->onClick(); REQUIRE(juce::Component::getCurrentlyModalComponent());
         panel->setLookAndFeel(nullptr); panel.reset();
-        juce::MessageManager::getInstance()->runDispatchLoopUntil(250);
-        CHECK(juce::Component::getCurrentlyModalComponent() == nullptr);
+        CHECK(waitFor([] { return juce::Component::getCurrentlyModalComponent() == nullptr; }));
     }
     foh::theme::ThemeManager::get().setTheme("pro-dark");
 }

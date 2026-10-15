@@ -101,7 +101,7 @@ TEST_CASE("Routing handles missing channels and Setup opens it only on request",
     for (int i = 0; i < setup.getNumChildComponents(); ++i)
         if (auto* w = dynamic_cast<RoutingWizard*>(setup.getChildComponent(i))) wizard = w;
     REQUIRE(wizard != nullptr); CHECK_FALSE(wizard->isVisible());
-    CHECK(setup.getLocalBounds().contains(button(setup, "Easy Setup").getBounds()));
+    CHECK(formCanvas(setup).getLocalBounds().contains(button(setup, "Easy Setup").getBounds()));
     button(setup, "Easy Setup").onClick(); CHECK(wizard->isVisible());
     CHECK(choice(*wizard).getSelectedId() == 1);
     for (int i = 0; i < 3; ++i) button(*wizard, "Next").onClick();
@@ -234,6 +234,7 @@ TEST_CASE("Wizard detection edges report failure and allow retry", "[app][routin
         if (edge == 6) wizard.setDevices("Replacement USB", "Replacement USB");
         if (edge == 7) wizard.setChannels({"Replacement 1", "Replacement 2"}, {"Out 1", "Out 2"});
         waitFor("Test failed:");
+        if (edge == 6) CHECK(contains("Test failed: the audio device changed. Check Audio Setup and try again."));
         engine.deviceFailed = false; engine.state = AudioEngine::Ready;
         button(wizard, "Test connection").onClick();
         const float* good[] {signal.data(), quiet.data()};
