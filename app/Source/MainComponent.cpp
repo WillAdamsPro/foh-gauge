@@ -16,13 +16,8 @@ MainComponent::MainComponent(juce::File workspaceFolder) : mgr(std::move(workspa
     contentViewport.setViewedComponent(&contentCanvas, false);
     contentViewport.setScrollOnDragMode(Viewport::ScrollOnDragMode::never);
     contentCanvas.addAndMakeVisible(content);
-    addChildComponent(microphoneNotice);
-    microphoneNotice.setText("Microphone access is blocked. Enable it in System Settings.", dontSendNotification);
-    microphoneNotice.setFont(FohLookAndFeel::font(T::body));
-    addChildComponent(microphoneSettingsBtn);
-    microphoneSettingsBtn.onClick = [] {
-        URL("x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone").launchInDefaultBrowser();
-    };
+    content.addChildComponent(microphoneNotice);
+    microphoneNotice.onDismiss = [this] { layoutContent(); };
     content.addAndMakeVisible(toolbarTitle); toolbarTitle.setFont(FohLookAndFeel::font(T::title, true));
     content.addAndMakeVisible(switcher); switcher.onChange = [this](int i) { selectWorkspace(i); };
     content.addAndMakeVisible(status);
@@ -30,7 +25,8 @@ MainComponent::MainComponent(juce::File workspaceFolder) : mgr(std::move(workspa
     outputOn.setButtonText(u8("\xe2\x96\xb2 Output on"));
     outputOn.setTitle("Stop generator output");
     outputOn.onClick = [this] { model.stopGenerator(); timerCallback(); };
-    content.addChildComponent(audioNotice); audioNotice.setFont(FohLookAndFeel::font(T::body));
+    content.addChildComponent(audioNotice);
+    audioNotice.onDismiss = [this] { layoutContent(); };
     content.addAndMakeVisible(expertBtn); expertBtn.setButtonText("Expert"); expertBtn.setClickingTogglesState(true);
     expertBtn.setToggleState(model.expertMode(), dontSendNotification);
     expertBtn.setTooltip("Reveal all charts and settings in every workspace; guides remain available");
@@ -280,27 +276,20 @@ void MainComponent::fitSavedScale() {
     int fit = 100;
     for (int percent : {100, 125, 150, 200})
         if (percent <= uiScale && getWidth() * 100 >= minimumContentWidth * percent
-            && (getHeight() - (microphoneNotice.isVisible() ? 36 : 0)) * 100 >= minimumContentHeight * percent)
+            && getHeight() * 100 >= minimumContentHeight * percent)
             fit = percent;
     setUiScale(fit);
 }
 void MainComponent::setMicrophoneAccessBlocked(bool blocked) {
     // Called only on the message thread, including before the window becomes visible.
-    if (microphoneNotice.isVisible() == blocked) return;
-    microphoneNotice.setVisible(blocked);
-    microphoneSettingsBtn.setVisible(blocked);
+    microphoneBlocked = blocked;
+    microphoneNotice.setMessage(blocked ? fohapp::microphonePermissionMessage : "",
+        "Open Privacy Settings", [] { URL(fohapp::microphonePrivacyUrl).launchInDefaultBrowser(); });
     resized();
 }
 void MainComponent::resized() {
-    const int consentHeight = microphoneNotice.isVisible() ? 36 : 0;
-    auto consent = getLocalBounds().removeFromTop(consentHeight).reduced(12, 0);
-    microphoneSettingsBtn.setBounds(consent.removeFromRight(156).withSizeKeepingCentre(156, 28));
-    consent.removeFromRight(8);
-    microphoneNotice.setBounds(consent);
-    microphoneNotice.setColour(Label::textColourId, C::textPrimary());
-    microphoneNotice.setColour(Label::backgroundColourId, C::background());
     const float scale = (float) uiScale / 100.0f;
-    contentViewport.setBounds(getLocalBounds().withTrimmedTop(consentHeight));
+    contentViewport.setBounds(getLocalBounds());
     // Reserve scrollbar space before choosing the logical extent. Starting without
     // bars allows a formerly cramped window to return to a full-size workspace.
     int width = contentViewport.getWidth(), height = contentViewport.getHeight();
@@ -356,10 +345,14 @@ void MainComponent::layoutContent() {
     appearance.setVisible(nw > 0); scaleBox.setVisible(nw > 0);
     if (nw) { auto s = Rectangle<int>(0, top, nw, content.getHeight() - top).reduced(10, 0);
         auto bot = s.removeFromBottom(80); appearance.setBounds(bot.removeFromTop(30).reduced(0, 2)); bot.removeFromTop(8); scaleBox.setBounds(bot.removeFromTop(28)); }
-    const int noticeHeight = audioNotice.isVisible() ? 24 : 0;
-    audioNotice.setBounds(nw + 12, top, content.getWidth() - nw - 24, noticeHeight);
-    view.setBounds(content.getLocalBounds().withTrimmedTop(top + noticeHeight).withTrimmedLeft(nw));
-    setup.setBounds(content.getLocalBounds().withTrimmedTop(top + noticeHeight).withTrimmedLeft(nw));
+    auto area = content.getLocalBounds().withTrimmedTop(top).withTrimmedLeft(nw);
+    for (auto* banner : { &microphoneNotice, &audioNotice }) {
+        if (banner->isVisible()) {
+            const int height = banner->preferredHeight(area.getWidth() - 24);
+            banner->setBounds(area.removeFromTop(height).reduced(12, 0));
+        }
+    }
+    view.setBounds(area); setup.setBounds(area);
 }
 
 void MainComponent::changeListenerCallback(ChangeBroadcaster*) {
@@ -389,9 +382,11 @@ void MainComponent::timerCallback() {
     toolbarTitle.setColour(Label::textColourId, C::textPrimary());
     const bool needsNotice = model.engine.deviceFailed.load() || model.engine.state.load() != AudioEngine::Ready
         || model.engine.captureEpoch.load() != model.engine.analysisEpoch.load();
-    audioNotice.setText(model.engine.statusText(), dontSendNotification);
-    audioNotice.setColour(Label::textColourId, C::textPrimary());
-    if (audioNotice.isVisible() != needsNotice) { audioNotice.setVisible(needsNotice); layoutContent(); }
+    const bool noticeWasVisible = audioNotice.isVisible();
+    const auto previousNotice = audioNotice.message();
+    audioNotice.setMessage(needsNotice && !microphoneBlocked ? model.engine.statusText() : "",
+        "Open Audio Setup", [this] { openSetup(); });
+    if (noticeWasVisible != audioNotice.isVisible() || previousNotice != audioNotice.message()) layoutContent();
     float mp = model.micPeak, rp = model.refPeak; double fs = model.sampleRate;
     auto dbs = [](float p) { return p > 1e-6f ? String(20 * std::log10(p), 1) + " dBFS" : String("-inf"); };
     auto* dev = model.dm.getCurrentAudioDevice();

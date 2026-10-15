@@ -161,7 +161,7 @@ public:
     juce::String loopbackStatus;
 
     // ---- mic cal
-    foh::MicCal cal; juce::String calFile; std::string calText; bool calOn = false;
+    foh::MicCal cal; juce::String calFile, calImportError; std::string calText; bool calOn = false;
     void loadCalFile(const juce::File& f);
     void setCalEnabled(bool on);
 

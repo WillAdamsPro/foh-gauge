@@ -11,6 +11,77 @@ namespace C = foh::ui::col;
 namespace D = foh::ui::dim;
 namespace T = foh::theme::type;
 
+namespace {
+constexpr int bannerInset = foh::theme::space::ml;
+constexpr int bannerGap = foh::theme::space::s;
+constexpr int bannerControlHeight = 24;
+constexpr int bannerIconWidth = 16;
+constexpr int bannerDismissWidth = 24;
+}
+Banner::Banner() {
+    addAndMakeVisible(actionButton); addAndMakeVisible(dismissButton);
+    dismissButton.setButtonText(u8("\xc3\x97"));
+    dismissButton.setTitle("Dismiss notice"); dismissButton.setTooltip("Dismiss notice");
+    dismissButton.onClick = [this] {
+        dismissed = true; setVisible(false);
+        if (onDismiss) onDismiss();
+    };
+    setTitle("Notice");
+}
+void Banner::setMessage(const String& message, const String& action, std::function<void()> callback) {
+    jassert(message.isEmpty() || (action.isNotEmpty() && callback));
+    if (text != message) dismissed = false;
+    text = message; setDescription(message);
+    actionButton.setButtonText(action); actionButton.onClick = std::move(callback);
+    setVisible(text.isNotEmpty() && !dismissed);
+    resized(); repaint();
+}
+int Banner::actionWidth() const {
+    AttributedString copy; copy.append(actionButton.getButtonText(), FohLookAndFeel::font(T::label), C::textPrimary());
+    TextLayout layout; layout.createLayout(copy, 10000.f);
+    return (int) std::ceil(layout.getWidth()) + bannerInset * 2;
+}
+TextLayout Banner::textLayout(int width) const {
+    AttributedString copy; copy.append(text, FohLookAndFeel::font(T::body), C::textPrimary());
+    TextLayout layout; layout.createLayout(copy, (float) jmax(1, width)); return layout;
+}
+int Banner::preferredHeight(int width) const {
+    const int available = jmax(1, width - bannerInset * 2 - bannerIconWidth - bannerGap * 2 - bannerDismissWidth);
+    const bool stacked = available - actionWidth() - bannerGap < 360;
+    const int textWidth = stacked ? available : available - actionWidth() - bannerGap;
+    return bannerInset * 2 + jmax(bannerControlHeight, (int) std::ceil(textLayout(textWidth).getHeight()))
+        + (stacked ? bannerGap + bannerControlHeight : 0);
+}
+void Banner::resized() {
+    auto r = getLocalBounds().reduced(bannerInset);
+    dismissButton.setBounds(r.removeFromRight(bannerDismissWidth).removeFromTop(bannerControlHeight));
+    r.removeFromRight(bannerGap); r.removeFromLeft(bannerIconWidth + bannerGap);
+    const int buttonWidth = actionWidth();
+    const bool stacked = r.getWidth() - buttonWidth - bannerGap < 360;
+    if (stacked) {
+        auto row = getLocalBounds().reduced(bannerInset).removeFromBottom(bannerControlHeight);
+        actionButton.setBounds(row.removeFromLeft(jmin(buttonWidth, row.getWidth())));
+        r.removeFromBottom(bannerControlHeight);
+        r.removeFromBottom(bannerGap);
+    } else {
+        actionButton.setBounds(r.removeFromRight(buttonWidth).withSizeKeepingCentre(buttonWidth, bannerControlHeight));
+        r.removeFromRight(bannerGap);
+    }
+    messageBounds = r;
+}
+void Banner::paint(Graphics& g) {
+    g.setColour(C::pillBackground()); g.fillRoundedRectangle(getLocalBounds().toFloat(), foh::theme::radius::tag);
+    g.setColour(C::border()); g.drawRoundedRectangle(getLocalBounds().toFloat().reduced(D::hairline() / 2), foh::theme::radius::tag, D::hairline());
+    Path icon; icon.addTriangle((float) bannerInset, (float) (bannerInset + bannerIconWidth),
+        (float) (bannerInset + bannerIconWidth / 2), (float) bannerInset,
+        (float) (bannerInset + bannerIconWidth), (float) (bannerInset + bannerIconWidth));
+    g.setColour(C::warning()); g.strokePath(icon, PathStrokeType(2));
+    g.drawLine((float) (bannerInset + bannerIconWidth / 2), (float) (bannerInset + 6),
+        (float) (bannerInset + bannerIconWidth / 2), (float) (bannerInset + 10), 2);
+    g.fillEllipse((float) (bannerInset + bannerIconWidth / 2 - 1), (float) (bannerInset + 12), 2, 2);
+    textLayout(messageBounds.getWidth()).draw(g, messageBounds.toFloat());
+}
+
 juce::String foh::theme::systemFontName() {
    #if JUCE_MAC
     return juce::String::fromUTF8([[NSFont systemFontOfSize: NSFont.systemFontSize].familyName UTF8String]);

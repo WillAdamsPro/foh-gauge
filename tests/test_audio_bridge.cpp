@@ -574,7 +574,7 @@ TEST_CASE("Device stop and rate/buffer restarts cancel playback and clear analys
     engine.audioDeviceStopped();
     CHECK(engine.gen.load() == AudioEngine::Off);
     CHECK(engine.connectionResult() == foh::ConnectionResult::invalid);
-    CHECK(std::string_view(engine.statusText()).find("stopped") != std::string_view::npos);
+    CHECK(std::string_view(engine.statusText()).find("disconnected") != std::string_view::npos);
     engine.audioDeviceIOCallbackWithContext(inputs, 2, outputs, 2, 256, {});
     for (int i = 0; i < 256; ++i) { CHECK(a[i] == 0); CHECK(b[i] == 0); }
     REQUIRE(waitFor([&] { const auto& s = analysis.latest(); return s.inputEpoch == engine.captureEpoch.load() && !s.micLevelValid; }));
@@ -896,7 +896,7 @@ TEST_CASE("Device errors from another thread silence playback until restart", "[
     const auto epoch = engine.captureEpoch.load();
     std::thread error([&] { engine.audioDeviceError("Synthetic error"); }); error.join();
     CHECK(engine.captureEpoch.load() == epoch); // an arbitrary thread never races the ring producer
-    CHECK(std::string_view(engine.statusText()).find("error") != std::string_view::npos);
+    CHECK(std::string_view(engine.statusText()).find("disconnected") != std::string_view::npos);
     float output[256]; float* outputs[] {output};
     engine.audioDeviceIOCallbackWithContext(nullptr, 0, outputs, 1, 256, {});
     for (float s : output) CHECK(s == 0);
@@ -1486,7 +1486,7 @@ TEST_CASE("Hotplug and device errors discard TF RTA SPL and delay history", "[ap
             engine.audioDeviceIOCallbackWithContext(inputs, 2, outputs, 1, 256, {});
             CHECK(engine.state.load() == AudioEngine::InvalidOutputs);
             CHECK(engine.gen.load() == AudioEngine::Off);
-            CHECK(std::string_view(engine.statusText()).find("Setup") != std::string_view::npos);
+            CHECK(std::string_view(engine.statusText()).find("Choose available") != std::string_view::npos);
         }
         if (event == 3) {
             engine.refCh = 4;
@@ -1562,7 +1562,7 @@ TEST_CASE("A replacement missing a configured output requires Setup even with ge
         engine.audioDeviceIOCallbackWithContext(inputs, 2, outputs, 1, 64, {});
     CHECK(engine.state.load() == AudioEngine::InvalidOutputs);
     CHECK(engine.micRing.available() == 0);
-    CHECK(std::string_view(engine.statusText()).find("Setup") != std::string_view::npos);
+    CHECK(std::string_view(engine.statusText()).find("Choose available") != std::string_view::npos);
     engine.outB = -1; // Correct the map in Setup, then resume with fresh history.
     engine.audioDeviceIOCallbackWithContext(inputs, 2, outputs, 1, 64, {});
     CHECK(engine.state.load() == AudioEngine::Ready);

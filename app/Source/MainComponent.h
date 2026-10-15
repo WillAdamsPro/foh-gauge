@@ -86,10 +86,9 @@ protected:
     void showWorkspaceMenu(); void updateSwitcher(); void leaveWorkspace();
     void saveWorkspaceAs(const juce::String& name);
     WorkspaceView view { model, PanelRegistry::standard() };
-    juce::Label audioNotice;
-    // Keep consent controls in window coordinates so they fit even at 200% UI scale.
-    juce::Label microphoneNotice;
-    juce::TextButton microphoneSettingsBtn { "Open System Settings" };
+    Banner audioNotice;
+    Banner microphoneNotice;
+    bool microphoneBlocked = false;
     juce::Label toolbarTitle; SegmentedControl switcher {{"Setup", "Alignment", "Tuning", "RTA/Show"}};
     StatusPills status; juce::TextButton pauseBtn, outputOn;
     SegmentedControl appearance {{foh::str::dark, foh::str::sunlight}}; juce::ComboBox scaleBox;
