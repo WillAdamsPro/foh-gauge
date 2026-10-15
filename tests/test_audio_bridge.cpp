@@ -1412,6 +1412,10 @@ TEST_CASE("Analysis engines join pending sweep and meter work on repeated destru
 
 struct AppModelMeasurementTestAccess {
     static void poll(AppModel& model) { model.timerCallback(); }
+    static void seedReadoutLevel(AppModel& model) {
+        model.levelInputKey = model.splInputKey(); model.levelInputEpoch = model.engine.captureEpoch.load();
+        model.levelTimeMs = juce::Time::getMillisecondCounterHiRes(); model.micLevelValid = true;
+    }
     static void prepareLoopback(AppModel& model) {
         model.syncLoopback();
         model.measuringLoopbackKey = model.loopbackKey();
@@ -2111,4 +2115,38 @@ TEST_CASE("Damaged signal callbacks keep generator output and peak meters finite
         }
     }
     engine.audioDeviceStopped();
+}
+
+
+TEST_CASE("Calibrated SPL readouts render both weightings in both themes and scales", "[app][readouts][layout]") {
+    juce::ScopedJuceInitialiser_GUI gui;
+    AppModel model; model.analysis.stop(); model.dm.removeAudioCallback(&model.engine);
+    model.dm.addAudioDeviceType(std::make_unique<SyntheticDeviceType>());
+    model.dm.setCurrentAudioDeviceType("Synthetic", true);
+    auto setup = model.dm.getAudioDeviceSetup(); setup.inputDeviceName = setup.outputDeviceName = "Synthetic";
+    REQUIRE(model.dm.setAudioDeviceSetup(setup, true).isEmpty()); REQUIRE(model.dm.getCurrentAudioDevice());
+    model.engine.deviceFailed = false; model.paused = false;
+    foh::SplCal cal; REQUIRE(cal.calibrate(-20, 94)); model.splCals[model.splInputKey()] = cal;
+    model.leq.valid = true; model.leq.seconds = 61.2; model.leqRevision = model.analysis.leqRevision.load();
+    model.leq.level = {-20, -18, -17}; model.leq.minute = {-21, -19, -18};
+    model.leq.fifteenMinutes = {-22, -20, -19}; model.leq.session = {-22, -20, -19}; model.micPeak = 0.1f;
+    auto& themes = foh::theme::ThemeManager::get(); const auto original = themes.current().id;
+    FohLookAndFeel look;
+    for (bool sunlight : {false, true}) for (int scale : {100, 200}) for (int weighting : {1, 2}) {
+        themes.setTheme(sunlight ? "pro-sunlight" : "pro-dark"); look.applyTheme();
+        auto panel = PanelRegistry::standard().create("SPLNumbers", model); panel->setLookAndFeel(&look);
+        auto minimum = panel->minSize(); panel->setSize(minimum.w, minimum.h);
+        for (auto* c : panel->getChildren()) if (auto* combo = dynamic_cast<juce::ComboBox*>(c); combo && combo->getNumItems() == 3) combo->setSelectedId(weighting);
+        AppModelMeasurementTestAccess::seedReadoutLevel(model); REQUIRE(model.micLevelReady());
+        if (const auto* folder = std::getenv("FOH_READOUT_QA_DIR")) {
+            juce::File dir(folder); dir.createDirectory();
+            auto snapshot = panel->createComponentSnapshot(panel->getLocalBounds(), true, scale / 100.f);
+            juce::Image image(juce::Image::RGB, snapshot.getWidth(), snapshot.getHeight(), true);
+            juce::Graphics g(image); g.fillAll(foh::ui::col::cardBackground()); g.drawImageAt(snapshot, 0, 0);
+            auto file = dir.getChildFile(juce::String("SPL-live-") + juce::String(weighting) + (sunlight ? "-sunlight-" : "-dark-") + juce::String(scale) + ".png").createOutputStream(); REQUIRE(file);
+            file->setPosition(0); juce::PNGImageFormat png; REQUIRE(png.writeImageToStream(image, *file)); file->truncate();
+        }
+        panel->setLookAndFeel(nullptr);
+    }
+    themes.setTheme(original);
 }

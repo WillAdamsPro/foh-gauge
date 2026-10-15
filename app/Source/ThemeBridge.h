@@ -35,6 +35,7 @@ namespace foh::ui
         inline Colour textBody()          { return theme().text.primary.interpolatedWith(theme().text.secondary, 0.5f); }
         inline Colour textSecondary()     { return theme().text.secondary; }
         inline Colour textAxis()          { return theme().text.axis; }
+        inline Colour textOnPoor()        { return theme().textOnPoor; }
         inline Colour textOnAccent()      { return theme().text.onAccent; }
         inline Colour accent()            { return theme().accent; }
         inline Colour ok()                { return theme().status.good; }

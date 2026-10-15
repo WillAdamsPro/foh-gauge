@@ -1,6 +1,7 @@
 #include <catch2/catch_test_macros.hpp>
 #include "Widgets.h"
 #include "Panels.h"
+#include "ui_panel_window.h"
 #include <limits>
 
 namespace {
@@ -154,7 +155,7 @@ TEST_CASE("Transfer function controls fit minimum width and preserve disclosure 
         }
     }
     panel->setLookAndFeel(nullptr);
-    foh::theme::ThemeManager::get().setTheme("apple-pro-dark");
+    foh::theme::ThemeManager::get().setTheme("pro-dark");
 }
 
 TEST_CASE("Low coherence advice can be dismissed without hiding the hatching", "[app][layout][tf]") {
@@ -208,5 +209,78 @@ TEST_CASE("Target popover preserves edits and closes safely with its panel", "[a
         juce::MessageManager::getInstance()->runDispatchLoopUntil(250);
         CHECK(juce::Component::getCurrentlyModalComponent() == nullptr);
     }
-    foh::theme::ThemeManager::get().setTheme("apple-pro-dark");
+    foh::theme::ThemeManager::get().setTheme("pro-dark");
+}
+
+TEST_CASE("Readout panel actions and layouts work in both appearances and scales", "[app][readouts][layout]") {
+    juce::ScopedJuceInitialiser_GUI initialise;
+    auto& themes = foh::theme::ThemeManager::get();
+    const auto originalTheme = themes.current().id;
+    FohLookAndFeel look;
+    AppModel model;
+    model.analysis.stop(); model.dm.removeAudioCallback(&model.engine);
+    model.engine.gen = AudioEngine::Off;
+    bool calibrationRequested = false;
+    model.requestSplCalibration = [&] { calibrationRequested = true; };
+    model.delay.arrivals = {{480, 10, 3.43, 0, true}, {960, 20, 6.86, -2, false}, {1440, 30, 10.29, -5, false}};
+    model.delay.confidence = 0.82; model.delay.twoSimilarArrivals = true;
+    foh::TFResult tf; tf.sampleRate = 48000; tf.fftSize = 1024;
+    tf.freq = {0, 100, 1000, 10000}; tf.magDb.assign(4, 0); tf.phaseDeg.assign(4, 0); tf.coherence.assign(4, 1); tf.H.assign(4, {1, 0});
+    model.tf = tf;
+    REQUIRE(model.traces.store("Synthetic reference", tf, 3.1));
+    for (bool sunlight : {false, true}) for (int scale : {100, 200}) {
+        themes.setTheme(sunlight ? "pro-sunlight" : "pro-dark"); look.applyTheme();
+        for (const auto* id : {"DelayFinder", "ShowMonitoring", "Coherence", "RTA", "SignalMeters", "SPLNumbers", "TraceList"}) {
+            INFO(id << " sunlight=" << sunlight << " scale=" << scale);
+            auto panel = PanelRegistry::standard().create(id, model); REQUIRE(panel);
+            panel->setLookAndFeel(&look); auto minimum = panel->minSize(); panel->setSize(minimum.w, minimum.h);
+            VisiblePanelWindow window(*panel);
+            panel->modelChanged(AppModel::Theme | AppModel::Delay | AppModel::Traces | AppModel::Snapshot);
+            for (auto* child : panel->getChildren()) if (child->isVisible()) CHECK(panel->getLocalBounds().contains(child->getBounds()));
+            if (panel->panelId() == "SPLNumbers") {
+                for (auto* child : panel->getChildren()) if (auto* b = dynamic_cast<juce::TextButton*>(child)) b->onClick();
+                CHECK(calibrationRequested);
+            }
+            if (panel->panelId() == "DelayFinder") {
+                for (auto* child : panel->getChildren()) if (auto* viewport = dynamic_cast<juce::Viewport*>(child)) {
+                    auto* detail = dynamic_cast<juce::Label*>(viewport->getViewedComponent()); REQUIRE(detail);
+                    CHECK(detail->getText().contains("High confidence (82%)")); CHECK(detail->getText().contains("Polarity: inverted"));
+                    CHECK(detail->getText().contains("\nArrival 2")); CHECK(detail->getText().contains("\nArrival 3"));
+                }
+            }
+            if (panel->panelId() == "TraceList") {
+                for (auto* child : panel->getChildren()) if (auto* list = dynamic_cast<juce::ListBox*>(child)) {
+                    auto* row = list->getComponentForRowNumber(0); REQUIRE(row);
+                    juce::ToggleButton* toggle = nullptr;
+                    for (auto* c : row->getChildren()) if (auto* b = dynamic_cast<juce::ToggleButton*>(c)) toggle = b;
+                    REQUIRE(toggle); const auto previous = model.traces.at(0).visible;
+                    toggle->onClick(); CHECK(model.traces.at(0).visible != previous);
+                    toggle->onClick(); CHECK(model.traces.at(0).visible == previous);
+                }
+            }
+            if (const auto* folder = std::getenv("FOH_READOUT_QA_DIR")) {
+                juce::File dir(folder); dir.createDirectory();
+                auto snapshot = panel->createComponentSnapshot(panel->getLocalBounds(), true, scale / 100.f);
+                juce::Image image(juce::Image::RGB, snapshot.getWidth(), snapshot.getHeight(), true);
+                juce::Graphics g(image); g.fillAll(foh::ui::col::cardBackground()); g.drawImageAt(snapshot, 0, 0);
+                auto file = dir.getChildFile(juce::String(id) + (sunlight ? "-sunlight-" : "-dark-") + juce::String(scale) + ".png").createOutputStream(); REQUIRE(file);
+                file->setPosition(0); juce::PNGImageFormat png; REQUIRE(png.writeImageToStream(image, *file)); file->truncate();
+            }
+            panel->setLookAndFeel(nullptr);
+        }
+    }
+    themes.setTheme(originalTheme);
+}
+
+TEST_CASE("Trace slots keep their colour identity and pattern through appearance changes", "[app][traces][readouts]") {
+    juce::ScopedJuceInitialiser_GUI initialise;
+    auto& themes = foh::theme::ThemeManager::get(); const auto original = themes.current().id;
+    themes.setTheme("pro-dark");
+    AppModel model; REQUIRE(model.traces.store("Synthetic", {}, 0));
+    model.colourTrace(0, foh::ui::col::storedTrace(3));
+    CHECK(model.traceSlotIndex(0) == 3);
+    themes.setTheme("pro-sunlight");
+    CHECK(model.traceColour(0) == foh::ui::theme().traceSlots[3].colour);
+    CHECK(foh::ui::theme().traceSlots[3].dashCount == 4);
+    themes.setTheme(original);
 }

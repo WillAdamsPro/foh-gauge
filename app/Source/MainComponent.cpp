@@ -57,7 +57,8 @@ MainComponent::MainComponent(juce::File workspaceFolder) : mgr(std::move(workspa
     content.addAndMakeVisible(view);
     content.addChildComponent(setup);
     setup.onDone = [this] { setup.setVisible(false); view.setVisible(true); openFloatingWindows(); };
-    content.addAndMakeVisible(splBtn); splBtn.onClick = [this] { openSetup(); setup.focusSplCalibration(); };
+    model.requestSplCalibration = [this] { openSetup(); setup.focusSplCalibration(); };
+    content.addAndMakeVisible(splBtn); splBtn.onClick = model.requestSplCalibration;
     content.addAndMakeVisible(setupBtn); setupBtn.onClick = [this] { openSetup(); };
     model.requestWorkspace = [this](const std::string& id) { selectWorkspace(id); };
     content.addAndMakeVisible(wsMenuBtn); wsMenuBtn.setButtonText(String(foh::str::workspace) + u8(" \xe2\x96\xbe")); wsMenuBtn.onClick = [this] { showWorkspaceMenu(); };
@@ -75,7 +76,7 @@ MainComponent::MainComponent(juce::File workspaceFolder) : mgr(std::move(workspa
     if (!mgr.loadErrors().isEmpty()) AlertWindow::showMessageBoxAsync(AlertWindow::WarningIcon, "Workspace load failed", mgr.loadErrors().joinIntoString("\n"));
     startTimerHz(15);
 }
-MainComponent::~MainComponent() { contentViewport.setViewedComponent(nullptr, false); sessionNotice.close(); removeKeyListener(presetCommands.keyMappings()); stopTimer(); leaveWorkspace(); view.setWorkspace(nullptr); model.removeListener(this); foh::theme::ThemeManager::get().removeChangeListener(this); floats.clear(); LookAndFeel::setDefaultLookAndFeel(nullptr); setLookAndFeel(nullptr); }
+MainComponent::~MainComponent() { model.requestSplCalibration = {}; contentViewport.setViewedComponent(nullptr, false); sessionNotice.close(); removeKeyListener(presetCommands.keyMappings()); stopTimer(); leaveWorkspace(); view.setWorkspace(nullptr); model.removeListener(this); foh::theme::ThemeManager::get().removeChangeListener(this); floats.clear(); LookAndFeel::setDefaultLookAndFeel(nullptr); setLookAndFeel(nullptr); }
 
 void MainComponent::openSetup() {
     if (showMode) setShowMode(false);
