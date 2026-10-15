@@ -114,7 +114,7 @@ void FohLookAndFeel::drawCallOutBoxBackground(CallOutBox&, Graphics& g, const Pa
     g.setColour(C::cardBackground()); g.fillPath(path);
     g.setColour(C::border()); g.strokePath(path, PathStrokeType(D::hairline()));
 }
-void makePrimary(TextButton& b) { b.getProperties().set("primary", true); b.setColour(TextButton::textColourOffId, C::textOnAccent()); }
+void makePrimary(TextButton& b) { b.getProperties().set("primary", true); b.setColour(TextButton::textColourOffId, C::textOnAccent()); b.setColour(TextButton::textColourOnId, C::textOnAccent()); }
 
 // ===================== Plot =====================
 float PlotComponent::xOf(double f) const { return (float) (plotX() + plotW() * (std::log10(std::clamp(f, fMin, fMax)) - std::log10(fMin)) / (std::log10(fMax) - std::log10(fMin))); }

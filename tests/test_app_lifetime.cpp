@@ -1076,6 +1076,8 @@ TEST_CASE("Measurement toolbar fits and every status has a Setup destination", "
             main.appModel().setPaused(paused); main.refreshStatus();
             CHECK(main.pauseControl().getButtonText() == (paused ? "Resume measuring" : "Pause measuring"));
             if (paused) CHECK(status.pills[0].text == "Paused");
+            CHECK(main.pauseControl().findColour(paused ? juce::TextButton::textColourOnId : juce::TextButton::textColourOffId)
+                  == foh::ui::col::textOnAccent());
         }
         REQUIRE(main.keyPressed(juce::KeyPress(juce::KeyPress::spaceKey)));
         CHECK(main.appModel().paused);
