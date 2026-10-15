@@ -1055,6 +1055,7 @@ TEST_CASE("Guide summaries and disclosures fit both themes at 100 and 200 percen
             juce::Graphics graphics(image); graphics.fillAll(foh::ui::col::cardBackground());
             graphics.drawImageAt(content, 0, 0);
             auto stream = juce::File(output).getChildFile(name + ".png").createOutputStream(); REQUIRE(stream);
+            stream->setPosition(0); stream->truncate();
             juce::PNGImageFormat png; REQUIRE(png.writeImageToStream(image, *stream));
         }
     };

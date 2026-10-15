@@ -63,6 +63,9 @@ public:
             if (i == 3) row.setTooltip("Flip sub polarity and use the displayed delay. Verify the phase slopes across the crossover band.");
             row.onClick = [this, i] { if (delayChoices[i].getToggleState()) selectedDelay = i; };
         }
+        // Wrap copy at its theme font size instead of squeezing it horizontally.
+        for (auto* label : {&titleLabel, &body, &details, &result, &readout, &polarity, &recommendation})
+            label->setMinimumHorizontalScale(1.f);
         body.setComponentID("guide-summary");
         details.setComponentID("guide-details");
         more.onClick = [this] { showDetails = !showDetails; refresh(); };
