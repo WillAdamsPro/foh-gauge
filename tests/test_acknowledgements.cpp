@@ -22,3 +22,19 @@ TEST_CASE("Acknowledgements exposes complete offline notices in a scrollable rea
     screen.setSize(480, 320);
     REQUIRE(screen.getLocalBounds().contains(reader->getBounds()));
 }
+
+TEST_CASE("About lockup renders against raised surfaces in both themes", "[ui][brand]") {
+    juce::ScopedJuceInitialiser_GUI gui;
+    for (const auto* theme : {"pro-dark", "pro-sunlight"}) {
+        foh::theme::ThemeManager::get().setTheme(theme);
+        Acknowledgements screen;
+        auto image = screen.createComponentSnapshot({0, 0, screen.getWidth(), Acknowledgements::headerHeight});
+        CHECK(image.getPixelAt(0, 0) == foh::ui::col::pillBackground());
+        if (auto* folder = std::getenv("FOH_TOOLBAR_QA_DIR")) {
+            juce::File dir(folder); dir.createDirectory();
+            auto stream = dir.getChildFile(juce::String("about-") + theme + ".png").createOutputStream();
+            REQUIRE(stream); juce::PNGImageFormat png; REQUIRE(png.writeImageToStream(image, *stream));
+        }
+    }
+    foh::theme::ThemeManager::get().setTheme("pro-dark");
+}

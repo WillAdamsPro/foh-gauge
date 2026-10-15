@@ -370,24 +370,82 @@ void NavButton::paintButton(Graphics& g, bool over, bool) {
 }
 
 // ===================== Status pills =====================
-void StatusPills::paint(Graphics& g) {
-    auto f = FohLookAndFeel::font(T::body); g.setFont(f); float x = 0, h = 30, y = (getHeight() - h) * 0.5f;
-    for (auto& p : pills) {
-        float tw = (float) GlyphArrangement::getStringWidthInt(f, p.text), w = 12 + (p.state >= 0 ? 8 + 6 : 0) + tw + 12;
-        if (x + w > getWidth()) break;
-        auto r = Rectangle<float>(x, y, w, h);
-        g.setColour(C::pillBackground()); g.fillRoundedRectangle(r, h * 0.5f);
-        g.setColour(C::pillBorder()); g.drawRoundedRectangle(r.reduced(0.5f), h * 0.5f, D::hairline());
-        float tx = x + 12;
-        if (p.state >= 0) { auto d = Rectangle<float>(tx, r.getCentreY() - 4, 8, 8);
-            Colour c = p.state == Good ? C::ok() : p.state == Caution ? C::warning() : C::danger(); g.setColour(c);
-            if (p.state == Good) g.fillEllipse(d);
-            else if (p.state == Caution) { Path t; t.addTriangle(d.getCentreX(), d.getY(), d.getRight(), d.getBottom(), d.getX(), d.getBottom()); g.fillPath(t); }
-            else g.fillRect(d);
-            tx += 14; }
-        g.setColour(C::textBody()); g.drawText(p.text, Rectangle<float>(tx, r.getY(), tw + 2, h), Justification::centredLeft);
-        x += w + 8;
+StatusPills::StatusPills() {
+    addAndMakeVisible(overflow);
+    overflow.setTooltip("All measurement status and Setup actions");
+    overflow.onClick = [this] {
+        PopupMenu menu;
+        for (size_t i = 0; i < pills.size(); ++i) {
+            const auto& p = pills[i];
+            auto mark = p.state == Good ? u8("\xe2\x97\x8f ") : p.state == Caution ? u8("\xe2\x96\xb2 ") : p.state == Poor ? u8("\xe2\x96\xa0 ") : String();
+            menu.addItem((int) i + 1, mark + p.text);
+        }
+        menu.showMenuAsync(PopupMenu::Options().withTargetComponent(&overflow),
+            [self = Component::SafePointer<StatusPills>(this)](int result) {
+                if (self && result > 0 && result <= (int) self->pills.size() && self->onAction)
+                    self->onAction(self->pills[(size_t) result - 1].action);
+            });
+    };
+}
+int StatusPills::pillWidth(const Pill& p) const {
+    return GlyphArrangement::getStringWidthInt(FohLookAndFeel::font(T::label), p.text) + 24 + (p.state >= 0 ? 14 : 0);
+}
+int StatusPills::preferredWidth() const {
+    int width = 0;
+    for (const auto& p : pills) width += pillWidth(p) + 8;
+    return jmax(0, width - 8);
+}
+void StatusPills::setPills(std::vector<Pill> next) {
+    pills = std::move(next);
+    while (buttons.size() < (int) pills.size()) {
+        auto* button = buttons.add(new PillButton());
+        addAndMakeVisible(button);
+        button->onClick = [this, button] { if (onAction) onAction(button->pill.action); };
     }
+    for (int i = 0; i < buttons.size(); ++i) {
+        auto* button = buttons[i];
+        if (i >= (int) pills.size()) { button->setVisible(false); continue; }
+        button->pill = pills[(size_t) i];
+        button->setButtonText(button->pill.text);
+        button->setTitle(button->pill.text);
+        button->setTooltip(button->pill.text + ". Open Setup");
+        button->repaint();
+    }
+    resized();
+}
+void StatusPills::resized() {
+    const bool allFit = preferredWidth() <= getWidth();
+    const int moreWidth = GlyphArrangement::getStringWidthInt(FohLookAndFeel::font(T::label), overflow.getButtonText()) + 24;
+    const int available = allFit ? getWidth() : jmax(0, getWidth() - moreWidth - 8);
+    int x = 0;
+    visibleCount = 0;
+    for (int i = 0; i < buttons.size() && i < (int) pills.size(); ++i) {
+        const int width = pillWidth(pills[(size_t) i]);
+        const bool fits = i == visibleCount && x + width <= available;
+        buttons[i]->setVisible(fits);
+        if (fits) { buttons[i]->setBounds(x, 0, width, getHeight()); x += width + 8; ++visibleCount; }
+    }
+    overflow.setVisible(!allFit);
+    overflow.setBounds(jmax(0, getWidth() - moreWidth), 0, jmin(getWidth(), moreWidth), getHeight());
+}
+void StatusPills::PillButton::paintButton(Graphics& g, bool hover, bool down) {
+    auto r = getLocalBounds().toFloat().reduced(0.5f);
+    auto bg = C::pillBackground();
+    if (hover || down) bg = bg.overlaidWith(C::textPrimary().withAlpha(down ? 0.12f : 0.06f));
+    g.setColour(bg); g.fillRoundedRectangle(r, r.getHeight() / 2);
+    g.setColour(hasKeyboardFocus(false) ? C::accent() : C::pillBorder());
+    g.drawRoundedRectangle(r, r.getHeight() / 2, hasKeyboardFocus(false) ? 2.f : D::hairline());
+    auto text = getLocalBounds().reduced(12, 0);
+    if (pill.state >= 0) {
+        auto d = text.removeFromLeft(8).toFloat().withSizeKeepingCentre(8, 8);
+        text.removeFromLeft(6);
+        g.setColour(pill.state == Good ? C::ok() : pill.state == Caution ? C::warning() : C::danger());
+        if (pill.state == Good) g.fillEllipse(d);
+        else if (pill.state == Caution) { Path t; t.addTriangle(d.getCentreX(), d.getY(), d.getRight(), d.getBottom(), d.getX(), d.getBottom()); g.fillPath(t); }
+        else g.fillRect(d);
+    }
+    g.setFont(FohLookAndFeel::font(T::label)); g.setColour(C::textPrimary());
+    g.drawText(pill.text, text, Justification::centredLeft);
 }
 
 void HelpPanel::setText(const String& copy) {

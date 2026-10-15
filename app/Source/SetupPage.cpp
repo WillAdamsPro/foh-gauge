@@ -124,7 +124,33 @@ void SetupPage::applyDevice(bool inputChanged) {
     if (rate.getSelectedId() > 0) setup.sampleRate = rate.getText().getDoubleValue();
     notice.setText(model.dm.setAudioDeviceSetup(setup, true), dontSendNotification); refresh();
 }
+void SetupPage::focusSection(Section next) {
+    section = next;
+    wizard.cancel(); questionnaire.cancel();
+    wizard.setVisible(false); questionnaire.setVisible(false);
+    detail.reset();
+    if (next == Section::MicCalibration || next == Section::ReferenceDelay) {
+        detail = PanelRegistry::standard().create(next == Section::MicCalibration ? "Calibration" : "DelayFinder", model);
+        if (detail) { detail->setWantsKeyboardFocus(true); addAndMakeVisible(*detail); }
+    }
+    title.setText(detail ? detail->title() : "Audio Setup", dontSendNotification);
+    resized();
+    if (detail) detail->grabKeyboardFocus();
+    else if (next == Section::Mic) mic.grabKeyboardFocus();
+    else if (next == Section::Reference) ref.grabKeyboardFocus();
+    else input.grabKeyboardFocus();
+}
 void SetupPage::resized() {
+    for (auto* child : getChildren())
+        if (child != &wizard && child != &questionnaire && child != &done)
+            child->setVisible(!detail || child == detail.get() || child == &title);
+    if (detail) {
+        auto area = getLocalBounds().reduced(16);
+        title.setBounds(area.removeFromTop(32));
+        done.setBounds(area.removeFromBottom(36).removeFromRight(90));
+        detail->setBounds(area);
+        return;
+    }
     wizard.setBounds(getLocalBounds()); questionnaire.setBounds(getLocalBounds());
     auto r = getLocalBounds().reduced(16); auto heading = r.removeFromTop(32); easySetup.setBounds(heading.removeFromRight(110)); title.setBounds(heading);
     rigSetup.setBounds(r.removeFromTop(30));

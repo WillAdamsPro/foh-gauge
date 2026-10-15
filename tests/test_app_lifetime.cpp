@@ -23,17 +23,23 @@ public:
     bool resetFromFloating() {
         return MainComponent::keyPressed(juce::KeyPress('0', juce::ModifierKeys::commandModifier, 0), floats[0]);
     }
+    bool pauseFromFloating() {
+        return MainComponent::keyPressed(juce::KeyPress(juce::KeyPress::spaceKey), floats[0]);
+    }
     juce::Viewport& viewport() { return contentViewport; }
     juce::Component& canvas() { return contentCanvas; }
     juce::Component& logicalContent() { return content; }
     std::vector<juce::Component*> toolbarControls() {
-        return { &switcher, &wsMenuBtn, &expertBtn, &showModeBtn, &pauseBtn, &setupBtn, &splBtn };
+        return { &brandLockup, &switcher, &status, &wsMenuBtn, &pauseBtn, &setupBtn };
     }
     bool inShowMode() const { return showMode; }
     AppModel& appModel() { return model; }
     juce::TextButton& outputControl() { return outputOn; }
     void refreshStatus() { timerCallback(); }
-    juce::TextButton& expertToggle() { return expertBtn; }
+    StatusPills& statusControl() { return status; }
+    SetupPage& setupPage() { return setup; }
+    juce::TextButton& pauseControl() { return pauseBtn; }
+
     AppModel& state() { return model; }
     void showWorkspace() { setup.setVisible(false); view.setVisible(true); openFloatingWindows(); }
     FloatingPanelWindow* floating(int index) { return floats[index]; }
@@ -596,33 +602,33 @@ TEST_CASE("Expert toggle reveals every panel globally without changing saved lay
     TestMain main(temporary.folder);
     main.showWorkspace();
     CHECK_FALSE(main.appModel().expertMode());
-    CHECK_FALSE(main.expertToggle().getToggleState());
+    CHECK_FALSE(main.isExpertMode());
     auto* guide = main.workspaceView().panel("GuideInspector");
     auto state = fohws::Json::object(); state.set("guide", 2); state.set("step", 1);
     guide->loadState(state);
     const auto guideState = guide->saveState().dump();
     const auto original = main.workspace().root;
-    main.expertToggle().setToggleState(true, juce::dontSendNotification);
-    main.expertToggle().onClick();
+    main.setExpertMode(true);
     CHECK(main.appModel().expertMode());
     CHECK(main.workspace().root == original);
     CHECK(main.workspaceView().panel("GuideInspector") == guide);
     CHECK(guide->saveState().dump() == guideState);
     for (int i = 0; i < 4; ++i) {
         main.selectWorkspace(i);
-        CHECK(main.expertToggle().getToggleState());
+        CHECK(main.isExpertMode());
         for (const auto& entry : PanelRegistry::standard().all())
             CHECK(main.workspaceView().panel(entry.id, false) != nullptr);
     }
     main.setShowMode(true);
-    main.expertToggle().setToggleState(false, juce::dontSendNotification);
-    main.expertToggle().onClick();
-    main.expertToggle().setToggleState(true, juce::dontSendNotification);
-    main.expertToggle().onClick();
-    CHECK_FALSE(main.inShowMode());
+    main.setExpertMode(false);
+    CHECK(main.isExpertMode());
+    CHECK(main.inShowMode());
+    main.setShowMode(false);
+    main.setExpertMode(false);
+    CHECK_FALSE(main.isExpertMode());
     main.selectWorkspace("alignment");
     main.appModel().setExpertMode(false);
-    CHECK_FALSE(main.expertToggle().getToggleState());
+    CHECK_FALSE(main.isExpertMode());
     CHECK(main.workspace().root == original);
 }
 
@@ -1040,4 +1046,67 @@ TEST_CASE("Stopping or destroying a pending generator confirmation cannot start 
         model.reset(); drainMessages(); CHECK_FALSE(started);
         CHECK(juce::ModalComponentManager::getInstance()->getNumModalComponents() == 0);
     }
+}
+
+TEST_CASE("Measurement toolbar fits and every status has a Setup destination", "[app][toolbar][layout]") {
+    juce::ScopedJuceInitialiser_GUI initialise;
+    TemporaryWorkspaces temporary;
+    TestMain main(temporary.folder);
+    main.setShowMode(false);
+    for (bool sunlight : {false, true}) for (int scale : {100, 200}) {
+        main.setSunlightTheme(sunlight); drainMessages();
+        main.setSize(1024, 768); main.setUiScale(scale);
+        main.appModel().micPeak = main.appModel().refPeak = 0;
+        main.refreshStatus();
+        auto controls = main.toolbarControls();
+        for (size_t i = 0; i < controls.size(); ++i) {
+            CHECK(main.logicalContent().getLocalBounds().contains(controls[i]->getBounds()));
+            for (size_t j = i + 1; j < controls.size(); ++j)
+                CHECK_FALSE(controls[i]->getBounds().intersects(controls[j]->getBounds()));
+        }
+        auto& status = main.statusControl();
+        REQUIRE(status.pills.size() == 6);
+        CHECK(status.pills[1].text == juce::String::fromUTF8("Mic \xe2\x80\x94"));
+        CHECK(status.pills[2].text == juce::String::fromUTF8("Ref \xe2\x80\x94"));
+        for (float peak : {0.f, 0.1f, 1.f}) {
+            main.appModel().micPeak = main.appModel().refPeak = peak; main.refreshStatus();
+            CHECK(status.pills[1].state == status.pills[2].state);
+        }
+        for (bool paused : {true, false}) {
+            main.appModel().setPaused(paused); main.refreshStatus();
+            CHECK(main.pauseControl().getButtonText() == (paused ? "Resume measuring" : "Pause measuring"));
+            if (paused) CHECK(status.pills[0].text == "Paused");
+        }
+        REQUIRE(main.keyPressed(juce::KeyPress(juce::KeyPress::spaceKey)));
+        CHECK(main.appModel().paused);
+        CHECK(main.pauseControl().getButtonText() == "Resume measuring");
+        CHECK(status.pills[0].text == "Paused");
+        main.showWorkspace();
+        if (auto* folder = std::getenv("FOH_TOOLBAR_QA_DIR")) {
+            juce::File dir(folder); dir.createDirectory();
+            auto image = main.logicalContent().createComponentSnapshot({0, 0, main.logicalContent().getWidth(), 44}, true, scale / 100.f);
+            auto stream = dir.getChildFile(juce::String(sunlight ? "sunlight-" : "dark-") + juce::String(scale) + ".png").createOutputStream();
+            REQUIRE(stream); juce::PNGImageFormat png; REQUIRE(png.writeImageToStream(image, *stream));
+        }
+        for (const auto pill : status.pills) {
+            status.onAction(pill.action);
+            CHECK(main.setupPage().isVisible());
+            CHECK((int) main.setupPage().focusedSection() == pill.action);
+        }
+    }
+    // At a wide size all pills are real focusable buttons, with working clicks.
+    main.setUiScale(100); main.setSize(3200, 900); main.refreshStatus();
+    int clicked = 0;
+    for (auto* child : main.statusControl().getChildren()) {
+        if (auto* button = dynamic_cast<juce::Button*>(child); button && button->isVisible()) {
+            button->onClick(); ++clicked;
+            CHECK(main.setupPage().isVisible());
+        }
+    }
+    CHECK(clicked == 6);
+    main.showWorkspace(); main.selectWorkspace("tuning"); main.floatPanel("RTA");
+    REQUIRE(main.floatingCount() == 1);
+    const bool wasPaused = main.appModel().paused;
+    REQUIRE(main.pauseFromFloating());
+    CHECK(main.appModel().paused != wasPaused);
 }
