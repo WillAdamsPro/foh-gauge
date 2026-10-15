@@ -274,10 +274,16 @@ void MainComponent::fitSavedScale() {
     // At launch retain the logical size required by the toolbar and workspace.
     // Explicit later choices may zoom further; View and Cmd+0 remain available.
     int fit = 100;
-    for (int percent : {100, 125, 150, 200})
+    for (int percent : {100, 125, 150, 200}) {
+        const int logicalWidth = jmax(minimumContentWidth, getWidth() * 100 / percent);
+        const int sidebar = !showMode && logicalWidth >= 1280 ? D::navWidth() : 0;
+        int noticeHeight = 0;
+        for (auto* banner : { &microphoneNotice, &audioNotice })
+            if (banner->isVisible()) noticeHeight += banner->preferredHeight(logicalWidth - sidebar - 24);
         if (percent <= uiScale && getWidth() * 100 >= minimumContentWidth * percent
-            && getHeight() * 100 >= minimumContentHeight * percent)
+            && getHeight() * 100 >= (minimumContentHeight + noticeHeight) * percent)
             fit = percent;
+    }
     setUiScale(fit);
 }
 void MainComponent::setMicrophoneAccessBlocked(bool blocked) {
