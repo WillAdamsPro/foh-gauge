@@ -7,6 +7,7 @@
 #include "SettleStatus.h"
 #include "Panels.h"
 #include "SetupPage.h"
+#include "ui_form_helpers.h"
 #include "MainComponent.h"
 #include <fohcore/session.h>
 #include <chrono>
@@ -487,8 +488,8 @@ public:
 };
 
 juce::ComboBox* routingChoice(SetupPage& setup, const juce::String& prefix) {
-    for (int i = 0; i < setup.getNumChildComponents(); ++i)
-        if (auto* box = dynamic_cast<juce::ComboBox*>(setup.getChildComponent(i)))
+    for (auto* child : formCanvas(setup).getChildren())
+        if (auto* box = dynamic_cast<juce::ComboBox*>(child))
             if (box->getItemText(0) == prefix + ": None") return box;
     return nullptr;
 }

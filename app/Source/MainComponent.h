@@ -1,6 +1,5 @@
 #include "Strings.h"
-// MainComponent: window frame only. Toolbar (title, workspace switcher, status pills, Stop), sidebar
-// (appearance, UI scale) and the WorkspaceView that hosts the panels.
+// Window frame, measurement toolbar and workspace host.
 #pragma once
 #include "FloatingPanels.h"
 #include "console/ConsoleWindow.h"
@@ -34,6 +33,10 @@ public:
     void setMicrophoneAccessBlocked(bool blocked);
     bool isSunlightTheme() const { return foh::theme::ThemeManager::get().current().isLight; }
     void setSunlightTheme(bool enabled);
+    bool isExpertMode() { return model.expertMode(); }
+    bool isShowMode() const { return showMode; }
+    void setExpertMode(bool enabled) { if (!showMode) model.setExpertMode(enabled); }
+    void setShowMode(bool enabled);
     void selectWorkspace(int index);
     void selectWorkspace(const std::string& id);
     bool keyPressed(const juce::KeyPress&) override;
@@ -44,7 +47,6 @@ protected:
     bool keyPressed(const juce::KeyPress&, juce::Component*) override;
     void timerCallback() override; void changeListenerCallback(juce::ChangeBroadcaster*) override; void modelChanged(int what) override;
     virtual void workspaceSelected() {}
-    bool sidebarVisible() const { return !showMode && content.getWidth() >= 1280; } // spec §7: sidebar collapses under 1280 px
     // Only this child is transformed; the native window stays in display coordinates.
     struct Content : juce::Component {
         explicit Content(MainComponent& ownerIn) : owner(ownerIn) {}
@@ -77,11 +79,10 @@ protected:
     WorkspacePresetCommands presetCommands { [this](int i) { selectWorkspace(i); } };
     juce::OwnedArray<FloatingPanelWindow> floats;
     bool showMode = false;
-    void setShowMode(bool enabled);
-    void openSetup();
+    void openSetup(SetupPage::Section section = SetupPage::Section::Audio);
     SetupPage setup { model };
-    juce::TextButton setupBtn { "Audio Setup" }, splBtn { foh::str::splCalibration };
-    juce::TextButton wsMenuBtn, showModeBtn, expertBtn;
+    juce::TextButton setupBtn { "Setup" };
+    juce::TextButton wsMenuBtn;
     void openFloatingWindows(); void closeFloatingWindows();
     void showWorkspaceMenu(); void updateSwitcher(); void leaveWorkspace();
     void saveWorkspaceAs(const juce::String& name);
@@ -89,7 +90,8 @@ protected:
     Banner audioNotice;
     Banner microphoneNotice;
     bool microphoneBlocked = false;
-    juce::Label toolbarTitle; SegmentedControl switcher {{"Setup", "Alignment", "Tuning", "RTA/Show"}};
+    juce::ImageComponent brandLockup;
+    SegmentedControl switcher {{"Setup", "Alignment", "Tuning", "RTA/Show"}};
     StatusPills status; juce::TextButton pauseBtn, outputOn;
-    SegmentedControl appearance {{foh::str::dark, foh::str::sunlight}}; juce::ComboBox scaleBox;
+    static constexpr std::array<int, 4> scales {100, 125, 150, 200};
 };

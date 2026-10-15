@@ -5,6 +5,7 @@
 #include "WindowBounds.h"
 #if JUCE_MAC
  #import <AVFoundation/AVFoundation.h>
+ #import <AppKit/AppKit.h>
 #endif
 class FOHGaugeApp : public juce::JUCEApplication {
 public:
@@ -37,7 +38,7 @@ public:
     }
     void shutdown() override { shuttingDown = true; window = nullptr; }
     struct Window : juce::DocumentWindow, juce::MenuBarModel, juce::ApplicationCommandTarget, private juce::Timer {
-        enum { resetScale = 1, largerScale, smallerScale, scale125, scale150, scale200, darkTheme, sunlightTheme, about };
+        enum { resetScale = 1, largerScale, smallerScale, scale125, scale150, scale200, darkTheme, sunlightTheme, about, expertMode, showMode };
         MainComponent* main = nullptr; // owned by DocumentWindow
         juce::ApplicationCommandManager commands;
         juce::Component::SafePointer<juce::DialogWindow> acknowledgements;
@@ -81,7 +82,29 @@ public:
                                             || status == AVAuthorizationStatusRestricted);
 #endif
         }
-        void timerCallback() override { updateMicrophoneConsent(); }
+        bool lastShowMode = false, lastExpertMode = false;
+        void timerCallback() override {
+            updateMicrophoneConsent();
+            if (lastShowMode != main->isShowMode() || lastExpertMode != main->isExpertMode()) {
+                lastShowMode = main->isShowMode(); lastExpertMode = main->isExpertMode();
+                commands.commandStatusChanged();
+            }
+            annotateExpertTooltip();
+        }
+        void annotateExpertTooltip() {
+#if JUCE_MAC
+            // JUCE's native menu bridge omits command descriptions/tooltips.
+            // Annotate the native item so disabled Expert explains how to enable it.
+            std::function<void(NSMenu*)> annotate = [&](NSMenu* menu) {
+                for (NSMenuItem* item in [menu itemArray]) {
+                    if ([[item title] isEqualToString:@"Expert"])
+                        [item setToolTip:main->isShowMode() ? @"Exit Show mode first" : @"Reveal all charts and settings"];
+                    if ([item submenu] != nil) annotate([item submenu]);
+                }
+            };
+            annotate([NSApp mainMenu]);
+#endif
+        }
         bool constraining = false;
         void constrainToDisplay() {
             if (constraining) return;
@@ -108,21 +131,39 @@ public:
         juce::PopupMenu getMenuForIndex(int index, const juce::String&) override {
             if (index == 0) return main->getFileMenu(commands);
             juce::PopupMenu menu;
+#if JUCE_MAC
+            // Native items are created after getMenuForIndex returns.
+            juce::MessageManager::callAsync([self = juce::Component::SafePointer<Window>(this)] {
+                if (self) self->annotateExpertTooltip();
+            });
+#endif
             if (index == 2) { menu.addCommandItem(&commands, about); return menu; }
             for (int id : { resetScale, scale125, scale150, scale200, largerScale, smallerScale })
                 menu.addCommandItem(&commands, id);
             menu.addSeparator();
-            menu.addCommandItem(&commands, darkTheme);
-            menu.addCommandItem(&commands, sunlightTheme);
+            juce::PopupMenu appearance;
+            appearance.addCommandItem(&commands, darkTheme);
+            appearance.addCommandItem(&commands, sunlightTheme);
+            menu.addSubMenu("Appearance", appearance);
+            menu.addSeparator();
+            menu.addCommandItem(&commands, expertMode);
+            menu.addCommandItem(&commands, showMode);
             return menu;
         }
         // Command items dispatch through the manager to Window (View) or MainComponent (File).
         void menuItemSelected(int, int) override {}
         juce::ApplicationCommandTarget* getNextCommandTarget() override { return main; }
         void getAllCommands(juce::Array<juce::CommandID>& ids) override {
-            for (int id : { resetScale, largerScale, smallerScale, scale125, scale150, scale200, darkTheme, sunlightTheme, about }) ids.add(id);
+            for (int id : { resetScale, largerScale, smallerScale, scale125, scale150, scale200, darkTheme, sunlightTheme, about, expertMode, showMode }) ids.add(id);
         }
         void getCommandInfo(juce::CommandID id, juce::ApplicationCommandInfo& info) override {
+            if (id == expertMode || id == showMode) {
+                info.setInfo(id == expertMode ? "Expert" : "Show mode",
+                    id == expertMode && main->isShowMode() ? "Exit Show mode first" : id == expertMode ? "Reveal all charts and settings" : "Monitor the show against a stored reference", "View", 0);
+                info.setTicked(id == expertMode ? main->isExpertMode() : main->isShowMode());
+                info.setActive(id != expertMode || !main->isShowMode());
+                return;
+            }
             if (id == about) {
                 info.setInfo("About / Acknowledgements", "Third-party notices and font license", "Help", 0);
                 return;
@@ -153,6 +194,8 @@ public:
                     acknowledgements = options.launchAsync();
                     break;
                 }
+                case expertMode: main->setExpertMode(!main->isExpertMode()); break;
+                case showMode: main->setShowMode(!main->isShowMode()); break;
                 case resetScale: main->setUiScale(100); break;
                 case largerScale: main->stepUiScale(1); break;
                 case smallerScale: main->stepUiScale(-1); break;

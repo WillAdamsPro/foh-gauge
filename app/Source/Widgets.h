@@ -224,10 +224,25 @@ private:
 class StatusPills : public juce::Component {
 public:
     enum State { None = -1, Good = 0, Caution = 1, Poor = 2 };
-    struct Pill { juce::String text; int state = None; };
-    void setPills(std::vector<Pill> p) { if (p.size() != pills.size() || !std::equal(p.begin(), p.end(), pills.begin(), [](auto& a, auto& b) { return a.text == b.text && a.state == b.state; })) { pills = std::move(p); repaint(); } }
-    void paint(juce::Graphics&) override;
+    struct Pill { juce::String text; int state = None; int action = 0; };
+    StatusPills();
+    void setPills(std::vector<Pill>);
+    void resized() override;
+    int preferredWidth() const;
+    std::function<void(int)> onAction;
     std::vector<Pill> pills;
+private:
+    class PillButton : public juce::Button {
+    public:
+        PillButton() : Button({}) {}
+        Pill pill;
+        void paintButton(juce::Graphics&, bool hover, bool down) override;
+    };
+    juce::OwnedArray<PillButton> buttons;
+    juce::TextButton overflow { "More status" };
+    int visibleCount = 0;
+    int pillWidth(const Pill&) const;
+
 };
 
 // shared drawing helpers

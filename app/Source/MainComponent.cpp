@@ -18,7 +18,9 @@ MainComponent::MainComponent(juce::File workspaceFolder) : mgr(std::move(workspa
     contentCanvas.addAndMakeVisible(content);
     content.addChildComponent(microphoneNotice);
     microphoneNotice.onDismiss = [this] { layoutContent(); };
-    content.addAndMakeVisible(toolbarTitle); toolbarTitle.setFont(FohLookAndFeel::font(T::title, true));
+    content.addAndMakeVisible(brandLockup);
+    brandLockup.setTitle("FOH Gauge");
+    status.onAction = [this](int section) { openSetup(static_cast<SetupPage::Section>(section)); };
     content.addAndMakeVisible(switcher); switcher.onChange = [this](int i) { selectWorkspace(i); };
     content.addAndMakeVisible(status);
     content.addChildComponent(outputOn);
@@ -27,34 +29,17 @@ MainComponent::MainComponent(juce::File workspaceFolder) : mgr(std::move(workspa
     outputOn.onClick = [this] { model.stopGenerator(); timerCallback(); };
     content.addChildComponent(audioNotice);
     audioNotice.onDismiss = [this] { layoutContent(); };
-    content.addAndMakeVisible(expertBtn); expertBtn.setButtonText("Expert"); expertBtn.setClickingTogglesState(true);
-    expertBtn.setToggleState(model.expertMode(), dontSendNotification);
-    expertBtn.setTooltip("Reveal all charts and settings in every workspace; guides remain available");
-    expertBtn.onClick = [this] {
-        if (expertBtn.getToggleState() && showMode) setShowMode(false);
-        model.setExpertMode(expertBtn.getToggleState());
-    };
-    content.addAndMakeVisible(showModeBtn); showModeBtn.setButtonText("Show mode"); showModeBtn.setClickingTogglesState(true);
-    showModeBtn.setTooltip("Live TF/RTA monitoring against a stored reference; toggle off to restore the workspace");
-    showModeBtn.onClick = [this] { setShowMode(showModeBtn.getToggleState()); };
     content.addAndMakeVisible(pauseBtn); pauseBtn.setClickingTogglesState(true); makePrimary(pauseBtn); pauseBtn.setButtonText(foh::str::pauseMeasuring);
-    pauseBtn.onClick = [this] { model.setPaused(pauseBtn.getToggleState()); pauseBtn.setButtonText(model.paused ? foh::str::resumeMeasuring : foh::str::pauseMeasuring); };
+    pauseBtn.onClick = [this] { model.setPaused(pauseBtn.getToggleState()); timerCallback(); };
+    pauseBtn.setTooltip("Pause or resume measuring (Space)");
 
-    appearance.setSelected(foh::theme::ThemeManager::get().current().isLight ? 1 : 0);
-    appearance.onChange = [this](int i) { setSunlightTheme(i == 1); };
-    content.addAndMakeVisible(appearance);
-    for (int pc : {100, 125, 150, 200}) scaleBox.addItem("UI scale " + String(pc) + "%", pc);
     uiScale = model.settings.getUserSettings() ? model.settings.getUserSettings()->getIntValue("uiScale", 100) : 100;
-    if (scaleBox.indexOfItemId(uiScale) < 0) uiScale = 100;
-    scaleBox.setSelectedId(uiScale, dontSendNotification);
-    scaleBox.onChange = [this] { setUiScale(scaleBox.getSelectedId()); };
-    content.addAndMakeVisible(scaleBox);
+    if (std::find(scales.begin(), scales.end(), uiScale) == scales.end()) uiScale = 100;
 
     content.addAndMakeVisible(view);
     content.addChildComponent(setup);
     setup.onDone = [this] { setup.setVisible(false); view.setVisible(true); openFloatingWindows(); };
     model.requestSplCalibration = [this] { openSetup(); setup.focusSplCalibration(); };
-    content.addAndMakeVisible(splBtn); splBtn.onClick = model.requestSplCalibration;
     content.addAndMakeVisible(setupBtn); setupBtn.onClick = [this] { openSetup(); };
     model.requestWorkspace = [this](const std::string& id) { selectWorkspace(id); };
     content.addAndMakeVisible(wsMenuBtn); wsMenuBtn.setButtonText(String(foh::str::workspace) + u8(" \xe2\x96\xbe")); wsMenuBtn.onClick = [this] { showWorkspaceMenu(); };
@@ -74,9 +59,9 @@ MainComponent::MainComponent(juce::File workspaceFolder) : mgr(std::move(workspa
 }
 MainComponent::~MainComponent() { model.requestSplCalibration = {}; contentViewport.setViewedComponent(nullptr, false); sessionNotice.close(); removeKeyListener(presetCommands.keyMappings()); stopTimer(); leaveWorkspace(); view.setWorkspace(nullptr); model.removeListener(this); foh::theme::ThemeManager::get().removeChangeListener(this); floats.clear(); LookAndFeel::setDefaultLookAndFeel(nullptr); setLookAndFeel(nullptr); }
 
-void MainComponent::openSetup() {
+void MainComponent::openSetup(SetupPage::Section section) {
     if (showMode) setShowMode(false);
-    closeFloatingWindows(); view.setVisible(false); setup.setVisible(true); setup.toFront(true); resized();
+    closeFloatingWindows(); view.setVisible(false); setup.setVisible(true); setup.toFront(true); setup.focusSection(section); resized();
 }
 void MainComponent::selectWorkspace(const std::string& id) { int i = mgr.indexOf(id); if (i >= 0) selectWorkspace(i); }
 void MainComponent::leaveWorkspace() {
@@ -90,7 +75,6 @@ void MainComponent::selectWorkspace(int i) {
     current = i; view.setWorkspace(&mgr.at(i)); openFloatingWindows();
     { std::vector<std::string> ids; mgr.at(i).root.collectPanels(ids); for (auto& id : ids) if (id != "Inspector") { view.focus(id); break; } } // Inspector explains the first panel
     switcher.setSelected(i < 4 ? i : -1);
-    toolbarTitle.setText(String(mgr.at(i).name), dontSendNotification);
     if (auto* pf = model.settings.getUserSettings()) pf->setValue("workspace", String(mgr.at(i).id));
     updateSwitcher(); workspaceSelected(); repaint();
 }
@@ -104,7 +88,6 @@ void MainComponent::setShowMode(bool enabled) {
     showMode = enabled;
     view.setShowMode(enabled);
     if (!enabled) openFloatingWindows();
-    showModeBtn.setToggleState(enabled, dontSendNotification);
     if (auto* pf = model.settings.getUserSettings()) {
         pf->setValue("showMode", enabled);
         pf->saveIfNeeded();
@@ -116,7 +99,6 @@ void MainComponent::setShowMode(bool enabled) {
 void MainComponent::updateSwitcher() { // "•" after a modified layout: a shape, not colour alone (spec §4)
     StringArray l; for (int k = 0; k < 4 && k < mgr.count(); ++k) l.add(String(mgr.at(k).name) + (mgr.isModified(k) ? u8(" \xe2\x80\xa2") : ""));
     switcher.setLabels(l);
-    if (current >= 0) toolbarTitle.setText(String(mgr.at(current).name) + (mgr.isModified(current) ? u8(" \xe2\x80\xa2") : ""), dontSendNotification);
 }
 
 // ---- floating panels (spec §5)
@@ -228,10 +210,13 @@ bool MainComponent::keyPressed(const KeyPress& k, Component*) {
     const bool scale = modifiers.withoutFlags(ModifierKeys::shiftModifier).getRawFlags() == ModifierKeys::commandModifier
         && (code == '0' || code == '=' || code == '+' || code == '-');
     // Panel-local keys must keep their normal floating-window behavior.
-    return (cycle || scale) && keyPressed(k);
+    return (cycle || scale || (code == KeyPress::spaceKey && modifiers.getRawFlags() == 0)) && keyPressed(k);
 }
 bool MainComponent::keyPressed(const KeyPress& k) {
     auto m = k.getModifiers(); int code = k.getKeyCode();
+    if (code == KeyPress::spaceKey && m.getRawFlags() == 0) {
+        model.setPaused(!model.paused); timerCallback(); return true;
+    }
     if (m.withoutFlags(ModifierKeys::shiftModifier).getRawFlags() == ModifierKeys::commandModifier) {
         if (code == '0') { setUiScale(100); return true; }
         if (code == '=' || code == '+') { stepUiScale(1); return true; }
@@ -259,16 +244,15 @@ void MainComponent::setSunlightTheme(bool enabled) {
     if (auto* pf = model.settings.getUserSettings()) { pf->setValue("appearance", enabled ? "pro-sunlight" : "pro-dark"); pf->saveIfNeeded(); }
 }
 void MainComponent::setUiScale(int percent) {
-    if (scaleBox.indexOfItemId(percent) < 0) return;
+    if (std::find(scales.begin(), scales.end(), percent) == scales.end()) return;
     uiScale = percent;
-    scaleBox.setSelectedId(percent, dontSendNotification);
     resized();
     contentViewport.setViewPosition(0, 0);
     if (auto* pf = model.settings.getUserSettings()) { pf->setValue("uiScale", percent); pf->saveIfNeeded(); }
 }
 void MainComponent::stepUiScale(int direction) {
-    const int index = scaleBox.indexOfItemId(uiScale);
-    setUiScale(scaleBox.getItemId(jlimit(0, scaleBox.getNumItems() - 1, index + direction)));
+    const int index = (int) std::distance(scales.begin(), std::find(scales.begin(), scales.end(), uiScale));
+    setUiScale(scales[(size_t) jlimit(0, (int) scales.size() - 1, index + direction)]);
 }
 void MainComponent::fitSavedScale() {
     // At launch retain the logical size required by the toolbar and workspace.
@@ -317,41 +301,36 @@ void MainComponent::resized() {
 }
 
 void MainComponent::paintContent(Graphics& g) {
-    const int top = D::statusBarHeight(), nw = sidebarVisible() ? D::navWidth() : 0;
+    const int top = foh::theme::frame::toolbarHeight;
     g.fillAll(C::background());
     g.setColour(C::statusBarBackground()); g.fillRect(0, 0, content.getWidth(), top);
     g.setColour(C::border()); g.fillRect(0.f, top - D::hairline(), (float) content.getWidth(), D::hairline());
-    if (nw) { g.setColour(C::navBackground()); g.fillRect(0, top, nw, content.getHeight() - top); g.setColour(C::border()); g.fillRect((float) nw - D::hairline(), (float) top, D::hairline(), (float) content.getHeight()); }
-    // Brand lockup (outlined wordmark, embedded PNG); light variant for the Sunlight theme.
-    static const Image dark = ImageCache::getFromMemory(BinaryData::toolbarlockupdark_png, BinaryData::toolbarlockupdark_pngSize);
-    static const Image light = ImageCache::getFromMemory(BinaryData::toolbarlockuplight_png, BinaryData::toolbarlockuplight_pngSize);
-    const auto& logo = isSunlightTheme() ? light : dark;
-    if (logo.isValid())
-        g.drawImageWithin(logo, 12, 4, 118, top - 8, RectanglePlacement::xLeft | RectanglePlacement::yMid | RectanglePlacement::onlyReduceInSize);
 }
 void MainComponent::layoutContent() {
-    const int top = D::statusBarHeight(), nw = sidebarVisible() ? D::navWidth() : 0;
-    auto bar = content.getLocalBounds().removeFromTop(top).reduced(12, 0); bar.removeFromLeft(130);
-    splBtn.setBounds(bar.removeFromRight(80).withSizeKeepingCentre(80, 30)); bar.removeFromRight(8);
-    setupBtn.setBounds(bar.removeFromRight(106).withSizeKeepingCentre(106, 30)); bar.removeFromRight(8);
-    pauseBtn.setBounds(bar.removeFromRight(84).withSizeKeepingCentre(84, 30)); bar.removeFromRight(12);
-    showModeBtn.setBounds(bar.removeFromRight(96).withSizeKeepingCentre(96, 30)); bar.removeFromRight(8);
-    expertBtn.setBounds(bar.removeFromRight(70).withSizeKeepingCentre(70, 30)); bar.removeFromRight(8);
-    // Reserve the output stop control before optional status text at every width.
-    if (outputOn.isVisible()) {
-        outputOn.setBounds(bar.removeFromRight(124).withSizeKeepingCentre(124, 30));
-        bar.removeFromRight(8);
-    }
-    const bool wide = content.getWidth() >= 1200;
-    toolbarTitle.setVisible(wide); status.setVisible(wide);
-    toolbarTitle.setBounds(wide ? bar.removeFromLeft(110) : Rectangle<int>());
-    int sw = jlimit(100, 380, bar.getWidth() - 128); switcher.setBounds(bar.removeFromLeft(sw).withSizeKeepingCentre(sw, foh::theme::ws::switcherHeight - 6)); bar.removeFromLeft(8);
-    wsMenuBtn.setBounds(bar.removeFromLeft(112).withSizeKeepingCentre(112, foh::theme::ws::switcherHeight - 6)); bar.removeFromLeft(16);
-    status.setBounds(bar);
-    appearance.setVisible(nw > 0); scaleBox.setVisible(nw > 0);
-    if (nw) { auto s = Rectangle<int>(0, top, nw, content.getHeight() - top).reduced(10, 0);
-        auto bot = s.removeFromBottom(80); appearance.setBounds(bot.removeFromTop(30).reduced(0, 2)); bot.removeFromTop(8); scaleBox.setBounds(bot.removeFromTop(28)); }
-    auto area = content.getLocalBounds().withTrimmedTop(top).withTrimmedLeft(nw);
+    const int top = foh::theme::frame::toolbarHeight;
+    const auto logo = ImageCache::getFromMemory(isSunlightTheme() ? BinaryData::toolbarlockuplight_png : BinaryData::toolbarlockupdark_png,
+                                               isSunlightTheme() ? BinaryData::toolbarlockuplight_pngSize : BinaryData::toolbarlockupdark_pngSize);
+    brandLockup.setImage(logo, RectanglePlacement::centred);
+    const int logoWidth = roundToInt(foh::theme::frame::lockupHeight * (float) logo.getWidth() / (float) jmax(1, logo.getHeight()));
+    auto bar = content.getLocalBounds().removeFromTop(top).reduced(foh::theme::space::ml, 0);
+    FlexBox flex;
+    flex.alignItems = FlexBox::AlignItems::center;
+    auto item = [&](Component& c, float width, float height = 28.f) {
+        flex.items.add(FlexItem(c).withWidth(width).withHeight(height).withMargin(FlexItem::Margin(0, 8, 0, 0)));
+    };
+    auto buttonWidth = [](TextButton& b) { return (float) GlyphArrangement::getStringWidthInt(FohLookAndFeel::font(T::label), b.getButtonText()) + 24.f; };
+    item(brandLockup, (float) logoWidth, (float) foh::theme::frame::lockupHeight);
+    item(switcher, 280.f);
+    flex.items.add(FlexItem().withFlex(1).withMinWidth(0));
+    const float reserved = (float) logoWidth + 280.f + buttonWidth(pauseBtn) + buttonWidth(setupBtn) + buttonWidth(wsMenuBtn)
+        + (outputOn.isVisible() ? buttonWidth(outputOn) + 8.f : 0.f) + 6.f * 8.f;
+    item(status, jmax(112.f, jmin((float) status.preferredWidth(), (float) bar.getWidth() - reserved)));
+    if (outputOn.isVisible()) item(outputOn, buttonWidth(outputOn));
+    item(pauseBtn, buttonWidth(pauseBtn));
+    item(setupBtn, buttonWidth(setupBtn));
+    flex.items.add(FlexItem(wsMenuBtn).withWidth(buttonWidth(wsMenuBtn)).withHeight(28));
+    flex.performLayout(bar);
+    auto area = content.getLocalBounds().withTrimmedTop(top);
     for (auto* banner : { &microphoneNotice, &audioNotice }) {
         if (banner->isVisible()) {
             const int height = banner->preferredHeight(area.getWidth() - 24);
@@ -364,8 +343,7 @@ void MainComponent::layoutContent() {
 void MainComponent::changeListenerCallback(ChangeBroadcaster*) {
     lnf.refreshThemeFonts(*this);
     for (auto* f : floats) lnf.refreshThemeFonts(*f);
-    appearance.setSelected(foh::theme::ThemeManager::get().current().isLight ? 1 : 0); lnf.applyTheme(); makePrimary(pauseBtn);
-    toolbarTitle.setColour(Label::textColourId, C::textPrimary());
+    lnf.applyTheme(); makePrimary(pauseBtn);
     sendLookAndFeelChange(); model.notify(AppModel::Theme | AppModel::Snapshot | AppModel::Delay | AppModel::Traces);
     resized(); content.repaint(); view.repaint(); for (auto* f : floats) f->restyle();
     if (auto* w = getTopLevelComponent()) if (auto* dw = dynamic_cast<DocumentWindow*>(w)) dw->setBackgroundColour(C::background());
@@ -373,7 +351,6 @@ void MainComponent::changeListenerCallback(ChangeBroadcaster*) {
 void MainComponent::modelChanged(int what) {
     if (what & (AppModel::Settings | AppModel::Levels)) timerCallback();
     if (what & AppModel::Expert) {
-        expertBtn.setToggleState(model.expertMode(), dontSendNotification);
         view.refreshPresentation();
     }
 }
@@ -385,7 +362,6 @@ void MainComponent::timerCallback() {
     outputOn.setColour(TextButton::textColourOnId, C::warning());
     outputOn.setColour(TextButton::buttonColourId, C::pillBackground());
     outputOn.setTooltip(model.paused ? "Measuring paused. Noise output is still on. Click to stop output." : "Noise output is on. Click to stop output.");
-    toolbarTitle.setColour(Label::textColourId, C::textPrimary());
     const bool needsNotice = model.engine.deviceFailed.load() || model.engine.state.load() != AudioEngine::Ready
         || model.engine.captureEpoch.load() != model.engine.analysisEpoch.load();
     const bool noticeWasVisible = audioNotice.isVisible();
@@ -393,14 +369,23 @@ void MainComponent::timerCallback() {
     audioNotice.setMessage(needsNotice && !microphoneBlocked ? model.engine.statusText() : "",
         "Open Audio Setup", [this] { openSetup(); });
     if (noticeWasVisible != audioNotice.isVisible() || previousNotice != audioNotice.message()) layoutContent();
-    float mp = model.micPeak, rp = model.refPeak; double fs = model.sampleRate;
-    auto dbs = [](float p) { return p > 1e-6f ? String(20 * std::log10(p), 1) + " dBFS" : String("-inf"); };
+    pauseBtn.setToggleState(model.paused, dontSendNotification);
+    pauseBtn.setButtonText(model.paused ? foh::str::resumeMeasuring : foh::str::pauseMeasuring);
+    const float mp = model.micPeak, rp = model.refPeak;
+    auto dbs = [](float p) { return p > 1e-6f ? String(20 * std::log10(p), 1) + " dBFS" : u8("\xe2\x80\x94"); };
     auto* dev = model.dm.getCurrentAudioDevice();
-    using P = StatusPills; bool clip = mp > 0.99f || rp > 0.99f;
-    auto lvl = [&](const char* n, float p) { return P::Pill{ String(n) + " " + dbs(p), p > 0.99f ? P::Poor : p > 0.01f ? P::Good : P::Caution }; };
-    std::vector<P::Pill> v { { model.paused ? "Paused" : model.engine.statusText(), model.paused || model.engine.deviceFailed.load() || model.engine.state.load() != AudioEngine::Ready || model.engine.captureEpoch.load() != model.engine.analysisEpoch.load() ? P::Caution : P::Good },
-                             { dev ? dev->getName() + u8(" \xc2\xb7 ") + String((int) fs / 1000) + " kHz" : String("No device"), dev ? P::None : P::Poor },
-                             P::Pill{ "Mic " + (model.splCal().calibrated ? (model.micLevelReady() ? String(model.micLevel(), 1) + " dB SPL" : String("-- dB SPL")) : dbs(mp)), mp > 0.99f ? P::Poor : P::None }, lvl("Ref", rp), { model.calApplied ? "Mic calibration on" : "Mic calibration off", model.calApplied ? P::Good : P::None }, { String(foh::str::referenceDelay) + " " + String(model.refDelayMs, 2) + " ms", P::None } };
-    if (clip) v.push_back({ "Clipping", P::Poor });
-    status.setPills(std::move(v));
+    using P = StatusPills;
+    using S = SetupPage::Section;
+    const bool ready = dev && !needsNotice;
+    auto level = [&](const char* name, float peak, S section) {
+        return P::Pill { String(name) + " " + dbs(peak), peak > 0.99f ? P::Poor : peak > 0.01f ? P::Good : P::Caution, (int) section };
+    };
+    status.setPills({
+        { model.paused ? "Paused" : ready ? "Measuring" : dev ? model.engine.statusText() : "No device", model.paused || !ready ? P::Caution : P::Good, (int) S::Audio },
+        level("Mic", mp, S::Mic), level("Ref", rp, S::Reference),
+        { dev ? dev->getName() + " " + String(model.sampleRate / 1000.0, 1) + " kHz" : "No device", dev ? P::None : P::Poor, (int) S::Audio },
+        { model.calApplied ? "Mic cal on" : "Mic cal off", model.calApplied ? P::Good : P::None, (int) S::MicCalibration },
+        { String(foh::str::referenceDelay) + " " + String(model.refDelayMs, 2) + " ms", P::None, (int) S::ReferenceDelay }
+    });
+    layoutContent();
 }

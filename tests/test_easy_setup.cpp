@@ -14,17 +14,13 @@ juce::TextButton& button(juce::Component& p, const char* text) {
         if (auto* b = dynamic_cast<juce::TextButton*>(child)) if (b->getButtonText() == text) return *b;
     throw std::runtime_error("Missing questionnaire button");
 }
-juce::TextEditor& editor(EasySetup& q, const char* name) {
-    for (auto* c : formCanvas(q).getChildren()) if (auto* e = dynamic_cast<juce::TextEditor*>(c); e && e->getName() == name) return *e;
-    throw std::runtime_error("Missing count editor");
-}
 juce::Slider& slider(EasySetup& q, const char* name) {
     for (auto* c : formCanvas(q).getChildren()) if (auto* e = dynamic_cast<juce::Slider*>(c); e && e->getName() == name) return *e;
     throw std::runtime_error("Missing stepper");
 }
 void draft(EasySetup& q) {
-    editor(q, "Default cabinets").setText("3");
-    editor(q, "Clusters").setText("3");
+    slider(q, "Default cabinets").setValue(3, juce::sendNotificationSync);
+    slider(q, "Clusters").setValue(3, juce::sendNotificationSync);
     juce::MessageManager::getInstance()->runDispatchLoopUntil(10);
     button(q, "Apply default to all clusters").onClick();
     slider(q, "Front fill count").setValue(3, juce::sendNotificationSync);
@@ -57,7 +53,7 @@ TEST_CASE("Questionnaire applies drafts, filters guides and restores default gui
     for (auto* child : formCanvas(questionnaire).getChildren()) CHECK(formCanvas(questionnaire).getLocalBounds().contains(child->getBounds()));
     int closed = 0; questionnaire.onClose = [&] { ++closed; };
     auto panel = makeGuidePanel(model); auto& box = guideBox(*panel);
-    button(questionnaire, "Use these answers").onClick();
+    button(questionnaire, "Apply").onClick();
     REQUIRE(model.rigProfile); CHECK(closed == 1);
     CHECK(box.getNumItems() == 4); CHECK(box.getItemId(0) == 1);
     CHECK(panel->saveState()["guide"].asInt() == 0);
@@ -70,17 +66,12 @@ TEST_CASE("Questionnaire applies drafts, filters guides and restores default gui
     CHECK_FALSE(model.rigProfile); CHECK(box.getNumItems() == 6);
     questionnaire.begin();
     draft(questionnaire);
-    button(questionnaire, "Use these answers").onClick(); CHECK(closed == 3);
+    button(questionnaire, "Apply").onClick(); CHECK(closed == 3);
     CHECK(model.rigProfile->subCount); CHECK(model.rigProfile->frontFillCount);
     CHECK(model.rigProfile->clusterCabinets == std::vector<int>{3, 3, 3});
     CHECK(model.rigProfile->control == foh::RigProfile::Control::Individual);
     CHECK(model.rigProfile->subArrangement == foh::RigProfile::SubArrangement::LeftRight);
     CHECK(box.getNumItems() == 6); CHECK(box.getItemId(1) == 2); CHECK(box.getItemId(2) == 3);
-    // Invalid drafts never change the applied profile or close the questionnaire.
-    questionnaire.begin();
-    for (auto* child : formCanvas(questionnaire).getChildren())
-        if (auto* e = dynamic_cast<juce::TextEditor*>(child)) e->setText("0");
-    button(questionnaire, "Use these answers").onClick(); CHECK(closed == 3); CHECK(model.rigProfile->clusterCabinets.size() == 3);
     // Loading an older session reintroduces the default flow.
     model.rigProfile.reset(); model.notify(AppModel::Rig); CHECK(box.getNumItems() == 6);
     // A panel created after session restoration uses the profile immediately.
@@ -111,7 +102,7 @@ TEST_CASE("Questionnaire remains reachable at tiny and large sizes and 100-200 p
             }
             viewport->setViewPosition(4000, 4000);
             if (viewport->getMaximumVisibleWidth() >= 40 && viewport->getMaximumVisibleHeight() >= 40)
-                CHECK(viewport->getViewArea().intersects(button(questionnaire, "Use these answers").getBounds()));
+                CHECK(viewport->getViewArea().intersects(button(questionnaire, "Apply").getBounds()));
             questionnaire.begin(); CHECK(viewport->getViewPosition() == juce::Point<int>(0, 0));
         }
     }
@@ -127,7 +118,7 @@ TEST_CASE("Repeated questionnaire close and destruction discards queued button c
         questionnaire->setSize(120, 90);
         button(*questionnaire, "Skip").onClick();
         questionnaire->begin();
-        button(*questionnaire, "Use these answers").triggerClick();
+        button(*questionnaire, "Apply").triggerClick();
         questionnaire.reset();
         juce::MessageManager::getInstance()->runDispatchLoopUntil(5);
     }
@@ -147,7 +138,7 @@ TEST_CASE("Applying questionnaire answers tolerates destruction during model not
     int closed = 0; questionnaire->onClose = [&] { ++closed; };
     model.addListener(&listener);
     // Keep the callback alive independently of its button, as JUCE does for queued clicks.
-    auto apply = button(*questionnaire, "Use these answers").onClick;
+    auto apply = button(*questionnaire, "Apply").onClick;
     apply();
     model.removeListener(&listener);
     CHECK(questionnaire == nullptr);
@@ -159,12 +150,12 @@ TEST_CASE("Questionnaire completion is single use and Skip tolerates listener de
     juce::ScopedJuceInitialiser_GUI gui;
     AppModel model; EasySetup questionnaire(model);
     int closed = 0; questionnaire.onClose = [&] { ++closed; };
-    button(questionnaire, "Use these answers").onClick();
-    button(questionnaire, "Use these answers").onClick();
+    button(questionnaire, "Apply").onClick();
+    button(questionnaire, "Apply").onClick();
     button(questionnaire, "Skip").onClick();
     CHECK(closed == 1); CHECK(model.rigProfile.has_value());
     questionnaire.begin(); button(questionnaire, "Skip").onClick();
-    button(questionnaire, "Use these answers").onClick();
+    button(questionnaire, "Apply").onClick();
     CHECK(closed == 2); CHECK_FALSE(model.rigProfile);
     auto owned = std::make_unique<EasySetup>(model);
     struct Destroy : AppModel::Listener {
@@ -189,7 +180,7 @@ TEST_CASE("Session reload closes Setup drafts before queued Apply or Finish", "[
     button(setup, "Rig questionnaire").onClick();
     model.notify(AppModel::Session);
     CHECK_FALSE(questionnaire->isVisible());
-    button(*questionnaire, "Use these answers").onClick(); CHECK_FALSE(model.rigProfile);
+    button(*questionnaire, "Apply").onClick(); CHECK_FALSE(model.rigProfile);
     button(setup, "Easy Setup").onClick();
     wizard->setChannels({"In 1", "In 2"}, {"Out 1", "Out 2"});
     // Routing controls remain reachable through their scrollable canvas.
@@ -203,47 +194,52 @@ TEST_CASE("Session reload closes Setup drafts before queued Apply or Finish", "[
     clickWizard("Finish"); CHECK(model.engine.micCh.load() == 1); CHECK_FALSE(wizard->isVisible());
 }
 
-TEST_CASE("Empty questionnaire counts stay local and Skip then reopen discards the invalid draft", "[app][rig][edges]") {
+TEST_CASE("Main count steppers bound edits immediately and Skip discards the draft", "[app][rig][edges]") {
     juce::ScopedJuceInitialiser_GUI gui;
     for (const char* field : {"Clusters", "Default cabinets"}) {
-        for (const char* invalid : {"", "0", "257"}) {
-            CAPTURE(field, invalid);
-            AppModel model; model.rigProfile = foh::RigProfile{};
-            model.rigProfile->clusterCabinets = {4, 4, 4};
-            auto original = model.rigProfile->toJson();
-            EasySetup questionnaire(model);
-            int closed = 0; questionnaire.onClose = [&] { ++closed; };
-            juce::TextEditor* count = nullptr;
-            for (auto* child : formCanvas(questionnaire).getChildren())
-                if (auto* e = dynamic_cast<juce::TextEditor*>(child); e && e->getName() == field) count = e;
-            REQUIRE(count);
-            count->setText(invalid);
-            button(questionnaire, "Use these answers").onClick();
-            CHECK(closed == 0); REQUIRE(model.rigProfile);
-            CHECK(model.rigProfile->toJson() == original);
-            button(questionnaire, "Skip").onClick();
-            CHECK(closed == 1); CHECK_FALSE(model.rigProfile);
-            questionnaire.begin();
-            const foh::RigProfile defaults;
-            CHECK(count->getText() == juce::String(count->getName() == "Clusters" ? (int)defaults.clusterCabinets.size() : defaults.clusterCabinets.front()));
-            button(questionnaire, "Use these answers").onClick();
-            CHECK(closed == 2); REQUIRE(model.rigProfile); CHECK(model.rigProfile->valid());
+        AppModel model;
+        EasySetup questionnaire(model);
+        auto& count = slider(questionnaire, field);
+        CHECK(count.getSliderStyle() == juce::Slider::IncDecButtons);
+        CHECK(count.getMinimum() == 1); CHECK(count.getMaximum() == 64); CHECK(count.getInterval() == 1);
+        CHECK(count.getValue() == (juce::String(field) == "Clusters" ? 2 : 1));
+        for (double invalid : {-10., 0., 65., 999.}) {
+            count.setValue(invalid, juce::sendNotificationSync);
+            CHECK(count.getValue() == juce::jlimit(1., 64., invalid));
+            CHECK_FALSE(model.rigProfile);
         }
+        // The editable text box also clamps out-of-range entries and rejects empty text.
+        for (const char* input : {"", "0", "999"}) {
+            count.showTextBox();
+            std::function<juce::TextEditor*(juce::Component&)> findEditor = [&](juce::Component& c) -> juce::TextEditor* {
+                if (auto* e = dynamic_cast<juce::TextEditor*>(&c)) return e;
+                for (auto* child : c.getChildren()) if (auto* e = findEditor(*child)) return e;
+                return nullptr;
+            };
+            auto* text = findEditor(count); REQUIRE(text);
+            text->setText(input); count.hideTextBox(false);
+            CHECK(count.getValue() >= 1); CHECK(count.getValue() <= 64);
+        }
+        button(questionnaire, "Skip").onClick();
+        questionnaire.begin();
+        CHECK(count.getValue() == (juce::String(field) == "Clusters" ? 2 : 1));
+        button(questionnaire, "Apply").onClick();
+        REQUIRE(model.rigProfile); CHECK(model.rigProfile->valid());
     }
 }
 
 TEST_CASE("Per-cluster steppers and auxiliary grouping apply restore and guide asymmetric rigs", "[app][rig]") {
     juce::ScopedJuceInitialiser_GUI gui;
-    for (int fills : {0, 1, 12}) for (int subs : {0, 1, 32, 256}) {
+    for (int fills : {0, 1, 12}) for (int subs : {0, 1, 32, 64}) {
         AppModel model; EasySetup q(model); q.setSize(260, 520);
-        editor(q, "Default cabinets").setText("3"); editor(q, "Clusters").setText("3");
+        slider(q, "Default cabinets").setValue(3, juce::sendNotificationSync); slider(q, "Clusters").setValue(3, juce::sendNotificationSync);
         juce::MessageManager::getInstance()->runDispatchLoopUntil(10);
         button(q, "Apply default to all clusters").onClick();
         CHECK(slider(q, "L cabinets").getValue() == 3); CHECK(slider(q, "C cabinets").getValue() == 3);
         slider(q, "L cabinets").setValue(2, juce::sendNotificationSync);
         slider(q, "Front fill count").setValue(fills, juce::sendNotificationSync);
         slider(q, "Sub count").setValue(subs, juce::sendNotificationSync);
-        button(q, "Use these answers").onClick(); REQUIRE(model.rigProfile);
+        button(q, "Apply").onClick(); REQUIRE(model.rigProfile);
         CHECK(model.rigProfile->clusterCabinets == std::vector<int>{2, 3, 3});
         CHECK(model.rigProfile->frontFillCount == fills); CHECK(model.rigProfile->subCount == subs);
         auto panel = makeGuidePanel(model); panel->setSize(300, 650);
@@ -277,7 +273,7 @@ TEST_CASE("Cluster additions preserve overrides and grouped counts clamp to cabi
     EasySetup q(model);
     CHECK(slider(q, "Fill groups").isEnabled()); CHECK(slider(q, "Fill groups").getValue() == 4);
     CHECK(slider(q, "Sub groups").getValue() == 6);
-    editor(q, "Default cabinets").setText("5"); editor(q, "Clusters").setText("4");
+    slider(q, "Default cabinets").setValue(5, juce::sendNotificationSync); slider(q, "Clusters").setValue(4, juce::sendNotificationSync);
     juce::MessageManager::getInstance()->runDispatchLoopUntil(10);
     CHECK(slider(q, "Cluster 1 cabinets").getValue() == 2); CHECK(slider(q, "Cluster 2 cabinets").getValue() == 3);
     CHECK(slider(q, "Cluster 4 cabinets").getValue() == 5);
@@ -285,7 +281,82 @@ TEST_CASE("Cluster additions preserve overrides and grouped counts clamp to cabi
     slider(q, "Sub count").setValue(0, juce::sendNotificationSync);
     CHECK(slider(q, "Fill groups").getValue() == 1); CHECK_FALSE(slider(q, "Fill groups").isEnabled());
     CHECK_FALSE(slider(q, "Sub groups").isEnabled());
-    button(q, "Use these answers").onClick(); REQUIRE(model.rigProfile);
+    button(q, "Apply").onClick(); REQUIRE(model.rigProfile);
     CHECK(model.rigProfile->clusterCabinets == std::vector<int>{2, 3, 3, 5});
     CHECK(model.rigProfile->fillRoutes() == 1); CHECK(model.rigProfile->subRoutes() == 0);
+}
+
+TEST_CASE("Applied setup summary matches the visible guides in both themes and scales", "[app][rig][layout]") {
+    juce::ScopedJuceInitialiser_GUI gui;
+    auto& themes = foh::theme::ThemeManager::get();
+    const auto previousTheme = themes.current().id;
+    for (auto theme : {"pro-dark", "pro-sunlight"}) for (int scale : {100, 200}) {
+        CAPTURE(theme, scale);
+        themes.setTheme(theme);
+        FohLookAndFeel look;
+        AppModel model; SetupPage setup(model); setup.setLookAndFeel(&look);
+        setup.setSize(480, 580); setup.setVisible(true);
+        setup.setTransform(juce::AffineTransform::scale(scale / 100.f));
+        EasySetup* questionnaire = nullptr;
+        for (auto* child : setup.getChildren()) if (auto* q = dynamic_cast<EasySetup*>(child)) questionnaire = q;
+        REQUIRE(questionnaire);
+        auto panel = makeGuidePanel(model);
+        auto save = [&](juce::Component& c, const char* name) {
+            if (auto* folder = std::getenv("FOH_SETUP_QA_DIR")) {
+                juce::File dir(folder); REQUIRE(dir.createDirectory().wasOk());
+                auto snapshot = c.createComponentSnapshot(c.getLocalBounds(), true, scale / 100.f);
+                juce::Image image(juce::Image::RGB, snapshot.getWidth(), snapshot.getHeight(), true);
+                juce::Graphics graphics(image); graphics.fillAll(foh::ui::col::background());
+                graphics.drawImageAt(snapshot, 0, 0);
+                auto stream = dir.getChildFile(juce::String(name) + "-" + theme + "-" + juce::String(scale) + ".png").createOutputStream();
+                REQUIRE(stream); stream->setPosition(0);
+                juce::PNGImageFormat png; REQUIRE(png.writeImageToStream(image, *stream)); stream->truncate();
+            }
+        };
+        auto checkLayout = [](juce::Component& c) {
+            const auto& children = c.getChildren();
+            for (auto* child : children) {
+                if (!child->isVisible() || child->getBounds().isEmpty()) continue;
+                CHECK(c.getLocalBounds().contains(child->getBounds()));
+                for (auto* other : children)
+                    if (other != child && other->isVisible()) CHECK_FALSE(child->getBounds().intersects(other->getBounds()));
+                if (auto* label = dynamic_cast<juce::Label*>(child); label && label->getText().isNotEmpty()) {
+                    juce::GlyphArrangement text;
+                    text.addJustifiedText(label->getFont(), label->getText(), 0, label->getFont().getAscent(),
+                                          (float)(label->getWidth() - 10), juce::Justification::left);
+                    CHECK(text.getBoundingBox(0, -1, true).getHeight() <= label->getHeight() - 2);
+                }
+            }
+        };
+        for (bool subs : {false, true}) for (bool fills : {false, true}) {
+            button(setup, "Rig questionnaire").onClick();
+            slider(*questionnaire, "Sub count").setValue(subs ? 1 : 0, juce::sendNotificationSync);
+            slider(*questionnaire, "Front fill count").setValue(fills ? 1 : 0, juce::sendNotificationSync);
+            checkLayout(formCanvas(*questionnaire));
+            if (subs && fills) save(formCanvas(*questionnaire), "questionnaire");
+            button(*questionnaire, "Apply").onClick();
+            CHECK_FALSE(questionnaire->isVisible());
+            auto* summary = dynamic_cast<juce::Label*>(formCanvas(setup).findChildWithID("setup-guide-summary")); REQUIRE(summary);
+            juce::StringArray names;
+            auto& guides = guideBox(*panel);
+            for (int i = 0; i < guides.getNumItems(); ++i) names.add(guides.getItemText(i));
+            CHECK(summary->getText() == "You'll see: " + names.joinIntoString(", ") + ".");
+            CHECK(summary->isVisible());
+            auto* viewport = dynamic_cast<juce::Viewport*>(formCanvas(setup).getParentComponent()->getParentComponent());
+            REQUIRE(viewport); CHECK(viewport->getViewArea().contains(summary->getBounds()));
+            checkLayout(formCanvas(setup));
+            if (subs && fills) save(formCanvas(setup), "setup-applied");
+        }
+        RoutingWizard routing(model.engine); routing.setLookAndFeel(&look); routing.setSize(400, 520);
+        routing.setChannels({"Input 1", "Input 2"}, {"Output 1", "Output 2"});
+        routing.begin(); routing.setRigProfile(model.rigProfile);
+        for (int step = 1; step <= 4; ++step) {
+            checkLayout(formCanvas(routing));
+            save(formCanvas(routing), ("routing-" + std::to_string(step)).c_str());
+            if (step < 4) button(routing, "Next").onClick();
+        }
+        routing.setLookAndFeel(nullptr);
+        setup.setLookAndFeel(nullptr);
+    }
+    themes.setTheme(previousTheme);
 }

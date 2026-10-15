@@ -17,5 +17,5 @@ inline constexpr char dark[] = "Dark";
 inline constexpr char sunlight[] = "Sunlight";
 inline constexpr char coherence[] = "Coherence";
 inline constexpr char workspace[] = "Workspace";
-inline constexpr char guideInterrupted[] = "Guide measurement interrupted. Repeat the measurement; no verdict recorded.";
+inline constexpr char guideInterrupted[] = "Guide measurement interrupted. Check Setup and repeat the measurement; no verdict recorded.";
 }
