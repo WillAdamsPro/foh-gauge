@@ -15,7 +15,7 @@ public:
     enum class Section { Audio, Mic, Reference, MicCalibration, ReferenceDelay };
     void focusSection(Section);
     Section focusedSection() const { return section; }
-    void focusSplCalibration() { form.setViewPosition(0, splInstructions.getY()); splReference.grabKeyboardFocus(); }
+    void focusSplCalibration() { form.setViewPosition(0, splInstructions.getY()); if (splReference.isShowing()) splReference.grabKeyboardFocus(); }
     std::function<void()> onDone;
 private:
     void modelChanged(int what) override {

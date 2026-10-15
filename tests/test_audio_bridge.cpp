@@ -1998,8 +1998,10 @@ TEST_CASE("Save As preserves live averaging and Open discards old session work",
     const bool sweeping = GENERATE(false, true);
     const int missingName = GENERATE(0, 1, 2); // available, missing input, missing output
     struct Temporary {
+        // Different sanitizer executables may run this case concurrently.
+        // A non-existent-name check does not reserve the directory for us.
         juce::File folder = juce::File::getSpecialLocation(juce::File::tempDirectory)
-            .getNonexistentChildFile("foh-synthetic-session", "", false);
+            .getChildFile("foh-synthetic-session-" + juce::Uuid().toString());
         ~Temporary() { folder.deleteRecursively(); }
     } temporary;
     SessionTestMain main(temporary.folder.getChildFile("workspaces"));

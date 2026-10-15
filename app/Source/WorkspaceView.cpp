@@ -354,7 +354,7 @@ void WorkspaceView::activateTab(const std::vector<int>& path, int index) {
     std::function<void(Component&)> restore = [&](Component& c) {
         if (auto* slot = dynamic_cast<Slot*>(&c); slot && slot->path == activatedPath && index < slot->tabButtons.size()) {
             if (slot->tabButtons[index]->isShowing()) slot->tabButtons[index]->grabKeyboardFocus();
-            else slot->moreButton.grabKeyboardFocus();
+            else if (slot->moreButton.isShowing()) slot->moreButton.grabKeyboardFocus();
             return;
         }
         for (auto* child : c.getChildren()) if (dynamic_cast<Node*>(child)) restore(*child);

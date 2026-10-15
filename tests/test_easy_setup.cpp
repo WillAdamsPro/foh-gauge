@@ -6,6 +6,7 @@
 #include "Diagrams.h"
 #include <stdexcept>
 #include "ui_form_helpers.h"
+#include "ui_panel_window.h"
 
 std::unique_ptr<Panel> makeGuidePanel(AppModel&);
 namespace {
@@ -199,6 +200,11 @@ TEST_CASE("Main count steppers bound edits immediately and Skip discards the dra
     for (const char* field : {"Clusters", "Default cabinets"}) {
         AppModel model;
         EasySetup questionnaire(model);
+        Panel host(model, "SyntheticSetup", "Synthetic Setup");
+        host.setSize(640, 640);
+        host.addAndMakeVisible(questionnaire);
+        questionnaire.setBounds(host.getLocalBounds());
+        VisiblePanelWindow window(host);
         auto& count = slider(questionnaire, field);
         CHECK(count.getSliderStyle() == juce::Slider::IncDecButtons);
         CHECK(count.getMinimum() == 1); CHECK(count.getMaximum() == 64); CHECK(count.getInterval() == 1);

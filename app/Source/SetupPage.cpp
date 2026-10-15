@@ -162,10 +162,12 @@ void SetupPage::focusSection(Section next) {
     }
     title.setText(detail ? detail->title() : "Audio Setup", dontSendNotification);
     resized();
-    if (detail) detail->grabKeyboardFocus();
-    else if (next == Section::Mic) { form.setViewPosition(0, mic.getY() - 16); mic.grabKeyboardFocus(); }
-    else if (next == Section::Reference) { form.setViewPosition(0, ref.getY() - 16); ref.grabKeyboardFocus(); }
-    else input.grabKeyboardFocus();
+    Component* target = &input;
+    if (detail) target = detail.get();
+    else if (next == Section::Mic) { form.setViewPosition(0, mic.getY() - 16); target = &mic; }
+    else if (next == Section::Reference) { form.setViewPosition(0, ref.getY() - 16); target = &ref; }
+    // First-launch Setup is prepared before the main window is visible.
+    if (target->isShowing()) target->grabKeyboardFocus();
 }
 void SetupPage::lookAndFeelChanged() {
     knownLevel.applyColourToAllText(knownLevel.findColour(TextEditor::textColourId));

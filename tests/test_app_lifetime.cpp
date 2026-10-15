@@ -1055,13 +1055,40 @@ TEST_CASE("Stopping or destroying a pending generator confirmation cannot start 
     }
 }
 
+TEST_CASE("Setup sections can be prepared before their parent window is shown", "[app][setup][regression]") {
+    juce::ScopedJuceInitialiser_GUI initialise;
+    AppModel model;
+    juce::Component parent;
+    SetupPage setup(model);
+    parent.addAndMakeVisible(setup);
+    setup.setBounds(0, 0, 640, 480);
+    REQUIRE_FALSE(setup.isShowing());
+    auto* focused = juce::Component::getCurrentlyFocusedComponent();
+    for (auto section : {SetupPage::Section::Audio, SetupPage::Section::Mic,
+                         SetupPage::Section::Reference, SetupPage::Section::MicCalibration,
+                         SetupPage::Section::ReferenceDelay}) {
+        setup.focusSection(section);
+        CHECK(setup.focusedSection() == section);
+        CHECK(juce::Component::getCurrentlyFocusedComponent() == focused);
+    }
+    setup.focusSection(SetupPage::Section::Audio);
+    setup.focusSplCalibration();
+    CHECK(juce::Component::getCurrentlyFocusedComponent() == focused);
+    // Debug runs also check the captured log: none of these preparations may
+    // trigger JUCE's assertion about focusing a component that is not showing.
+}
+
 TEST_CASE("Measurement toolbar fits and every status has a Setup destination", "[app][toolbar][layout]") {
     juce::ScopedJuceInitialiser_GUI initialise;
     TemporaryWorkspaces temporary;
     TestMain main(temporary.folder);
     main.setShowMode(false);
     for (bool sunlight : {false, true}) for (int scale : {100, 200}) {
-        main.setSunlightTheme(sunlight); drainMessages();
+        main.setSunlightTheme(sunlight);
+        // Theme colours update through a ChangeBroadcaster; a 30 ms dispatch
+        // loop can expire before delivery in an instrumented build.
+        foh::theme::ThemeManager::get().dispatchPendingMessages();
+        drainMessages();
         main.setSize(1024, 768); main.setUiScale(scale);
         main.appModel().micPeak = main.appModel().refPeak = 0;
         main.refreshStatus();
