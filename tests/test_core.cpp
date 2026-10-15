@@ -969,3 +969,32 @@ TEST_CASE("RT safety: invalid generator gains and damaged analysis frames alloca
     }
     REQUIRE(allocs == 0);
 }
+
+TEST_CASE("Guide capture silence times out and reset permits a fresh settled measurement at each rate", "[tf][guide][edges]") {
+    for (double rate : {44100.0, 48000.0, 96000.0}) {
+        CAPTURE(rate);
+        TransferFunction tf(4096, rate);
+        tf.setConvergenceTimeout(0.25);
+        tf.process(nullptr, nullptr, 0);
+        CHECK(tf.convergence().frames == 0);
+        CHECK_FALSE(tf.convergence().finished);
+        std::vector<float> silence(static_cast<size_t>(rate), 0);
+        const auto failed = captureUntilFinished(tf, silence, silence);
+        CHECK(failed.finished);
+        CHECK(failed.timedOut);
+        CHECK(failed.unsettled);
+        CHECK_FALSE(failed.settled);
+        CHECK(failed.coherentBins == 0);
+        CHECK(coherenceSummary(tf.result()).light == TrafficLight::Red);
+        tf.reset();
+        tf.setConvergenceTimeout(10);
+        CHECK_FALSE(tf.convergence().finished);
+        CHECK(tf.convergence().frames == 0);
+        const auto signal = pink(static_cast<int>(rate * 2), 98);
+        const auto retry = captureUntilFinished(tf, signal, signal);
+        CHECK(retry.finished);
+        CHECK(retry.settled);
+        CHECK_FALSE(retry.unsettled);
+        CHECK(tf.result().sampleRate == rate);
+    }
+}
