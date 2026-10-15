@@ -21,7 +21,11 @@ AppModel::AppModel() {
 }
 AppModel::~AppModel() = default;
 bool AppModel::calibrateSpl(double) { throw std::logic_error("Unexpected SPL calibration"); }
-bool AppModel::micLevelReady() const { return false; }
+bool AppModel::micLevelReady() const {
+    // Match the production readiness gate so synthetic devices can exercise live readouts.
+    return micLevelValid && !paused && dm.getCurrentAudioDevice() && levelInputKey == splInputKey()
+        && levelInputEpoch == engine.captureEpoch.load() && juce::Time::getMillisecondCounterHiRes() - levelTimeMs < 250;
+}
 void AppModel::loadCalFile(const juce::File&) { throw std::logic_error("Unexpected calibration file load"); }
 void AppModel::setCalEnabled(bool on) { calOn = on && cal.ok(); notify(Cal); }
 std::string AppModel::loopbackKey() const { return "synthetic-loopback"; }

@@ -149,17 +149,20 @@ void PlotComponent::paint(Graphics& g) {
     };
     auto pr = Rectangle<float>((float) plotX(), (float) plotY(), (float) plotW(), (float) plotH());
     g.setColour(C::plotWell()); g.fillRect(pr); // A2: darker plot well
-    g.setFont(FohLookAndFeel::font(T::caption));
+    g.setFont(FohLookAndFeel::numeric(T::caption, false));
     for (auto& s : shade) { if (!validRange(s.first, s.second)) continue; float a = xOf(s.first), b = xOf(s.second); g.setColour(C::accent().withAlpha(C::crossoverBandAlpha())); g.fillRect(a, pr.getY(), b - a, pr.getHeight());
-        if (shadeLabel.isNotEmpty()) { g.setColour(C::accent()); g.setFont(FohLookAndFeel::font(T::label)); g.drawText(shadeLabel, (int) a - 40, (int) pr.getY() + 10, (int) (b - a) + 80, 14, Justification::centred); g.setFont(FohLookAndFeel::font(T::caption)); } }
+        if (shadeLabel.isNotEmpty()) { g.setColour(C::accent()); g.setFont(FohLookAndFeel::font(T::label)); g.drawText(shadeLabel, (int) a - 40, (int) pr.getY() + 10, (int) (b - a) + 80, 14, Justification::centred); g.setFont(FohLookAndFeel::numeric(T::caption, false)); } }
     for (auto& a : annotations) { if (!validRange(a.lo, a.hi)) continue; float x0 = xOf(a.lo), x1 = xOf(a.hi); // layout-spec: warning @ annotationBandAlpha, label at band right + 6, y 30
         g.setColour(C::warning().withAlpha(C::annotationBandAlpha())); g.fillRect(x0, pr.getY(), x1 - x0, pr.getHeight());
-        if (a.label.isNotEmpty()) { g.setColour(C::warning()); g.setFont(FohLookAndFeel::font(T::label)); g.drawText(a.label, (int) x1 + 6, (int) pr.getY() + 30 - 7, 160, 14, Justification::left); g.setFont(FohLookAndFeel::font(T::caption)); } }
+        if (a.label.isNotEmpty()) { g.setColour(C::warning()); g.setFont(FohLookAndFeel::font(T::label)); g.drawText(a.label, (int) x1 + 6, (int) pr.getY() + 30 - 7, 160, 14, Justification::left); g.setFont(FohLookAndFeel::numeric(T::caption, false)); } }
     if (showLegend && !topLegend) { int x = plotX() + 14; int y = (int) pr.getBottom() + 24 + 4; g.setFont(FohLookAndFeel::font(T::body));
         for (auto& s : series) { if (s.label.isEmpty()) continue; g.setColour(s.c);
-            if (s.dash) { for (int k = 0; k < 18; k += 6) g.fillRect((float) x + k, (float) y + 7, 4.f, s.width); } else g.fillRect((float) x, (float) y + 7, 18.f, s.width);
+            Path key; key.startNewSubPath((float)x, (float)y + 7); key.lineTo((float)x + 18, (float)y + 7);
+            PathStrokeType stroke(s.width);
+            if (s.dash) { Path dashed; stroke.createDashedStroke(dashed, key, s.dash, s.dashCount); g.fillPath(dashed); }
+            else g.strokePath(key, stroke);
             int tw = GlyphArrangement::getStringWidthInt(g.getCurrentFont(), s.label); g.setColour(C::textBody()); g.drawText(s.label, x + 24, y, tw + 4, 16, Justification::left); x += 24 + tw + 18; }
-        g.setFont(FohLookAndFeel::font(T::caption)); }
+        g.setFont(FohLookAndFeel::numeric(T::caption, false)); }
     g.setColour(C::border());
     for (double f : {20., 50., 100., 200., 500., 1000., 2000., 5000., 10000., 20000.}) { if (f < fMin || f > fMax) continue;
         float x = xOf(f); g.drawVerticalLine((int) x, pr.getY(), pr.getBottom());
@@ -177,15 +180,17 @@ void PlotComponent::paint(Graphics& g) {
             g.setColour(C::pillBackground()); g.fillRoundedRectangle(box.toFloat(), D::radiusTag());
             if (s) {
                 g.setColour(colour);
-                if (s->dash) { for (int k = 0; k < 18; k += 6) g.fillRect(x + 8 + k, y + 9, 4, 2); }
-                else g.fillRect(x + 8, y + 9, 18, 2);
+                Path key; key.startNewSubPath((float)x + 8, (float)y + 9); key.lineTo((float)x + 26, (float)y + 9);
+                PathStrokeType stroke(s->width);
+                if (s->dash) { Path dashed; stroke.createDashedStroke(dashed, key, s->dash, s->dashCount); g.fillPath(dashed); }
+                else g.strokePath(key, stroke);
             }
             g.setColour(C::textSecondary()); g.drawText(label, box.withTrimmedLeft(s ? 32 : 8).withTrimmedRight(8), Justification::centredLeft);
             x += width + 8;
         };
         for (const auto& s : series) if (s.label.isNotEmpty()) chip(s.label, s.c, &s);
         for (const auto& label : legendChips) chip(label, C::textSecondary(), nullptr);
-        g.setFont(FohLookAndFeel::font(T::caption));
+        g.setFont(FohLookAndFeel::numeric(T::caption, false));
     }
     if (note.isNotEmpty()) {
         g.setColour(C::textSecondary());
@@ -194,11 +199,17 @@ void PlotComponent::paint(Graphics& g) {
         g.drawText(note, bounds, Justification::right);
     }
     if (topLegend && yLabel.isNotEmpty()) { g.setColour(C::textSecondary()); g.drawText(yLabel, plotX(), getHeight() - 20, plotW(), 20, Justification::centred); }
-    if (centreNote.isNotEmpty()) { g.setColour(C::textAxis()); g.setFont(FohLookAndFeel::font(T::body)); g.drawText(centreNote, (int) xOf(1500) - 120, (int) pr.getCentreY() - 8, 240, 16, Justification::centred); }
+    if (centreNote.isNotEmpty()) {
+        AttributedString message; message.setJustification(Justification::centred);
+        message.append(centreNote, FohLookAndFeel::font(T::body), C::textSecondary());
+        TextLayout layout; layout.createLayout(message, jmax(1.0f, pr.getWidth() - 24));
+        auto area = Rectangle<float>(pr.getX() + 12, pr.getCentreY() - layout.getHeight() / 2, pr.getWidth() - 24, layout.getHeight());
+        g.setColour(C::plotWell()); g.fillRoundedRectangle(area.expanded(4), D::radiusTag()); layout.draw(g, area);
+    }
     if (exampleData) { // top-right, ~103x20, 11 px warning text, 1 px warning border, radius 4 (layout-spec)
         auto tag = Rectangle<float>(pr.getRight() - 109, pr.getY() + 6, 103, 20);
         g.setColour(C::warning()); g.drawRoundedRectangle(tag.reduced(0.5f), D::radiusTag(), D::hairline());
-        g.setFont(FohLookAndFeel::font(T::caption, false, true)); g.drawText("EXAMPLE DATA", tag, Justification::centred); g.setFont(FohLookAndFeel::font(T::caption)); }
+        g.setFont(FohLookAndFeel::font(T::caption, false, true)); g.drawText("EXAMPLE DATA", tag, Justification::centred); g.setFont(FohLookAndFeel::numeric(T::caption, false)); }
     if (!lowCoh.empty()) { auto hc = C::textAxis().withAlpha(foh::ui::theme().trace.lowCoherenceHatchAlpha);
         if (hatchTile.isNull() || hatchFor != hc) { hatchFor = hc; hatchTile = Image(Image::ARGB, 8, 8, true); Graphics hg(hatchTile); hg.setColour(hc);
             hg.drawLine(0, 8, 8, 0, 1.0f); hg.drawLine(-4, 4, 4, -4, 1.0f); hg.drawLine(4, 12, 12, 4, 1.0f); }
@@ -235,7 +246,7 @@ void PlotComponent::paint(Graphics& g) {
                 if (!started || jump) { p.startNewSubPath(x, y); started = true; } else p.lineTo(x, y); prev = s.v[i]; }
             if (!bars && !s.dash && foh::ui::theme().trace.glow) { g.setColour(s.c.withMultipliedAlpha(0.22f)); g.strokePath(p, PathStrokeType(s.width * 3.5f, PathStrokeType::curved, PathStrokeType::rounded)); } // glow = second wide stroke, no shadow effects
             g.setColour(s.c); PathStrokeType st(bars && !s.dash ? D::traceSecondary() : s.width, PathStrokeType::curved, PathStrokeType::rounded);
-            if (s.dash) { Path d; st.createDashedStroke(d, p, s.dash, 2); g.fillPath(d); } else g.strokePath(p, st);
+            if (s.dash) { Path d; st.createDashedStroke(d, p, s.dash, s.dashCount); g.fillPath(d); } else g.strokePath(p, st);
         }
     }
     bool adviceVisible = false;

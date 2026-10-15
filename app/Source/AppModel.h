@@ -99,23 +99,30 @@ public:
     const foh::Trace* findTrace(const char* n) const;
     // Message-thread only, including the allocating virtual-sum calculation.
     bool validTrace(int i) const { return i >= 0 && i < traces.count(); }
-    juce::Colour traceColour(int i) const { return validTrace(i) ? traceColours[(size_t) i].value_or(foh::ui::col::storedTrace(i % 8)) : foh::ui::col::storedTrace(0); }
+    int traceSlotIndex(int i) const { return validTrace(i) ? traceSlots[(size_t)i].value_or(i % 8) : 0; }
+    juce::Colour traceColour(int i) const { return validTrace(i) ? traceColours[(size_t) i].value_or(foh::ui::col::storedTrace(traceSlotIndex(i))) : foh::ui::col::storedTrace(0); }
     void renameTrace(int i, const juce::String& name) {
         if (!validTrace(i) || name.trim().isEmpty()) return;
         traces.at(i).name = name.trim().toStdString(); notify(Traces);
     }
     void colourTrace(int i, juce::Colour colour) {
         if (!validTrace(i)) return;
-        traceColours[(size_t) i] = colour; notify(Traces);
+        traceColours[(size_t) i] = colour; traceSlots[(size_t)i].reset();
+        // Sessions saved in either appearance retain the same named slot when reopened.
+        const auto dark = foh::theme::proDark(), sunlight = foh::theme::proSunlight();
+        for (int slot = 0; slot < 8; ++slot) if (colour == dark.traceSlots[(size_t)slot].colour || colour == sunlight.traceSlots[(size_t)slot].colour) {
+            traceSlots[(size_t)i] = slot; traceColours[(size_t)i].reset(); break;
+        }
+        notify(Traces);
     }
     void removeTrace(int i) {
         if (!traces.remove(i)) return;
-        for (size_t j = (size_t) i; j + 1 < traceColours.size(); ++j) traceColours[j] = traceColours[j + 1];
-        traceColours.back().reset();
+        for (size_t j = (size_t) i; j + 1 < traceColours.size(); ++j) { traceColours[j] = traceColours[j + 1]; traceSlots[j] = traceSlots[j + 1]; }
+        traceColours.back().reset(); traceSlots.back().reset();
         for (auto* source : {&sumA, &sumB}) { if (*source == i) *source = -1; else if (*source > i) --*source; }
         notify(Traces);
     }
-    void clearTraces() { traces.clear(); traceColours = {}; sumA = sumB = -1; notify(Traces); }
+    void clearTraces() { traces.clear(); traceColours = {}; traceSlots = {}; sumA = sumB = -1; notify(Traces); }
     void toggleTrace(int i) { if (validTrace(i)) { traces.at(i).visible = !traces.at(i).visible; notify(Traces); } }
     int sumA = -1, sumB = -1;
     void selectSum(int a, int b) { sumA = validTrace(a) ? a : -1; sumB = validTrace(b) ? b : -1; notify(Traces); }
@@ -164,6 +171,7 @@ public:
     struct Overlay { std::vector<PlotComponent::Series> mag, phase; std::vector<std::pair<double,double>> shade; juce::String shadeLabel, phaseNote; bool phaseOnly250 = false; bool active = false; } overlay;
 
     std::function<void()> overlayBuilder; // set by the Guide panel; run before each notify so plots see a fresh overlay
+    std::function<void()> requestSplCalibration;
     std::function<void(const std::string&)> requestWorkspace; // guide actions such as "Open Setup"
 
     // ---- inspector text for the focused panel
@@ -173,6 +181,7 @@ public:
 private:
     bool fullGeneratorLevel = false, generatorStartConfirmed = false, generatorConfirmationPending = false;
     juce::ScopedMessageBox generatorConfirmation;
+    std::array<std::optional<int>, foh::TraceStore::kMax> traceSlots;
     std::array<std::optional<juce::Colour>, foh::TraceStore::kMax> traceColours;
     void syncLoopback();
     void finishLoopback(const foh::TFResult* raw = nullptr);

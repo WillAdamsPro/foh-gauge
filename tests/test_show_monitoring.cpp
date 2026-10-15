@@ -42,7 +42,10 @@ TEST_CASE("W7 compares coherent TF magnitude on logarithmic frequencies", "[app]
     auto ref = syntheticTF(), live = syntheticTF(4);
     REQUIRE(fohui::showDrift(live, ref).valid);
     REQUIRE(fohui::showDrift(live, ref).rmsDb == Catch::Approx(4));
+    CHECK(fohui::showDrift(live, ref).peakDb == Catch::Approx(4));
+    CHECK(fohui::showDrift(live, ref).peakHz >= 100);
     live = syntheticTF(-4);
+    CHECK(fohui::showDrift(live, ref).peakDb == Catch::Approx(-4));
     REQUIRE(fohui::showDrift(live, ref).rmsDb == Catch::Approx(4));
     // Ignore unreliable regions, rather than treating silence as system drift.
     for (size_t i = 0; i < live.freq.size(); ++i) if (live.freq[i] > 1000) { live.coherence[i] = 0.2; live.magDb[i] = 100; }
@@ -151,8 +154,8 @@ TEST_CASE("W7 visible synthetic programme CPU measurement", "[app][show][cpu]") 
     std::cout << "W7 process CPU: " << cpu << "% over " << wall << " s, 48 kHz/512, 16384 FFT, visible 1000x700 panel\n"
               << steadyStatus << "\n" << driftStatus << "\n" << missingStatus << "\n";
     running = false; feeder.join(); model.analysis.stop(); window.get().setVisible(false);
-    REQUIRE(stored); REQUIRE(steadyStatus.startsWith("Monitoring:")); REQUIRE(driftStatus.startsWith("DRIFT ALERT:"));
-    REQUIRE(missingStatus.startsWith("Waiting:")); REQUIRE(cpu < 10);
+    REQUIRE(stored); REQUIRE(steadyStatus.contains("Monitoring:")); REQUIRE(driftStatus.contains("Drift:"));
+    REQUIRE(missingStatus.contains("Waiting:")); REQUIRE(cpu < 10);
 #endif
 }
 
@@ -336,4 +339,46 @@ TEST_CASE("W7 exact threshold is inclusive and the adjacent lower value resets",
     CHECK_FALSE(alert.update({true, std::nextafter(3.0, 0.0)}));
     CHECK(alert.consecutive == 0);
     CHECK_FALSE(alert.update(drift)); CHECK_FALSE(alert.update(drift)); CHECK(alert.update(drift));
+}
+
+TEST_CASE("Show Monitor explains waiting states and renders a signed drift pill", "[app][show][readouts]") {
+    juce::ScopedJuceInitialiser_GUI gui;
+    AppModel model;
+    auto panel = PanelRegistry::standard().create("ShowMonitoring", model);
+    panel->setSize(480, 480);
+    VisiblePanelWindow window(*panel);
+    REQUIRE(status(*panel) == "No stored traces yet. Store one in Tuning first.");
+    REQUIRE(model.traces.store("Synthetic reference", syntheticTF(), 0)); model.notify(AppModel::Traces);
+    selectReference(*panel); click(*panel, "Monitor");
+    model.engine.state = AudioEngine::Ready; model.engine.deviceFailed = false;
+    model.paused = true;
+    auto tick = [&](const char* expected, int timeout = 4000) {
+        const auto end = juce::Time::getMillisecondCounterHiRes() + timeout;
+        while (!status(*panel).contains(expected) && juce::Time::getMillisecondCounterHiRes() < end)
+            juce::MessageManager::getInstance()->runDispatchLoopUntil(50);
+        INFO(status(*panel).toStdString()); CHECK(status(*panel).contains(expected));
+    };
+    tick("measuring is paused");
+    model.paused = false; model.engine.deviceFailed = true;
+    tick("audio device unavailable");
+    model.engine.deviceFailed = false; model.micLevelValid = false;
+    tick("no valid mic signal");
+    model.micLevelValid = true; model.refPeak = 0;
+    tick("no reference signal");
+    model.refPeak = 0.1f; model.tf = syntheticTF(-4);
+    tick("Drift: -4.0 dB at", 6000);
+    auto& themes = foh::theme::ThemeManager::get(); const auto original = themes.current().id;
+    FohLookAndFeel look; panel->setLookAndFeel(&look);
+    for (bool sunlight : {false, true}) for (int scale : {100, 200}) {
+        themes.setTheme(sunlight ? "pro-sunlight" : "pro-dark"); look.applyTheme(); model.notify(AppModel::Theme);
+        if (const auto* folder = std::getenv("FOH_READOUT_QA_DIR")) {
+            juce::File dir(folder); dir.createDirectory();
+            auto snapshot = panel->createComponentSnapshot(panel->getLocalBounds(), true, scale / 100.f);
+            juce::Image image(juce::Image::RGB, snapshot.getWidth(), snapshot.getHeight(), true);
+            juce::Graphics g(image); g.fillAll(foh::ui::col::cardBackground()); g.drawImageAt(snapshot, 0, 0);
+            auto file = dir.getChildFile(juce::String("Show-drift-") + (sunlight ? "sunlight-" : "dark-") + juce::String(scale) + ".png").createOutputStream(); REQUIRE(file);
+            file->setPosition(0); juce::PNGImageFormat png; REQUIRE(png.writeImageToStream(image, *file)); file->truncate();
+        }
+    }
+    panel->setLookAndFeel(nullptr); themes.setTheme(original);
 }

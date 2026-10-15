@@ -8,6 +8,7 @@ namespace fohui {
 struct ShowDrift {
     bool valid = false;
     double rmsDb = 0;
+    double peakDb = 0, peakHz = 0;
 };
 inline ShowDrift showDrift(const foh::TFResult& live, const foh::TFResult& reference) {
     ShowDrift result;
@@ -45,7 +46,9 @@ inline ShowDrift showDrift(const foh::TFResult& live, const foh::TFResult& refer
         ++eligible;
         double a, b;
         if (!sample(live, f, a) || !sample(reference, f, b)) continue;
-        energy += (a - b) * (a - b); ++coherent;
+        const double delta = a - b;
+        if (result.peakHz == 0 || std::abs(delta) > std::abs(result.peakDb)) { result.peakDb = delta; result.peakHz = f; }
+        energy += delta * delta; ++coherent;
     }
     result.valid = coherent >= (eligible + 3) / 4;
     if (result.valid) result.rmsDb = std::sqrt(energy / coherent);

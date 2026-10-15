@@ -18,7 +18,7 @@ namespace foh::theme
         bool isLight = false;
         struct { juce::Colour background, nav, surface, surfaceRaised, border, grid, plotWell, control; } surfaces;
         struct { juce::Colour primary, secondary, axis, onAccent; } text;
-        juce::Colour accent;
+        juce::Colour accent, textOnPoor;
         struct { juce::Colour needle, ivory; } brand;
         struct { juce::Colour good, caution, poor; } status;
         struct { juce::Colour magnitude, phase; float width = 2.0f; bool glow = false; float lowCoherenceHatchAlpha = 0.35f; juce::Colour secondary; } trace;
@@ -38,6 +38,7 @@ namespace foh::theme
         // Axis text is essential: 62% rather than the spec's non-essential 40%, for >=4.5:1 on controls.
         t.text = { t.brand.ivory, t.brand.ivory.withAlpha(0.62f), t.brand.ivory.withAlpha(0.62f), juce::Colour(0xff100E0C) };
         t.accent = juce::Colour(0xff0A84FF);
+        t.textOnPoor = juce::Colour(0xff1C1A17);
         t.status = { juce::Colour(0xff30D158), juce::Colour(0xffFFD60A), juce::Colour(0xffFF453A) };
         t.trace = { t.brand.needle, juce::Colour(0xffBF5AF2), 2.0f, false, 0.35f, juce::Colour(0xffFF9F0A) };
         t.traceSlots = {{ { "Ivory", t.brand.ivory }, { "Blue", t.accent, {6, 3}, 2 },
@@ -59,6 +60,7 @@ namespace foh::theme
             juce::Colour(0xffFAFAF8), juce::Colour(0xffFFFFFF) };
         t.text = { ink, ink.withAlpha(0.78f), ink.withAlpha(0.62f), juce::Colour(0xffFFFFFF) };
         t.accent = juce::Colour(0xff0040DD);
+        t.textOnPoor = juce::Colour(0xffFFFFFF);
         t.status = { juce::Colour(0xff006B1F), juce::Colour(0xff7A5A00), juce::Colour(0xffB0000A) };
         t.trace = { t.brand.needle, juce::Colour(0xff7A1FA2), 3.5f, false, 0.35f, juce::Colour(0xff9A4A00) };
         const juce::Colour colours[] = {ink, t.accent, t.trace.phase, juce::Colour(0xff006580),

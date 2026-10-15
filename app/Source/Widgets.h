@@ -123,7 +123,7 @@ public:
     void resized() override { dismissLowCoh.setVisible(false); }
     bool lowCohDismissed = false;
     juce::TextButton dismissLowCoh {juce::String::fromUTF8("\xc3\x97")};
-    struct Series { std::vector<double> f, v; juce::Colour c; const float* dash = nullptr; float width = foh::ui::dim::trace(); double maxF = 1e9; juce::String label; std::vector<uint8_t> gap; }; // gap[i]: blanked bin -> break the trace
+    struct Series { std::vector<double> f, v; juce::Colour c; const float* dash = nullptr; int dashCount = 2; float width = foh::ui::dim::trace(); double maxF = 1e9; juce::String label; std::vector<uint8_t> gap; }; // gap[i]: blanked bin -> break the trace
     struct Annotation { double lo, hi; juce::String label; };
     std::vector<Annotation> annotations; bool showLegend = false; // legend row: series with a label, 13 px, gap 18, padding 4/14
     juce::String yLabel; double yMin = -12, yMax = 12, yStep = 6; double fMin = 20, fMax = 20000; bool wrapPhase = false;
