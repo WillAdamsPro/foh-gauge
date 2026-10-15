@@ -6,6 +6,7 @@
 #include "Diagrams.h"
 #include <stdexcept>
 #include "ui_form_helpers.h"
+#include "ui_panel_window.h"
 #if JUCE_MAC
 #import <AppKit/AppKit.h>
 #endif

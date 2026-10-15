@@ -1057,6 +1057,29 @@ TEST_CASE("Stopping or destroying a pending generator confirmation cannot start 
     }
 }
 
+TEST_CASE("Setup sections can be prepared before their parent window is shown", "[app][setup][regression]") {
+    juce::ScopedJuceInitialiser_GUI initialise;
+    AppModel model;
+    juce::Component parent;
+    SetupPage setup(model);
+    parent.addAndMakeVisible(setup);
+    setup.setBounds(0, 0, 640, 480);
+    REQUIRE_FALSE(setup.isShowing());
+    auto* focused = juce::Component::getCurrentlyFocusedComponent();
+    for (auto section : {SetupPage::Section::Audio, SetupPage::Section::Mic,
+                         SetupPage::Section::Reference, SetupPage::Section::MicCalibration,
+                         SetupPage::Section::ReferenceDelay}) {
+        setup.focusSection(section);
+        CHECK(setup.focusedSection() == section);
+        CHECK(juce::Component::getCurrentlyFocusedComponent() == focused);
+    }
+    setup.focusSection(SetupPage::Section::Audio);
+    setup.focusSplCalibration();
+    CHECK(juce::Component::getCurrentlyFocusedComponent() == focused);
+    // Debug runs also check the captured log: none of these preparations may
+    // trigger JUCE's assertion about focusing a component that is not showing.
+}
+
 TEST_CASE("Measurement toolbar fits and every status has a Setup destination", "[app][toolbar][layout]") {
     juce::ScopedJuceInitialiser_GUI initialise;
     TemporaryWorkspaces temporary;
