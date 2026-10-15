@@ -11,8 +11,13 @@ PopupMenu MainComponent::getFileMenu(ApplicationCommandManager& commands) {
 #endif
     return menu;
 }
+PopupMenu MainComponent::getMeasureMenu(ApplicationCommandManager& commands) {
+    PopupMenu menu;
+    for (auto id : { pauseCommand, findDelayCommand, lockDelayCommand, storeTraceCommand }) menu.addCommandItem(&commands, id);
+    return menu;
+}
 void MainComponent::getAllCommands(Array<CommandID>& commands) {
-    for (auto id : { openSessionCommand, saveSessionCommand, saveSessionAsCommand })
+    for (auto id : { openSessionCommand, saveSessionCommand, saveSessionAsCommand, pauseCommand, findDelayCommand, lockDelayCommand, storeTraceCommand })
         commands.add(id);
 #if FOH_CONSOLE_CONTROL
     commands.add(consoleControlCommand);
@@ -21,6 +26,20 @@ void MainComponent::getAllCommands(Array<CommandID>& commands) {
 }
 void MainComponent::getCommandInfo(CommandID id, ApplicationCommandInfo& info) {
     switch (id) {
+        case pauseCommand:
+            info.setInfo(model.paused ? "Resume measuring" : "Pause measuring", "Pause or resume analysis", "Measure", 0);
+            info.addDefaultKeypress(KeyPress::spaceKey, 0); break;
+        case findDelayCommand:
+            info.setInfo("Find delay", "Find the delay between reference and mic", "Measure", 0);
+            info.addDefaultKeypress('F', ModifierKeys::commandModifier);
+            info.setActive(!model.delayPending); break;
+        case lockDelayCommand:
+            info.setInfo("Lock delay", "Apply the found delay to the reference", "Measure", 0);
+            info.addDefaultKeypress('L', ModifierKeys::commandModifier);
+            info.setActive(model.delayLocked() && !model.delayPending); break;
+        case storeTraceCommand:
+            info.setInfo("Store trace", "Store the current transfer function", "Measure", 0);
+            info.addDefaultKeypress('S', ModifierKeys::commandModifier); break;
         case sqConsoleCommand:
             info.setInfo("SQ Console...", "Review SQ PEQ and output delay corrections", "File", 0);
             break;
@@ -33,17 +52,20 @@ void MainComponent::getCommandInfo(CommandID id, ApplicationCommandInfo& info) {
             break;
         case saveSessionCommand:
             info.setInfo("Save Session", "Save the current session", "File", 0);
-            info.addDefaultKeypress('S', ModifierKeys::commandModifier);
+            info.addDefaultKeypress('S', ModifierKeys::commandModifier | ModifierKeys::shiftModifier);
             break;
         case saveSessionAsCommand:
             info.setInfo(juce::String::fromUTF8("Save session as\xe2\x80\xa6"), "Save the session to a new folder", "File", 0);
-            info.addDefaultKeypress('S', ModifierKeys::commandModifier | ModifierKeys::shiftModifier);
             break;
         default: break;
     }
 }
 bool MainComponent::perform(const InvocationInfo& info) {
     switch (info.commandID) {
+        case pauseCommand: model.setPaused(!model.paused); timerCallback(); return true;
+        case findDelayCommand: if (!model.delayPending) if (auto* panel = view.panel("DelayFinder")) panel->findDelay(); return true;
+        case lockDelayCommand: if (!model.delayPending && model.delayLocked()) model.lockDelayFromLast(); return true;
+        case storeTraceCommand: model.storeTrace("Trace " + String(model.traces.count() + 1)); return true;
 #if FOH_CONSOLE_CONTROL
         case consoleControlCommand:
             if (!consoleWindow) consoleWindow = std::make_unique<foh::console::ConsoleWindow>();

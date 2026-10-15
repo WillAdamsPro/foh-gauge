@@ -54,6 +54,7 @@ public:
             commands.registerAllCommandsForTarget(main);
             commands.registerAllCommandsForTarget(this);
             commands.setFirstCommandTarget(this);
+            main->attachCommands(&commands);
             addKeyListener(commands.getKeyMappings());
 #if JUCE_MAC
             juce::MenuBarModel::setMacMainMenu(this);
@@ -67,6 +68,7 @@ public:
         }
         ~Window() override {
             stopTimer();
+            main->attachCommands(nullptr);
             if (acknowledgements != nullptr) delete acknowledgements.getComponent();
 #if JUCE_MAC
             juce::MenuBarModel::setMacMainMenu(nullptr);
@@ -82,13 +84,9 @@ public:
                                             || status == AVAuthorizationStatusRestricted);
 #endif
         }
-        bool lastShowMode = false, lastExpertMode = false;
         void timerCallback() override {
             updateMicrophoneConsent();
-            if (lastShowMode != main->isShowMode() || lastExpertMode != main->isExpertMode()) {
-                lastShowMode = main->isShowMode(); lastExpertMode = main->isExpertMode();
-                commands.commandStatusChanged();
-            }
+            commands.commandStatusChanged();
             annotateExpertTooltip();
         }
         void annotateExpertTooltip() {
@@ -127,9 +125,10 @@ public:
         }
         void moved() override { constrainToDisplay(); }
         void resized() override { DocumentWindow::resized(); constrainToDisplay(); }
-        juce::StringArray getMenuBarNames() override { return { "File", "View", "Help" }; }
+        juce::StringArray getMenuBarNames() override { return { "File", "Measure", "View", "Help" }; }
         juce::PopupMenu getMenuForIndex(int index, const juce::String&) override {
             if (index == 0) return main->getFileMenu(commands);
+            if (index == 1) return main->getMeasureMenu(commands);
             juce::PopupMenu menu;
 #if JUCE_MAC
             // Native items are created after getMenuForIndex returns.
@@ -137,7 +136,7 @@ public:
                 if (self) self->annotateExpertTooltip();
             });
 #endif
-            if (index == 2) { menu.addCommandItem(&commands, about); return menu; }
+            if (index == 3) { menu.addCommandItem(&commands, about); return menu; }
             for (int id : { resetScale, scale125, scale150, scale200, largerScale, smallerScale })
                 menu.addCommandItem(&commands, id);
             menu.addSeparator();
