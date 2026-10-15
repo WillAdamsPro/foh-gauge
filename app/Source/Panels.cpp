@@ -39,6 +39,7 @@ static std::vector<std::pair<double,double>> blankedRegions(const foh::TFResult&
 class TargetControls : public Component {
 public:
     explicit TargetControls(double initialOffset = 0) {
+        setTitle("Target curve controls"); setDescription("Choose, import and offset a target curve");
         choice.addItem("Target +6", 1); choice.addItem("Target +9", 2); choice.addItem("Target +12", 3);
         choice.setSelectedId(1, dontSendNotification);
         shown.setButtonText("Target"); band.setButtonText("Tolerance");
@@ -341,6 +342,7 @@ class CoherencePanel : public Panel {
 public:
     explicit CoherencePanel(AppModel& m) : Panel(m, "Coherence", foh::str::coherence) {
         helpText = "Coherence: how much to trust the trace (0 to 1).\n\nGood: 0.9 or above. Fair: 0.6 up to 0.9. Poor: below 0.6. Low coherence is usually a reflection or noise: don't EQ it.";
+        setDescription("Coherence light: average and Good, Fair or Poor confidence thresholds");
         plot.yLabel = foh::str::coherence; plot.yMin = 0; plot.yMax = 1; plot.yStep = 0.5; addAndMakeVisible(plot);
     }
     fohws::Size minSize() const override { return { foh::theme::ws::panelMinWidth, 160 }; }
@@ -354,6 +356,13 @@ public:
             x += width;
         }
         light = r.removeFromTop(rows * 28); plot.setVisible(r.getHeight() > 60); plot.setBounds(r);
+    }
+    std::unique_ptr<AccessibilityHandler> createAccessibilityHandler() override {
+        return readableHandler(*this, AccessibilityRole::group, [this] {
+            auto c = foh::classifyCoherence(model.tf);
+            return "Average " + String(c.meanCoherence, 2) + ", " + (c.state() == 0 ? "Good" : c.state() == 1 ? "Fair" : "Poor")
+                + ". Good at least 0.9. Fair 0.6 to below 0.9. Poor below 0.6.";
+        });
     }
     static StringArray captions() { return {u8("● Good ≥ 0.9"), u8("▲ Fair 0.6–<0.9"), u8("■ Poor < 0.6"), "Average 0.00"}; }
     void paint(Graphics& g) override {
@@ -510,6 +519,8 @@ class DelayFinderPanel : public Panel {
 public:
     explicit DelayFinderPanel(AppModel& m) : Panel(m, "DelayFinder", "Delay finder") {
         helpText = "The delay finder compares the reference signal with the mic signal.\n\nLock delay applies it to the reference so the transfer function phase flattens.\n\nTwo similar spikes: arrivals within 3 dB and more than 0.5 ms apart. Check that only one speaker is on.\n\nConfidence 0 means no lock: check signal and that only one speaker is on.";
+        value.setTitle("Found delay"); value.setDescription("Delay of the first arrival in milliseconds");
+        detail.setTitle("Delay confidence and arrivals"); detail.setDescription("Confidence, polarity, distance and additional arrivals");
         value.setColour(Label::textColourId, C::textPrimary()); value.setFont(FohLookAndFeel::numeric(T::valueLg)); value.setText("--", dontSendNotification);
         detail.setFont(FohLookAndFeel::numeric(T::body, false)); detail.setColour(Label::textColourId, C::textSecondary()); detail.setJustificationType(Justification::topLeft); detail.setText("Start pink noise, then press Find delay.", dontSendNotification);
         styleLabel(twoSpikeBadge, T::body, C::warning(), true);
@@ -518,12 +529,13 @@ public:
         twoSpikeBadge.setColour(Label::outlineColourId, C::warning());
         twoSpikeBadge.setTooltip("Two arrivals within 3 dB and more than 0.5 ms apart: only one speaker on? Check the speaker configuration before locking the delay.");
         addChildComponent(twoSpikeBadge);
-        makePrimary(insert); find.onClick = [this] { model.requestDelay(sub.getToggleState()); }; insert.onClick = [this] { model.lockDelayFromLast(); };
+        makePrimary(insert); find.onClick = [this] { findDelay(); }; insert.onClick = [this] { model.lockDelayFromLast(); };
         sub.setButtonText("Sub (LF)");
         for (auto* c : std::initializer_list<Component*>{&value, &detail, &find, &insert, &sub}) addAndMakeVisible(c);
         addAndMakeVisible(detailViewport); detailViewport.setViewedComponent(&detail, false);
         if (model.delayPending || model.delayLocked()) modelChanged(AppModel::Delay);
     }
+    void findDelay() override { model.requestDelay(sub.getToggleState()); }
     ~DelayFinderPanel() override { detailViewport.setViewedComponent(nullptr, false); }
     fohws::Size minSize() const override { return { 340, 260 }; }
     int priority() const override { return 70; }
@@ -609,7 +621,15 @@ private:
 class SignalMetersPanel : public Panel {
 public:
     explicit SignalMetersPanel(AppModel& m) : Panel(m, "SignalMeters", "Signal meters") {
+        setWantsKeyboardFocus(true); setHasFocusOutline(true);
+        setDescription("Mic and reference input levels, signal quality and routing");
         updateHelp();
+    }
+    std::unique_ptr<AccessibilityHandler> createAccessibilityHandler() override {
+        return readableHandler(*this, AccessibilityRole::progressBar, [this] {
+            auto value = [](float db) { return db < -60 ? String("No signal") : String(db, 1) + " dBFS, " + (db < -40 ? "Low" : db <= -12 ? "Good" : "Hot"); };
+            return "Mic: " + value(micDb) + ". Reference: " + value(refDb) + ". " + helpText;
+        });
     }
     fohws::Size minSize() const override { return { 340, 160 }; }
     void paint(Graphics& g) override {
@@ -823,6 +843,8 @@ public:
         }
         void update(int index) {
             row = index; const auto& trace = owner.model.traces.at(row);
+            setTitle(String(trace.name)); setDescription("Stored trace. Reference delay " + String(trace.refDelayMs, 2) + " ms");
+            prepareKeyboardAccess(*this);
             visible.setButtonText(String(trace.name)); visible.setTitle("Show trace " + String(trace.name));
             visible.setToggleState(trace.visible, dontSendNotification);
             visible.setColour(ToggleButton::textColourId, C::textPrimary());

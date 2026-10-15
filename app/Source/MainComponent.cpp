@@ -55,6 +55,10 @@ MainComponent::MainComponent(juce::File workspaceFolder) : mgr(std::move(workspa
     if (auto* f = std::getenv("FOH_FLOAT")) { std::string id = f; Timer::callAfterDelay(800, [sp = SafePointer<MainComponent>(this), id] { if (sp) sp->floatPanel(id); }); } // dev/screenshot aid
     if (!model.settings.getUserSettings() || !model.settings.getUserSettings()->getBoolValue("setupComplete", false)) openSetup();
     if (!mgr.loadErrors().isEmpty()) AlertWindow::showMessageBoxAsync(AlertWindow::WarningIcon, "Workspace load failed", mgr.loadErrors().joinIntoString("\n"));
+    int order = 1;
+    for (auto* c : std::initializer_list<Component*>{&switcher, &status, &outputOn, &pauseBtn, &setupBtn, &wsMenuBtn, &view, &setup})
+        c->setExplicitFocusOrder(order++);
+    prepareKeyboardAccess(*this);
     startTimerHz(15);
 }
 MainComponent::~MainComponent() { model.requestSplCalibration = {}; contentViewport.setViewedComponent(nullptr, false); sessionNotice.close(); removeKeyListener(presetCommands.keyMappings()); stopTimer(); leaveWorkspace(); view.setWorkspace(nullptr); model.removeListener(this); foh::theme::ThemeManager::get().removeChangeListener(this); floats.clear(); LookAndFeel::setDefaultLookAndFeel(nullptr); setLookAndFeel(nullptr); }
@@ -203,6 +207,11 @@ void MainComponent::showWorkspaceMenu() {
     });
 }
 bool MainComponent::keyPressed(const KeyPress& k, Component*) {
+    if (appCommands) {
+        auto id = appCommands->getKeyMappings()->findCommandForKeyPress(k);
+        if (id == pauseCommand || id == findDelayCommand || id == lockDelayCommand || id == storeTraceCommand)
+            return appCommands->invokeDirectly(id, false);
+    }
     const auto modifiers = k.getModifiers();
     const int code = k.getKeyCode();
     const bool cycle = code == KeyPress::tabKey
@@ -215,7 +224,7 @@ bool MainComponent::keyPressed(const KeyPress& k, Component*) {
 bool MainComponent::keyPressed(const KeyPress& k) {
     auto m = k.getModifiers(); int code = k.getKeyCode();
     if (code == KeyPress::spaceKey && m.getRawFlags() == 0) {
-        model.setPaused(!model.paused); timerCallback(); return true;
+        return perform({pauseCommand});
     }
     if (m.withoutFlags(ModifierKeys::shiftModifier).getRawFlags() == ModifierKeys::commandModifier) {
         if (code == '0') { setUiScale(100); return true; }
