@@ -998,3 +998,26 @@ TEST_CASE("Guide capture silence times out and reset permits a fresh settled mea
         CHECK(tf.result().sampleRate == rate);
     }
 }
+
+TEST_CASE("Damaged TF RTA and Leq processing reuse storage without warmup", "[rt][edges][reaudit]") {
+    constexpr int n = 1024;
+    TransferFunction tf(n); RTA rta(n); LeqMeter leq(48000);
+    std::vector<float> input(n);
+    for (float value : {0.f, 1.f, -1.f, NAN, INFINITY, -INFINITY,
+                       std::numeric_limits<float>::denorm_min(),
+                       std::nextafter(std::numeric_limits<float>::min(), 0.f), 0.1f}) {
+        for (int i = 0; i < n; ++i) input[i] = i % 2 ? value : -value;
+        int allocs;
+        {
+            AllocGuard guard;
+            for (int repeat = 0; repeat < 16; ++repeat) {
+                tf.process(input.data(), input.data(), n); rta.process(input.data(), n);
+                leq.process(input.data(), n);
+            }
+            allocs = g_allocs;
+        }
+        REQUIRE(allocs == 0);
+    }
+    // Delay FFTs and result/plot snapshots allocate on the analysis worker;
+    // only the streaming process calls above are expected to reuse storage.
+}

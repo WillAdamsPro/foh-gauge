@@ -321,3 +321,100 @@ TEST_CASE("Generator signal paths reject damage and recover without resetting an
         }
     }
 }
+
+TEST_CASE("Sustained damaged analysis times out unsettled with finite spectra", "[edges][reaudit][tf][rta]") {
+    constexpr int n = 1024, fs = 8000;
+    for (int damage = 0; damage < 7; ++damage) {
+        INFO("damage (silence, rails, NaN, +/-Inf, small/large subnormal): " << damage);
+        std::vector<float> block(n);
+        for (int i = 0; i < n; ++i) {
+            const float sign = i % 2 ? 1.f : -1.f;
+            block[i] = damage == 0 ? 0.f : damage == 1 ? sign
+                : damage == 2 ? float(qnan) : damage == 3 ? float(inf) : damage == 4 ? float(-inf)
+                : sign * (damage == 5 ? std::numeric_limits<float>::denorm_min()
+                                     : std::nextafter(std::numeric_limits<float>::min(), 0.f));
+        }
+        // Each input is independently unusable; a healthy opposite input must
+        // neither preserve a stale coherent plot nor allow false convergence.
+        std::vector<float> good(n);
+        uint32_t state = 113;
+        for (auto& x : good) { state = state * 1664525u + 1013904223u; x = float(double(state) / 4294967296.0 - 0.5); }
+        for (bool reference : {false, true}) {
+            TransferFunction tf(n, fs); tf.setCoherenceBlankThreshold(0);
+            RTA rta(n, fs);
+            tf.process(good.data(), good.data(), n);
+            rta.process(good.data(), n);
+            for (int repeat = 0; repeat < 88; ++repeat) {
+                // Irregular chunks cross the Welch hop and FFT boundaries.
+                for (int at = 0; at < n; at += 137) {
+                    int count = std::min(137, n - at);
+                    tf.process((reference ? block : good).data() + at,
+                               (reference ? good : block).data() + at, count);
+                    rta.process(block.data() + at, count);
+                }
+            }
+            const auto result = tf.result(3); finite(result); finite(rta.bandsDb());
+            for (size_t k = 0; k < result.H.size(); ++k) {
+                REQUIRE(result.isBlanked(k)); REQUIRE(result.coherence[k] == 0);
+            }
+            const auto convergence = tf.convergence();
+            REQUIRE_FALSE(convergence.settled); REQUIRE(convergence.timedOut);
+            REQUIRE(convergence.stableFrames == 0); REQUIRE(convergence.coherentBins == 0);
+            REQUIRE(convergence.meanCoherence == 0);
+            REQUIRE(std::isfinite(convergence.progress)); REQUIRE(std::isfinite(convergence.elapsedSeconds));
+            // deltaDb intentionally uses NaN to represent no qualifying bins.
+            REQUIRE(std::isnan(convergence.deltaDb));
+            if (damage >= 1 && damage <= 4) REQUIRE(rta.bandsDb().empty());
+            else { REQUIRE_FALSE(rta.bandsDb().empty()); for (auto db : rta.bandsDb()) REQUIRE(db < -190); }
+            tf.reset();
+            for (int repeat = 0; repeat < 8; ++repeat) {
+                tf.process(good.data(), good.data(), n); rta.process(good.data(), n);
+            }
+            REQUIRE(tf.convergence().settled);
+            REQUIRE(coherenceSummary(tf.result()).meanCoherence > 0.99);
+            finite(rta.bandsDb()); REQUIRE_FALSE(rta.bandsDb().empty());
+        }
+    }
+}
+
+TEST_CASE("Delay analysis remains finite for rails sparse corruption and sustained subnormals", "[edges][reaudit][delay]") {
+    constexpr int n = 2048, lag = 37;
+    std::vector<float> good(n), shifted(n);
+    uint32_t state = 113;
+    for (auto& x : good) { state = state * 1664525u + 1013904223u; x = float(double(state) / 4294967296.0 - 0.5); }
+    std::copy(good.begin(), good.end() - lag, shifted.begin() + lag);
+    for (bool phat : {false, true}) for (bool reference : {false, true}) {
+        for (int damage = 0; damage < 8; ++damage) {
+            INFO("PHAT=" << phat << " reference=" << reference << " damage=" << damage);
+            auto bad = reference ? good : shifted;
+            int nonFinite = 0;
+            for (int i = 0; i < n; ++i) {
+                float sign = i % 2 ? 1.f : -1.f;
+                if (damage == 0) bad[i] = 0;
+                if (damage == 1) bad[i] = sign;
+                if (damage >= 2 && damage <= 4 && i % 127 == 0) {
+                    bad[i] = damage == 2 ? float(qnan) : damage == 3 ? float(inf) : float(-inf); ++nonFinite;
+                }
+                if (damage == 5) { bad[i] = float(qnan); ++nonFinite; }
+                if (damage >= 6) bad[i] = sign * (damage == 6 ? std::numeric_limits<float>::denorm_min()
+                    : std::nextafter(std::numeric_limits<float>::min(), 0.f));
+            }
+            auto result = findDelay(reference ? bad : good, reference ? shifted : bad, 48000, phat);
+            REQUIRE(result.nonFiniteSamples == nonFinite);
+            REQUIRE(std::isfinite(result.confidence)); REQUIRE(result.confidence >= 0); REQUIRE(result.confidence <= 1);
+            finite(result.impulse);
+            for (const auto& arrival : result.arrivals) {
+                REQUIRE(std::isfinite(arrival.delaySamples)); REQUIRE(std::isfinite(arrival.delayMs));
+                REQUIRE(std::isfinite(arrival.distanceM)); REQUIRE(std::isfinite(arrival.relLevelDb));
+            }
+            if (damage == 0 || damage >= 5) { REQUIRE_FALSE(result.ok()); REQUIRE(result.arrivals.empty()); }
+            // Delay deliberately tolerates isolated nonfinite samples by replacing
+            // them with zeros; unlike live TF this does not reject the capture.
+            if (damage >= 2 && damage <= 4) {
+                REQUIRE(result.ok()); REQUIRE(result.arrivals.front().delaySamples == Approx(lag).margin(0.15));
+            }
+        }
+        auto recovered = findDelay(good, shifted, 48000, phat);
+        REQUIRE(recovered.ok()); REQUIRE(recovered.arrivals.front().delaySamples == Approx(lag).margin(0.1));
+    }
+}
