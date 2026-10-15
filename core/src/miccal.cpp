@@ -68,7 +68,7 @@ MicCal parseMicCal(const std::string& text) {
     std::stable_sort(rows.begin(), rows.end(), [](auto& a, auto& b){ return a[0] < b[0]; });
     for (auto& r : rows) { if (!c.hz.empty() && r[0] <= c.hz.back()) continue; c.hz.push_back(r[0]); c.db.push_back(r[1]); c.phaseDeg.push_back(r[2]); }
     c.hasPhase = nrows > 0 && anyPhase;
-    if (c.hz.size() < 2) c.error = "No usable Hz,dB rows found";
+    if (c.hz.size() < 2) return bad("At least two distinct Hz,dB rows are required");
     return c;
 }
 MicCal loadMicCal(const std::string& path) {

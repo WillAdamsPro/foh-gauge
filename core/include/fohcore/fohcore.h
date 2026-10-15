@@ -392,6 +392,7 @@ struct TargetTrace {
     std::vector<double> hz, db;
     double toleranceDb = 0;
     bool useTolerance = false;
+    bool hasTolerance = false; // Explicit zero is distinct from absent metadata.
     std::string error;
     bool ok() const {
         if (hz.size() < 2 || hz.size() != db.size() || !error.empty()
