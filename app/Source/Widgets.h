@@ -16,12 +16,46 @@ inline juce::String u8(const char* s) { return juce::String(juce::CharPointer_UT
 // Console display rounding; message thread only.
 inline double consoleMs(double ms) { return std::round(ms * 100.0) / 100.0; }
 
+// One recovery action plus a separate dismiss control. Repeated updates preserve
+// dismissal; clearing or changing the message starts a new notice.
+class Banner : public juce::Component {
+public:
+    Banner();
+    void setMessage(const juce::String&, const juce::String& action, std::function<void()>);
+    int preferredHeight(int width) const;
+    void resized() override;
+    void paint(juce::Graphics&) override;
+    std::function<void()> onDismiss;
+    const juce::String& message() const { return text; }
+private:
+    juce::TextLayout textLayout(int width) const;
+    int actionWidth() const;
+    juce::String text;
+    juce::TextButton actionButton, dismissButton;
+    juce::Rectangle<int> messageBounds;
+    bool dismissed = false;
+};
+
+namespace fohapp {
+inline constexpr const char* microphonePermissionMessage =
+    "FOH Gauge can't use the microphone. Allow it in System Settings, then relaunch.";
+inline constexpr const char* microphonePrivacyUrl =
+    "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_Microphone";
+inline constexpr const char* micCalibrationErrorMessage =
+    "This file isn't a mic calibration file FOH Gauge can read (expected .cal, .txt, .frd or .csv).";
+}
+
 // Audio engine: generator out + capture of mic/ref into lock-free rings. RT-safe callback.
 class AudioEngine : public juce::AudioIODeviceCallback {
     int lastMicChannel = 0, lastRefChannel = 1, lastOutputA = 0, lastOutputB = 1;
     int lastInputCount = -1, lastOutputCount = -1;
     bool lastInputsValid = true, lastOutputsValid = true;
 public:
+#if FOH_AUDIO_TEST_HOOKS
+    // Installed before synthetic I/O starts; absent from the shipping app.
+    void (*processTestHook)(AudioEngine&, int point, void*) noexcept = nullptr;
+    void* processTestContext = nullptr;
+#endif
     AudioEngine(); // Synthesizes the immutable chime before the audio callback is registered.
     // Message-thread commands; one atomic packet keeps channel selection and request together.
     // Setup defaults to the console/PA output; chimes never mirror to outB.

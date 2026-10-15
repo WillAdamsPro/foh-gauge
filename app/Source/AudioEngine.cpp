@@ -57,14 +57,14 @@ foh::ConnectionResult AudioEngine::connectionResult() const noexcept {
 
 // ===================== Audio engine (real-time thread) =====================
 const char* AudioEngine::statusText() const noexcept {
-    if (deviceFailed.load(std::memory_order_acquire)) return "Audio device error; reopen Audio Setup";
+    if (deviceFailed.load(std::memory_order_acquire)) return "Audio device disconnected.";
     switch (state.load(std::memory_order_acquire)) {
-        case Stopped: return "Audio device stopped; open Audio Setup";
-        case InvalidInputs: return "Measurement stopped: open Audio Setup and choose available mic/ref inputs";
-        case InvalidOutputs: return "Choose available generator outputs in Audio Setup";
-        case Overflow: return "Capture overrun; restarting measurement";
+        case Stopped: return "Audio device disconnected.";
+        case InvalidInputs: return "Choose available microphone and reference inputs.";
+        case InvalidOutputs: return "Choose available generator outputs.";
+        case Overflow: return "Audio dropped out; measuring restarted.";
         default: return analysisEpoch.load() == captureEpoch.load()
-            ? "Measuring" : "Audio changed; restarting measurement";
+            ? "Measuring" : "Audio changed; measuring restarted.";
     }
 }
 void AudioEngine::resetPlayback() noexcept {
@@ -115,6 +115,16 @@ void AudioEngine::audioDeviceIOCallbackWithContext(const float* const* in, int n
                                                    const AudioIODeviceCallbackContext&) {
     foh::ScopedFlushDenormals ftz;
     if (n <= 0) return;
+    // Errors may arrive on any thread after the entry check, including while
+    // generating output or publishing peaks. Retire playback on its owning
+    // audio thread and clear this entire block on every exit path. ScopeGuard
+    // stores this lambda inline: no allocation, lock or device call.
+    const ScopeGuard recoverFailure { [&] {
+        if (!deviceFailed.load(std::memory_order_acquire)) return;
+        resetPlayback();
+        for (int c = 0; c < nOut; ++c) if (out && out[c]) FloatVectorOperations::clear(out[c], n);
+        micPeak.store(0); refPeak.store(0);
+    } };
     for (int c = 0; c < nOut; ++c) if (out && out[c]) FloatVectorOperations::clear(out[c], n);
     if (deviceFailed.load(std::memory_order_acquire) || state.load(std::memory_order_acquire) == Stopped) return;
     const int mc = micCh.load(), rc = refCh.load();
@@ -180,6 +190,9 @@ void AudioEngine::audioDeviceIOCallbackWithContext(const float* const* in, int n
     }
     const double rampStep = 1.0 / std::max(1.0, rate * 0.01);
     for (int i = 0; !silent && i < n; ++i) {
+#if FOH_AUDIO_TEST_HOOKS
+        if (i == n / 2 && processTestHook) processTestHook(*this, 0, processTestContext);
+#endif
         const bool wantsSweep = mode == Sweep && gen.load() == Sweep;
         sweepLevel = wantsSweep && !sweepRestart ? std::min(1.0, sweepLevel + rampStep)
             : std::max(0.0, sweepLevel - rampStep);
@@ -260,7 +273,8 @@ void AudioEngine::audioDeviceIOCallbackWithContext(const float* const* in, int n
         // Publish quality before samples can produce a settled analysis snapshot.
         micRing.push(mp, m); refRing.push(rp, m);
     }
-    // An asynchronous error can arrive after the entry check or during a push.
-    if (deviceFailed.load(std::memory_order_acquire)) { micPeak.store(0); refPeak.store(0); }
+#if FOH_AUDIO_TEST_HOOKS
+    if (processTestHook) processTestHook(*this, 1, processTestContext);
+#endif
 }
 

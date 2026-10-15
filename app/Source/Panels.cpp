@@ -730,23 +730,55 @@ private:
 class CalibrationPanel : public Panel {
 public:
     explicit CalibrationPanel(AppModel& m) : Panel(m, "Calibration", foh::str::micCalibration) {
-        helpText = "Load your mic calibration file (CSV/TXT/FRD) and enable Mic calibration. It is applied to the transfer function and RTA by the analysis engine.";
-        load.onClick = [this] { chooser = std::make_unique<FileChooser>("Mic calibration file", File(), "*.csv;*.txt;*.frd;*.cal");
-            chooser->launchAsync(FileBrowserComponent::openMode | FileBrowserComponent::canSelectFiles, [this](const FileChooser& fc) { auto f = fc.getResult(); if (f.existsAsFile()) model.loadCalFile(f); }); };
+        helpText = "Load your mic calibration file (.cal, .txt, .frd or .csv) and enable Mic calibration. It is applied to the transfer function and RTA by the analysis engine.";
+        load.onClick = [this] { chooseFile(); };
+        error.onDismiss = [this] { load.setVisible(true); resized(); };
         toggle.setButtonText(foh::str::micCalibration); toggle.onClick = [this] { model.setCalEnabled(toggle.getToggleState()); };
         styleLabel(info, T::body, C::textSecondary()); info.setJustificationType(Justification::topLeft);
-        for (auto* c : std::initializer_list<Component*>{&load, &toggle, &info}) addAndMakeVisible(c); sync();
+        addAndMakeVisible(form);
+        for (auto* c : std::initializer_list<Component*>{&load, &toggle, &info}) form.canvas.addAndMakeVisible(c);
+        form.canvas.addChildComponent(error); sync();
     }
     fohws::Size minSize() const override { return { 240, 100 }; }
+    void chooseFile() {
+        chooser = std::make_unique<FileChooser>("Mic calibration file", File(), "*.csv;*.txt;*.frd;*.cal");
+        const SafePointer<CalibrationPanel> safe(this);
+        chooser->launchAsync(FileBrowserComponent::openMode | FileBrowserComponent::canSelectFiles,
+            [safe](const FileChooser& fc) { auto f = fc.getResult(); if (safe && f.existsAsFile()) { safe->error.setMessage("", "", {}); safe->model.loadCalFile(f); } });
+    }
     void sync() {
         toggle.setToggleState(model.calOn, dontSendNotification);
         auto& c = model.cal;
-        info.setText(model.calFile.isEmpty() ? String("No mic calibration loaded") : c.ok() ? u8("\xe2\x9c\x93 ") + model.calFile + ": " + String((int) c.hz.size()) + " points, " + String(c.hz.front(), 0) + "-" + String(c.hz.back(), 0) + " Hz" + (c.hasPhase ? ", with phase" : "") + u8(" \xc2\xb7 Sensitivity ") + String(c.sensitivityOffsetDb, 2) + " dB"
-                                                                       : u8("\xe2\x96\xb2 Could not read mic calibration: ") + String(c.error), dontSendNotification); }
-    void resized() override { auto r = getLocalBounds().reduced(pad, 8); auto row = controlRow(r, 28); load.setBounds(row.removeFromLeft(140)); row.removeFromLeft(10); toggle.setBounds(row.removeFromLeft(90)); info.setBounds(r); }
-    void modelChanged(int w) override { if (w & (AppModel::Cal | AppModel::Theme)) { info.setColour(Label::textColourId, C::textSecondary()); sync(); } }
+        info.setText(model.calFile.isEmpty() ? String("No mic calibration loaded") :
+            model.calFile + ": " + String((int) c.hz.size()) + " points" +
+            (c.ok() ? ", " + String(c.hz.front(), 0) + "-" + String(c.hz.back(), 0) + " Hz" : String()) +
+            (c.hasPhase ? ", with phase" : "") +
+            (c.hasSensFactor ? "\nSens factor: " + String(c.sensitivityOffsetDb, 2) + " dB (not used; set level in SPL calibration)" : String()), dontSendNotification);
+        error.setMessage(model.calImportError, u8("Choose another file\xe2\x80\xa6"), [this] { chooseFile(); });
+        load.setVisible(model.calImportError.isEmpty() || !error.isVisible());
+        resized();
+    }
+    void resized() override {
+        form.setBounds(getLocalBounds());
+        const int width = form.layoutWidth(240);
+        auto r = Rectangle<int>(12, 12, width - 24, 1000);
+        int bottom = 12;
+        if (error.isVisible()) {
+            error.setBounds(r.removeFromTop(error.preferredHeight(r.getWidth())));
+            r.removeFromTop(8); bottom = r.getY();
+        }
+        if (load.isVisible()) { load.setBounds(r.removeFromTop(24).removeFromLeft(140)); r.removeFromTop(8); }
+        toggle.setBounds(r.removeFromTop(24)); r.removeFromTop(8);
+        AttributedString copy; copy.append(info.getText(), FohLookAndFeel::font(T::body), C::textSecondary());
+        TextLayout layout; layout.createLayout(copy, (float) jmax(1, r.getWidth() - 4));
+        info.setBounds(r.removeFromTop((int) std::ceil(layout.getHeight()) + 16));
+        form.sizeCanvas(width, jmax(bottom, r.getY()) + 12);
+    }
+    void modelChanged(int w) override { if (w & (AppModel::Cal | AppModel::Theme)) { info.setColour(Label::textColourId, C::textSecondary()); info.setFont(FohLookAndFeel::font(T::body)); sync(); } }
 private:
-    TextButton load {juce::String::fromUTF8("Load file\xe2\x80\xa6")}; ToggleButton toggle; Label info; std::unique_ptr<FileChooser> chooser;
+    ScrollableForm form;
+    TextButton load {juce::String::fromUTF8("Load file\xe2\x80\xa6")}; ToggleButton toggle; Label info; Banner error;
+    std::unique_ptr<FileChooser> chooser;
 };
 
 // ===================== Trace list =====================

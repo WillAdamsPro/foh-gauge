@@ -20,6 +20,9 @@ public:
     explicit AnalysisEngineTestAccess(AnalysisEngine& engine)
         : analysis(engine), mic(size_t(engine.fftN)), ref(size_t(engine.fftN)),
           silence(size_t(engine.fftN), 0.f) {}
+    void blockHook(void (*hook)(void*), void* context) {
+        analysis.processTestHook = hook; analysis.processTestContext = context;
+    }
     void step() {
         foh::ScopedFlushDenormals ftz;
         analysis.processPendingAudio(mic, ref, silence, epoch);
@@ -575,7 +578,7 @@ TEST_CASE("Device stop and rate/buffer restarts cancel playback and clear analys
     engine.audioDeviceStopped();
     CHECK(engine.gen.load() == AudioEngine::Off);
     CHECK(engine.connectionResult() == foh::ConnectionResult::invalid);
-    CHECK(std::string_view(engine.statusText()).find("stopped") != std::string_view::npos);
+    CHECK(std::string_view(engine.statusText()).find("disconnected") != std::string_view::npos);
     engine.audioDeviceIOCallbackWithContext(inputs, 2, outputs, 2, 256, {});
     for (int i = 0; i < 256; ++i) { CHECK(a[i] == 0); CHECK(b[i] == 0); }
     REQUIRE(waitFor([&] { const auto& s = analysis.latest(); return s.inputEpoch == engine.captureEpoch.load() && !s.micLevelValid; }));
@@ -897,7 +900,7 @@ TEST_CASE("Device errors from another thread silence playback until restart", "[
     const auto epoch = engine.captureEpoch.load();
     std::thread error([&] { engine.audioDeviceError("Synthetic error"); }); error.join();
     CHECK(engine.captureEpoch.load() == epoch); // an arbitrary thread never races the ring producer
-    CHECK(std::string_view(engine.statusText()).find("error") != std::string_view::npos);
+    CHECK(std::string_view(engine.statusText()).find("disconnected") != std::string_view::npos);
     float output[256]; float* outputs[] {output};
     engine.audioDeviceIOCallbackWithContext(nullptr, 0, outputs, 1, 256, {});
     for (float s : output) CHECK(s == 0);
@@ -1487,7 +1490,7 @@ TEST_CASE("Hotplug and device errors discard TF RTA SPL and delay history", "[ap
             engine.audioDeviceIOCallbackWithContext(inputs, 2, outputs, 1, 256, {});
             CHECK(engine.state.load() == AudioEngine::InvalidOutputs);
             CHECK(engine.gen.load() == AudioEngine::Off);
-            CHECK(std::string_view(engine.statusText()).find("Setup") != std::string_view::npos);
+            CHECK(std::string_view(engine.statusText()).find("Choose available") != std::string_view::npos);
         }
         if (event == 3) {
             engine.refCh = 4;
@@ -1563,7 +1566,7 @@ TEST_CASE("A replacement missing a configured output requires Setup even with ge
         engine.audioDeviceIOCallbackWithContext(inputs, 2, outputs, 1, 64, {});
     CHECK(engine.state.load() == AudioEngine::InvalidOutputs);
     CHECK(engine.micRing.available() == 0);
-    CHECK(std::string_view(engine.statusText()).find("Setup") != std::string_view::npos);
+    CHECK(std::string_view(engine.statusText()).find("Choose available") != std::string_view::npos);
     engine.outB = -1; // Correct the map in Setup, then resume with fresh history.
     engine.audioDeviceIOCallbackWithContext(inputs, 2, outputs, 1, 64, {});
     CHECK(engine.state.load() == AudioEngine::Ready);
@@ -2150,4 +2153,103 @@ TEST_CASE("Calibrated SPL readouts render both weightings in both themes and sca
         panel->setLookAndFeel(nullptr);
     }
     themes.setTheme(original);
+}
+
+TEST_CASE("An error inside a generated or captured block clears output and meters", "[app][audio][hotplug][rt]") {
+    const int mode = GENERATE(AudioEngine::Pink, AudioEngine::Sweep, 3); // 3 = routing chime
+    const int point = GENERATE(0, 1); // mid-playback, after capture/peak publication
+    AudioEngine engine; SyntheticDevice device;
+    engine.audioDeviceAboutToStart(&device); engine.analysisEpoch = engine.captureEpoch.load();
+    float input[1024], a[1024], b[1024];
+    for (int i = 0; i < 1024; ++i) input[i] = 0.1f * std::sin(float(i) * 0.13f);
+    const float* inputs[] {input, input}; float* outputs[] {a, b};
+    if (mode == 3) engine.testConnection(0, 0);
+    else if (mode == AudioEngine::Sweep) engine.startSweepMeasurement();
+    else engine.gen = mode;
+    struct Context { int point; const juce::String error {"Synthetic mid-block unplug"}; bool fired = false; } context {point};
+    engine.processTestContext = &context;
+    engine.processTestHook = [](AudioEngine& e, int current, void* p) noexcept {
+        auto& c = *static_cast<Context*>(p);
+        if (c.point == current) { c.fired = true; e.audioDeviceError(c.error); }
+    };
+    {
+        CallbackAllocationAudit audit;
+        engine.audioDeviceIOCallbackWithContext(inputs, 2, outputs, 2, 1024, {});
+    }
+    CHECK(callbackAllocations == 0);
+    REQUIRE(context.fired);
+    CHECK(engine.gen.load() == AudioEngine::Off);
+    CHECK(engine.micPeak.load() == 0); CHECK(engine.refPeak.load() == 0);
+    CHECK(engine.connectionResult() == foh::ConnectionResult::invalid);
+    for (int i = 0; i < 1024; ++i) { CHECK(a[i] == 0); CHECK(b[i] == 0); }
+    engine.processTestHook = nullptr;
+    for (int pass = 0; pass < 2; ++pass) {
+        if (pass == 1) engine.audioDeviceAboutToStart(&device);
+        {
+            CallbackAllocationAudit audit;
+            engine.audioDeviceIOCallbackWithContext(inputs, 2, outputs, 2, 1024, {});
+        }
+        CHECK(callbackAllocations == 0);
+        for (int i = 0; i < 1024; ++i) { CHECK(a[i] == 0); CHECK(b[i] == 0); }
+    }
+}
+
+TEST_CASE("Device format callbacks interrupt an in-flight analysis block safely", "[app][audio][hotplug][concurrent][rt]") {
+    const int event = GENERATE(0, 1, 2); // unplug, sample rate, buffer size
+    struct Gate { std::atomic<int> stage {0}; std::atomic<bool> timedOut {false}; } gate;
+    AudioEngine engine; SyntheticDevice device; device.block = 512;
+    engine.audioDeviceAboutToStart(&device);
+    AnalysisEngine analysis(engine); AnalysisEngineTestAccess access(analysis);
+    access.blockHook([](void* p) {
+        auto& g = *static_cast<Gate*>(p);
+        int expected = 0;
+        if (!g.stage.compare_exchange_strong(expected, 1)) return;
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+        while (g.stage.load() == 1) {
+            if (std::chrono::steady_clock::now() >= deadline) { g.timedOut = true; break; }
+            std::this_thread::yield(); // analysis worker only; never the audio callback
+        }
+    }, &gate);
+    analysis.start();
+    REQUIRE(waitFor([&] { return engine.analysisEpoch.load() == engine.captureEpoch.load(); }));
+    foh::Command sweep; sweep.type = foh::CommandType::MeasureSweep;
+    REQUIRE(analysis.send(sweep));
+    REQUIRE(waitFor([&] { return engine.gen.load() == AudioEngine::Sweep; }));
+    float input[1024], a[1024], b[1024];
+    for (int i = 0; i < 1024; ++i) input[i] = 0.1f * std::sin(float(i) * 0.13f);
+    const float* inputs[] {input, input}; float* outputs[] {a, b};
+    engine.audioDeviceIOCallbackWithContext(inputs, 2, outputs, 2, 1024, {});
+    REQUIRE(waitFor([&] { return gate.stage.load() == 1; }));
+    const auto epoch = engine.captureEpoch.load();
+    if (event == 1) device.rate = 96000;
+    if (event == 2) device.block = 1024;
+    {
+        // Lifecycle stays serialized with I/O, while the analysis worker is
+        // inside processBlock. No device locks, heap work or I/O in our recovery.
+        CallbackAllocationAudit audit;
+        engine.audioDeviceStopped();
+        if (event != 0) engine.audioDeviceAboutToStart(&device);
+    }
+    CHECK(callbackAllocations == 0);
+    gate.stage = 2;
+    REQUIRE(waitFor([&] {
+        const auto& s = analysis.latest();
+        return s.inputEpoch > epoch && s.inputEpoch == engine.captureEpoch.load()
+            && s.tf.sampleRate == device.rate && !s.sweepCapturing && s.tf.averages == 0;
+    }));
+    CHECK_FALSE(gate.timedOut.load());
+    const auto cleared = analysis.latest();
+    CHECK_FALSE(cleared.micLevelValid); CHECK(cleared.leq.seconds == 0);
+    CHECK(std::isfinite(cleared.micLevelDbfs));
+    for (auto value : cleared.rtaDb) CHECK(std::isfinite(value));
+    CHECK(engine.gen.load() == AudioEngine::Off);
+    CHECK(engine.micPeak.load() == 0); CHECK(engine.refPeak.load() == 0);
+    {
+        CallbackAllocationAudit audit;
+        engine.audioDeviceIOCallbackWithContext(inputs, 2, outputs, 2, device.block, {});
+    }
+    CHECK(callbackAllocations == 0);
+    for (int i = 0; i < device.block; ++i) { CHECK(a[i] == 0); CHECK(b[i] == 0); }
+    if (event != 0) REQUIRE(waitFor([&] { return analysis.latest().micLevelValid; }));
+    analysis.stop();
 }

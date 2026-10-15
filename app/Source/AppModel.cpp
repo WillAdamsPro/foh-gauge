@@ -93,19 +93,6 @@ void AppModel::beginCapture(const String& name, std::function<void(bool)> then) 
     capture.resetId = reset.id; capture.resetAcknowledged = false;
     capture.active = true; capture.unsettled = false; capture.name = name; capture.startMs = Time::getMillisecondCounterHiRes(); capture.then = std::move(then); conv = {}; notify(Capture);
 }
-void AppModel::loadCalFile(const File& f) {
-    try {
-        auto text = foh::input::read(f.getFullPathName().toStdString());
-        auto parsed = foh::parseMicCal(text);
-        if (!parsed.ok()) throw std::runtime_error(parsed.error);
-        auto published = std::make_shared<foh::MicCal>(parsed);
-        calText = std::move(text); cal = std::move(parsed); calFile = f.getFileName(); calOn = true;
-        analysis.setCal(std::move(published), calFile); ++analysis.leqRevision;
-        notify(Cal);
-    } catch (const std::exception& e) {
-        AlertWindow::showMessageBoxAsync(AlertWindow::WarningIcon, "Mic calibration import failed", String(e.what()));
-    }
-}
 void AppModel::setCalEnabled(bool on) {
     calOn = on && cal.ok(); analysis.setCal(calOn ? std::make_shared<foh::MicCal>(cal) : nullptr, calFile); ++analysis.leqRevision;
     notify(Cal);
