@@ -71,7 +71,8 @@ std::vector<juce::ToggleButton*> choices(Panel& panel) {
 bool labelContains(Panel& panel, const juce::String& text) {
     for (int i = 0; i < formCanvas(panel).getNumChildComponents(); ++i)
         if (auto* label = dynamic_cast<juce::Label*>(formCanvas(panel).getChildComponent(i)))
-            if (label->isVisible() && label->getText().contains(text)) return true;
+            // Instruction assertions also inspect copy available through More.
+            if ((label->isVisible() || label->getComponentID() == "guide-details") && label->getText().contains(text)) return true;
     return false;
 }
 void storeSyntheticPair(AppModel& model) {
@@ -102,13 +103,20 @@ TEST_CASE("W2 presents selectable 12.5 ms primary and 2.5/22.5 ms alternatives a
     auto rows = choices(*panel);
     REQUIRE(rows.size() == 4);
     CHECK(rows[0]->getButtonText() == "Primary: Mains +12.50 ms");
-    CHECK(rows[1]->getButtonText() == "-1 period: Mains +2.50 ms");
-    CHECK(rows[2]->getButtonText() == "+1 period: Mains +22.50 ms");
+    CHECK(rows[1]->getButtonText() == "One cycle earlier: Mains +2.50 ms");
+    CHECK(rows[2]->getButtonText() == "One cycle later: Mains +22.50 ms");
     CHECK(rows[3]->getButtonText().contains("Mains +7.50 ms"));
     CHECK(rows[0]->getToggleState());
-    CHECK(labelContains(*panel, "Raw impulse peak: 20.50 ms (hint only)"));
+    CHECK(rows[0]->isVisible());
+    for (size_t i = 1; i < rows.size(); ++i) CHECK_FALSE(rows[i]->isVisible());
+    CHECK(labelContains(*panel, "Best sum through the crossover"));
     for (size_t selected = 0; selected < rows.size(); ++selected) {
         panel->loadState(findDelayStep());
+        CHECK(rows[0]->getToggleState());
+        for (auto* child : formCanvas(*panel).getChildren())
+            if (auto* b = dynamic_cast<juce::TextButton*>(child))
+                if (b->getButtonText() == juce::String::fromUTF8("Other options ▸")) b->onClick();
+        CHECK(labelContains(*panel, "Raw impulse peak: 20.50 ms (hint only)"));
         rows[selected]->setToggleState(true, juce::sendNotification);
         for (size_t i = 0; i < rows.size(); ++i) {
             CHECK(rows[i]->isVisible()); CHECK(rows[i]->isEnabled());
@@ -226,7 +234,7 @@ TEST_CASE("Verify rejects reference-delay changes and stale completion after gui
     button(*panel, "I entered the change").onClick();
     button(*panel, "Re-measure to verify").onClick(); model.refDelayMs = 5; capture.finish(model);
     CHECK(panel->saveState()["step"].asInt() == storeStep);
-    CHECK(labelContains(*panel, "Reference delay or routing changed"));
+    CHECK(labelContains(*panel, "Guide measurement interrupted"));
     button(*panel, "Measure before change").onClick();
     state.set("guide", 4); state.set("step", 0); panel->loadState(state); capture.finish(model);
     CHECK(panel->saveState()["guide"].asInt() == 4);
@@ -650,7 +658,7 @@ TEST_CASE("Verify needs a stored reference even after deletion during capture", 
         prepareVerify(*panel, model, capture);
         button(*panel, "Re-measure to verify").onClick();
         model.removeTrace(0); capture.finish(model);
-        CHECK(labelContains(*panel, "Store a new before trace"));
+        CHECK(labelContains(*panel, "Guide measurement interrupted"));
         cannotPass(*panel);
     }
     SECTION("Invalid Store result cannot enable Apply") {
@@ -680,7 +688,7 @@ TEST_CASE("Guide rejects input lifecycle changes before and during capture", "[a
             if (change == 3) model.engine.sampleRate.store(96000); // even without an epoch update
             if (during) capture.finish(model);
             else button(*panel, "Re-measure to verify").onClick();
-            CHECK(labelContains(*panel, "Store a new before trace"));
+            CHECK(labelContains(*panel, during ? "Guide measurement interrupted" : "Store a new before trace"));
             CHECK(capture.calls == (during ? 2 : 1));
             cannotPass(*panel);
         }
@@ -691,7 +699,7 @@ TEST_CASE("Guide rejects input lifecycle changes before and during capture", "[a
         auto state = fohws::Json::object(); state.set("guide", 3); state.set("step", 100); panel->loadState(state);
         button(*panel, "Measure before change").onClick();
         model.engine.captureEpoch.fetch_add(1); capture.finish(model);
-        CHECK(labelContains(*panel, "Store a new before trace"));
+        CHECK(labelContains(*panel, "Guide measurement interrupted"));
         CHECK(button(*panel, "Measure before change").isVisible());
     }
     SECTION("Device change retires the current recorded verdict") {
@@ -1031,4 +1039,99 @@ TEST_CASE("Rig edits retire early delay completions without leaving the guide bu
     CHECK(panel->saveState()["step"].asInt() == 0);
     CHECK(button(*panel, "Open Setup").isEnabled());
     CHECK_FALSE(labelContains(*panel, "No lock."));
+}
+
+TEST_CASE("Guide summaries and disclosures fit both themes at 100 and 200 percent", "[app][guide][polish]") {
+    juce::ScopedJuceInitialiser_GUI gui;
+    FohLookAndFeel look;
+    AppModel model; CaptureStub capture; storeSyntheticPair(model);
+    auto panel = makeGuidePanel(model); panel->setLookAndFeel(&look);
+    auto& themes = foh::theme::ThemeManager::get();
+    auto snapshot = [&](const juce::String& name, float scale) {
+        if (const char* output = std::getenv("FOH_GUIDE_SNAPSHOTS")) {
+            auto& canvas = formCanvas(*panel);
+            auto content = canvas.createComponentSnapshot(canvas.getLocalBounds(), true, scale);
+            juce::Image image(juce::Image::RGB, content.getWidth(), content.getHeight(), true);
+            juce::Graphics graphics(image); graphics.fillAll(foh::ui::col::cardBackground());
+            graphics.drawImageAt(content, 0, 0);
+            auto stream = juce::File(output).getChildFile(name + ".png").createOutputStream(); REQUIRE(stream);
+            stream->setPosition(0); stream->truncate();
+            juce::PNGImageFormat png; REQUIRE(png.writeImageToStream(image, *stream));
+        }
+    };
+    auto checkLayout = [&] {
+        auto& canvas = formCanvas(*panel);
+        std::vector<juce::Component*> visible;
+        for (auto* child : canvas.getChildren()) {
+            if (!child->isVisible()) continue;
+            CHECK(canvas.getLocalBounds().contains(child->getBounds()));
+            for (auto* other : visible) CHECK_FALSE(child->getBounds().intersects(other->getBounds()));
+            visible.push_back(child);
+            if (auto* label = dynamic_cast<juce::Label*>(child)) {
+                juce::GlyphArrangement text;
+                text.addJustifiedText(label->getFont(), label->getText(), 0, label->getFont().getAscent(),
+                    (float) (label->getWidth() - 10), juce::Justification::left);
+                CHECK(text.getBoundingBox(0, -1, true).getHeight() <= label->getHeight());
+                if (label->getComponentID() == "guide-summary") {
+                    CHECK(label->getText().length() <= 140);
+                    CHECK(text.getBoundingBox(0, -1, true).getHeight() <= 2 * label->getFont().getHeight());
+                }
+            }
+        }
+    };
+    for (const char* theme : {"pro-dark", "pro-sunlight"}) {
+        themes.setTheme(theme); look.applyTheme(); panel->sendLookAndFeelChange(); model.notify(AppModel::Theme);
+        for (float scale : {1.f, 2.f}) {
+            panel->setTransform(juce::AffineTransform::scale(scale));
+            // 300 logical pixels at each UI scale, with scrolling for smaller hosts.
+            panel->setSize(300, 780);
+            for (int guide = 0; guide < 6; ++guide) {
+                const int lastRestorable = guide == 0 ? 4 : guide == 5 ? 1 : 3;
+                for (int step = 0; step <= lastRestorable; ++step) {
+                    CAPTURE(theme, scale, guide, step);
+                    auto state = fohws::Json::object(); state.set("guide", guide); state.set("step", step); panel->loadState(state);
+                    auto* details = formCanvas(*panel).findChildWithID("guide-details"); REQUIRE(details);
+                    CHECK_FALSE(details->isVisible()); checkLayout();
+                    button(*panel, "More ▸").onClick(); CHECK(details->isVisible()); checkLayout();
+                    button(*panel, "More ▾").onClick(); CHECK_FALSE(details->isVisible());
+                    if (guide == 1 && step == 2) {
+                        auto rows = choices(*panel); REQUIRE(rows.size() == 4);
+                        CHECK(rows[0]->isVisible()); CHECK(rows[0]->getToggleState());
+                        CHECK(labelContains(*panel, "Recommended"));
+                        CHECK(labelContains(*panel, "Best sum through the crossover"));
+                        snapshot(juce::String(theme) + "-" + juce::String(scale, 0) + "-default", scale);
+                        button(*panel, "Other options ▸").onClick(); checkLayout();
+                        rows[2]->setToggleState(true, juce::sendNotification);
+                        panel->setSize(301, 780); CHECK(rows[2]->getToggleState()); panel->setSize(300, 780);
+                        snapshot(juce::String(theme) + "-" + juce::String(scale, 0) + "-expanded", scale);
+                        button(*panel, "Other options ▾").onClick(); CHECK(rows[0]->getToggleState());
+                        for (size_t i = 1; i < rows.size(); ++i) CHECK_FALSE(rows[i]->isVisible());
+                    }
+                    if (guide == 5 && step == 1) {
+                        auto sweep = [&](const char* action) {
+                            button(*panel, action).onClick(); acceptGeneratorConfirmation();
+                            model.sweepSeq = model.nextGuideSweepId;
+                            model.sweepCapturing = true; model.notify(AppModel::Snapshot);
+                            model.sweepCapturing = false; model.sweep.response.impulse = {0, 1, 0};
+                            model.sweep.response.arrivals = {{}}; model.notify(AppModel::Snapshot);
+                        };
+                        sweep("Measure box sweep"); checkLayout();
+                        button(*panel, "More ▸").onClick(); checkLayout();
+                        button(*panel, "Polarity state confirmed").onClick(); checkLayout();
+                        button(*panel, "More ▸").onClick(); checkLayout();
+                        sweep("Verify box sweep"); noteEditor(*panel).setText("Matches", false); noteEditor(*panel).onTextChange();
+                        button(*panel, "Pass").onClick(); checkLayout();
+                        button(*panel, "More ▸").onClick(); checkLayout();
+                    }
+                    if (guide < 5 && step == lastRestorable) {
+                        button(*panel, "Measure before change").onClick(); capture.finish(model); checkLayout();
+                        button(*panel, "More ▸").onClick(); checkLayout();
+                        button(*panel, guide == 4 ? "DSP state confirmed" : "I entered the change").onClick(); checkLayout();
+                        button(*panel, "More ▸").onClick(); checkLayout();
+                    }
+                }
+            }
+        }
+    }
+    panel->setLookAndFeel(nullptr); themes.setTheme("pro-dark");
 }
