@@ -69,6 +69,7 @@ void MainComponent::openSetup(SetupPage::Section section) {
 }
 void MainComponent::selectWorkspace(const std::string& id) { int i = mgr.indexOf(id); if (i >= 0) selectWorkspace(i); }
 void MainComponent::leaveWorkspace() {
+    workspaceNameDialog.reset();
     if (current < 0) return; view.storePanelStates(); closeFloatingWindows(); mgr.saveCurrent(current);
 }
 void MainComponent::selectWorkspace(int i) {
@@ -193,19 +194,34 @@ void MainComponent::showWorkspaceMenu() {
             case 1: s.view.storePanelStates(); s.mgr.save(s.current); s.updateSwitcher(); break;
             case 3: s.closeFloatingWindows(); s.mgr.revert(s.current); reload(); break;
             case 4: s.closeFloatingWindows(); s.mgr.resetToDefault(s.current); reload(); break;
-            case 2: case 5: {
-                auto* aw = new AlertWindow(r == 2 ? "Save workspace as" : "Rename workspace", "Name:", MessageBoxIconType::NoIcon);
-                aw->addTextEditor("name", r == 2 ? String(s.mgr.at(s.current).name) + " copy" : String(s.mgr.at(s.current).name)); aw->addButton("OK", 1, KeyPress(KeyPress::returnKey)); aw->addButton("Cancel", 0, KeyPress(KeyPress::escapeKey));
-                aw->enterModalState(true, ModalCallbackFunction::create([sp, aw, r](int res) { if (!sp || res != 1) return; auto name = aw->getTextEditorContents("name").trim(); if (name.isEmpty()) return;
-                    auto& s2 = *sp; if (r == 2) s2.saveWorkspaceAs(name);
-                    else { s2.mgr.rename(s2.current, name); s2.updateSwitcher(); } }), true);
-                break; }
+            case 2: case 5: s.showWorkspaceNameDialog(r == 2); break;
             case 6: { int c = s.current; s.closeFloatingWindows(); s.view.setWorkspace(nullptr); s.current = -1; s.mgr.remove(c); s.selectWorkspace(0); break; }
             case 7: { auto* w = s.view.workspace(); if (!w->root.contains("Inspector")) { fohws::addAsTab(w->root, "Inspector", s.view.focusedPanel()); s.view.rebuild(); s.updateSwitcher(); } break; }
             default: break;
         }
     });
 }
+void MainComponent::showWorkspaceNameDialog(bool saveAs) {
+    if (current < 0) return;
+    if (workspaceNameDialog) { workspaceNameDialog->toFront(true); return; }
+    workspaceNameDialog = std::make_unique<AlertWindow>(saveAs ? "Save workspace as" : "Rename workspace", "Name:", MessageBoxIconType::NoIcon);
+    auto* aw = workspaceNameDialog.get();
+    aw->addTextEditor("name", saveAs ? String(mgr.at(current).name) + " copy" : String(mgr.at(current).name));
+    aw->addButton("OK", 1, KeyPress(KeyPress::returnKey));
+    aw->addButton("Cancel", 0, KeyPress(KeyPress::escapeKey));
+    aw->enterModalState(true, ModalCallbackFunction::create([sp = SafePointer<MainComponent>(this), pending = SafePointer<AlertWindow>(aw), saveAs](int result) {
+        if (!sp || !pending || sp->workspaceNameDialog.get() != pending.getComponent()) return;
+        // Completion runs after modal exit. Own the dialog locally while saving
+        // can replace the workspace, then release it on every result.
+        auto dialog = std::move(sp->workspaceNameDialog);
+        if (!dialog || result != 1) return;
+        auto name = dialog->getTextEditorContents("name").trim();
+        if (name.isEmpty()) return;
+        if (saveAs) sp->saveWorkspaceAs(name);
+        else { sp->mgr.rename(sp->current, name); sp->updateSwitcher(); }
+    }), false);
+}
+
 bool MainComponent::keyPressed(const KeyPress& k, Component*) {
     if (appCommands) {
         auto id = appCommands->getKeyMappings()->findCommandForKeyPress(k);
