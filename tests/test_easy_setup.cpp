@@ -7,6 +7,9 @@
 #include <stdexcept>
 #include "ui_form_helpers.h"
 #include "ui_panel_window.h"
+#if JUCE_MAC
+#import <AppKit/AppKit.h>
+#endif
 
 std::unique_ptr<Panel> makeGuidePanel(AppModel&);
 namespace {
@@ -200,11 +203,14 @@ TEST_CASE("Main count steppers bound edits immediately and Skip discards the dra
     for (const char* field : {"Clusters", "Default cabinets"}) {
         AppModel model;
         EasySetup questionnaire(model);
-        Panel host(model, "SyntheticSetup", "Synthetic Setup");
-        host.setSize(640, 640);
-        host.addAndMakeVisible(questionnaire);
-        questionnaire.setBounds(host.getLocalBounds());
-        VisiblePanelWindow window(host);
+        questionnaire.setSize(600, 800);
+        juce::DocumentWindow host("Synthetic count editor", juce::Colours::black, 0);
+        host.setContentNonOwned(&questionnaire, true);
+        host.setVisible(true);
+#if JUCE_MAC
+        NSWindow* native = [(NSView*) host.getPeer()->getNativeHandle() window];
+        native.animationBehavior = NSWindowAnimationBehaviorNone;
+#endif
         auto& count = slider(questionnaire, field);
         CHECK(count.getSliderStyle() == juce::Slider::IncDecButtons);
         CHECK(count.getMinimum() == 1); CHECK(count.getMaximum() == 64); CHECK(count.getInterval() == 1);

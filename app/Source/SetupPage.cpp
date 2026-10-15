@@ -162,12 +162,11 @@ void SetupPage::focusSection(Section next) {
     }
     title.setText(detail ? detail->title() : "Audio Setup", dontSendNotification);
     resized();
-    Component* target = &input;
-    if (detail) target = detail.get();
-    else if (next == Section::Mic) { form.setViewPosition(0, mic.getY() - 16); target = &mic; }
-    else if (next == Section::Reference) { form.setViewPosition(0, ref.getY() - 16); target = &ref; }
-    // First-launch Setup is prepared before the main window is visible.
-    if (target->isShowing()) target->grabKeyboardFocus();
+    Component* focus = detail ? static_cast<Component*>(detail.get()) : &input;
+    if (!detail && next == Section::Mic) { form.setViewPosition(0, mic.getY() - 16); focus = &mic; }
+    else if (!detail && next == Section::Reference) { form.setViewPosition(0, ref.getY() - 16); focus = &ref; }
+    // Setup can be selected before window attachment or while its owner is hidden.
+    if (focus->isShowing()) focus->grabKeyboardFocus();
 }
 void SetupPage::lookAndFeelChanged() {
     knownLevel.applyColourToAllText(knownLevel.findColour(TextEditor::textColourId));

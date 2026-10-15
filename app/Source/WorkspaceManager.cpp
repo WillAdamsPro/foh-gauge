@@ -81,6 +81,19 @@ int WorkspaceManager::saveAs(int i, const String& name) {
     std::string id = ("custom-" + slug).toStdString(); for (int n = 2; indexOf(id) >= 0; ++n) id = ("custom-" + slug + "-" + String(n)).toStdString();
     w.id = id; list.push_back(w); saved.push_back(w); int idx = count() - 1; save(idx); return idx;
 }
+int WorkspaceManager::importWorkspace(Workspace w) {
+    // Session IDs have already passed fromJson validation. Keep custom IDs so
+    // reopening the original bundle (also after relaunch) reuses the same slot.
+    // Unknown non-custom IDs need the prefix used by startup file discovery.
+    if (w.id.rfind("custom-", 0) != 0)
+        w.id = ("custom-session-" + String::toHexString(String(w.id).hashCode64())).toStdString();
+    if (const int existing = indexOf(w.id); existing >= 0) return existing;
+    w.builtIn = false;
+    list.push_back(w); saved.push_back(w);
+    const int index = count() - 1;
+    save(index);
+    return index;
+}
 bool WorkspaceManager::rename(int i, const String& name) {
     if (list[(size_t) i].builtIn || name.trim().isEmpty()) return false;
     list[(size_t) i].name = saved[(size_t) i].name = name.trim().toStdString();

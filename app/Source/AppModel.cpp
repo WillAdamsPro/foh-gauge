@@ -81,11 +81,6 @@ void AppModel::lockDelayFromLast() {
     if (!delayLocked()) return;
     analysis.send(foh::Command::referenceDelay(delay.arrivals[0].delaySamples), lastInputEpoch); lockedDelayMs = delay.arrivals[0].delayMs; notify(Delay);
 }
-bool AppModel::storeTrace(const String& name) {
-    bool ok = traces.store(name.toStdString(), tf, refDelayMs);
-    if (!ok) AlertWindow::showMessageBoxAsync(MessageBoxIconType::WarningIcon, "Stored traces full", "You can store up to 8 traces. Delete one in Traces first.");
-    notify(Traces); return ok;
-}
 const foh::Trace* AppModel::findTrace(const char* n) const { for (int i = traces.count() - 1; i >= 0; --i) if (traces.at(i).name == n) return &traces.at(i); return nullptr; }
 void AppModel::beginCapture(const String& name, std::function<void(bool)> then) {
     auto reset = foh::Command::resetAverages(++nextCaptureId);
