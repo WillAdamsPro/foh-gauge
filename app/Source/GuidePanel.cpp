@@ -151,7 +151,7 @@ public:
         }
         if (w & (AppModel::Capture | AppModel::Settings | AppModel::Traces | AppModel::Levels)) {
             if (frameCapturePending) checkOperationContext();
-            if (baselineValid && !frameCapturePending && (!model.findTrace("Guide before") || contextChanged())) {
+            if (baselineValid && !frameCapturePending && !baselineReady()) {
                 baselineValid = verified = false; verificationRecord.clear();
                 step = (int) kGuides[(size_t) guide].size() - 3;
                 say("Stored reference missing, or reference delay, device, sample rate or routing changed. Store a new before trace.");
@@ -493,7 +493,12 @@ private:
             case 27: step = 0; resetVerification(); out = "Select and isolate the next box."; break;
             case 23: next(); break; // Manual checklist acknowledgement; no engine or DSP changes.
             case 20: case 22: captureFrame(a == 22); return;
-            case 21: if (baselineValid) { verified = false; note.clear(); out = "DSP state confirmed by you. Re-measure, compare and record a verdict."; next(); } break;
+            case 21:
+                if (!baselineReady()) {
+                    resetVerification(); step = (int) kGuides[(size_t) guide].size() - 3;
+                    out = "Stored reference missing or measurement context changed. Store a new before trace before Apply and Verify.";
+                } else { verified = false; note.clear(); out = "DSP state confirmed by you. Re-measure, compare and record a verdict."; next(); }
+                break;
             default: break;
         }
         say(out); refresh();
@@ -575,6 +580,12 @@ private:
                 || t.coherence[i] < 0 || t.coherence[i] > 1) return false;
         return true;
     }
+    bool baselineReady() const {
+        const auto* stored = model.findTrace("Guide before");
+        return baselineValid && !contextChanged() && stored && validTrace(stored->tf)
+            && stored->tf.sampleRate == baselineRate && stored->tf.freq == baseline.freq
+            && stored->tf.fftSize == baseline.fftSize && stored->refDelayMs == baselineDelayMs;
+    }
     void retireBoxSweep() {
         if (boxSweepPending) {
             foh::Command cancel; cancel.type = foh::CommandType::CancelSweep; cancel.id = boxSweepId;
@@ -592,7 +603,7 @@ private:
     bool verdictContextValid() const {
         const int act = kGuides[(size_t) guide][(size_t) step].act;
         if (guide == 5) return act == 26 && verified && !boxSweepPending && !boxContextChanged();
-        return act == 22 && verified && baselineValid && !contextChanged() && model.findTrace("Guide before") && !frameCapturePending;
+        return act == 22 && verified && baselineReady() && !frameCapturePending;
     }
     void updateVerdictButtons() {
         const bool ready = verdictContextValid() && note.getText().trim().isNotEmpty();
@@ -606,7 +617,7 @@ private:
     }
     void captureFrame(bool verify) {
         if (model.capture.active || frameCapturePending) return;
-        if (verify && (!baselineValid || !model.findTrace("Guide before") || contextChanged())) {
+        if (verify && !baselineReady()) {
             baselineValid = verified = false; verificationRecord.clear(); step = (int) kGuides[(size_t) guide].size() - 3;
             say("Stored reference missing, or reference delay, device, sample rate or routing changed. Store a new before trace."); refresh(); return;
         }
@@ -634,9 +645,9 @@ private:
             if (p.guide != captureGuide || p.step != captureStep) { p.refresh(); return; }
             if (p.model.engine.deviceFailed.load() || p.model.engine.state.load() != AudioEngine::Ready
                 || epoch != p.model.engine.captureEpoch.load() || rate != p.model.engine.sampleRate.load()
-                || p.model.paused || (verify && (p.contextChanged() || !p.model.findTrace("Guide before")))) {
+                || p.model.paused || (verify && !p.baselineReady())) {
                 p.baselineValid = p.verified = false; p.verificationRecord.clear(); p.step = (int) kGuides[(size_t) p.guide].size() - 3;
-                p.say(foh::str::guideInterrupted); p.refresh(); return;
+                p.say(String(foh::str::guideInterrupted) + " Store a new before trace and repeat Apply and Verify."); p.refresh(); return;
             }
             if (faults != p.model.engine.signalFaults.load()) {
                 p.say("Silence, clipping or invalid input during measurement. Check both inputs and repeat; no verdict recorded."); p.refresh(); return;
@@ -644,6 +655,10 @@ private:
             auto* trace = p.model.findTrace(name.toRawUTF8());
             if (!settled || !trace || trace->tf.freq.empty()) { p.say("No settled measurement. Check signal and coherence, then repeat. No verdict recorded."); p.refresh(); return; }
             if (!verify && !validTrace(trace->tf)) { p.say("Invalid before trace. Check input and repeat; no verdict recorded."); p.refresh(); return; }
+            if (trace->tf.sampleRate != rate) {
+                p.baselineValid = false; p.step = (int) kGuides[(size_t) p.guide].size() - 3;
+                p.say("Stored and live sample rates differ. Store a new before trace and repeat; no verdict recorded."); p.refresh(); return;
+            }
             if (!verify) { p.baseline = trace->tf; p.baselineDelayMs = trace->refDelayMs; p.baselineEpoch = epoch; p.baselineRate = rate; p.baselineValid = true; p.next(); p.say(p.guide == 4 ? "Before trace stored. Correct the DSP yourself if needed, or confirm it is unchanged." : "Before trace stored. Enter the change yourself in your DSP."); }
             else {
                 if (trace->refDelayMs != p.baselineDelayMs || p.model.engine.captureEpoch.load() != p.baselineEpoch) {
