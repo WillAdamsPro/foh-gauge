@@ -59,3 +59,24 @@ with deployment target 26.0:
 Unoptimized Debug ASan/UBSan hit the existing sweep test's three-second
 completion timeout, including in isolation. That DSP/test timing change is
 outside this shell pass; no timeout or sweep implementation was changed.
+
+## Additional display-move regression coverage
+
+Ordinary floating-window moves now refresh resize limits for the destination
+work area, including work areas smaller than the usual panel minimum. Updating
+these limits does not reposition the window during a drag. Move/resize callbacks
+preserve the last display ID if JUCE temporarily has no display to resolve.
+Synthetic small/large/tiny display snapshots exercise repeated limit changes;
+a native move callback checks that stale limits are replaced without requiring
+a topology notification. The shell stress test also alternates 1x1 and
+8000x5000 content sizes and checks unsaved calibration text and capture state
+through switching and Show mode transitions.
+
+Physical external-display unplug/reconnect and native focus checks remain manual
+as described above; synthetic snapshots do not emulate AppKit hotplug ordering.
+
+Validation for this additional pass (Apple Silicon, deployment target 26.0):
+core Release CTest 203/203 passed; app Release build and full CTest 407/407
+passed; Debug app/tests built and the workspace/lifetime subset passed 42 cases
+(24049 assertions), with no JUCE assertions or leaked-object reports. The
+public string scan and `git diff --check` also passed.

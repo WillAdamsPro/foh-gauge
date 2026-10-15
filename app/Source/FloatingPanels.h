@@ -16,12 +16,15 @@ public:
     void parentSizeChanged() override;
     // Apply a display snapshot on the message thread (also used by display-change recovery).
     void restoreToDisplays(const std::vector<fohws::DisplayInfo>&);
+    // Refresh limits after moving between displays, without moving the window.
+    void updateDisplayConstraints(const std::vector<fohws::DisplayInfo>&);
     void mouseDoubleClick(const juce::MouseEvent&) override;   // title bar double-click = dock to last slot
     void setPinned(bool);
     void restyle();
     Panel& panel;
     std::function<void()> onDock, onClose, onChanged;
 private:
+    void rememberBounds();
     struct TitleButton;
     fohws::FloatingPanel& st; std::unique_ptr<TitleButton> pin, dock; bool ready = false;
 };
