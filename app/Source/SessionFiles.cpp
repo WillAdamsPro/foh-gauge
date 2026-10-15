@@ -146,7 +146,7 @@ bool MainComponent::readSession(const File& folder) {
     model.notify(AppModel::Rig);
     setShowMode(false); leaveWorkspace(); view.setWorkspace(nullptr);
     int index = mgr.indexOf(workspace.id);
-    if (index < 0) index = mgr.saveAs(0, String(workspace.name));
+    if (index < 0) index = mgr.importWorkspace(workspace);
     workspace.id = mgr.at(index).id; workspace.builtIn = mgr.at(index).builtIn;
     mgr.at(index) = std::move(workspace); current = -1; selectWorkspace(index);
     // Routing is session-wide. Prevent a later workspace switch from restoring

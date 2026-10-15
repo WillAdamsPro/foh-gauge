@@ -27,6 +27,7 @@ public:
     void revert(int i);                           // back to the saved layout (preset default if never saved)
     void resetToDefault(int i);                   // presets only: drop the saved layout too
     int saveAs(int i, const juce::String& name);  // new custom workspace; returns its index
+    int importWorkspace(fohws::Workspace); // validated session layout; retain a stable custom ID
     bool rename(int i, const juce::String& name); // custom only
     bool remove(int i);                           // custom only
     const fohws::Workspace* defaultFor(const std::string& id) const;
