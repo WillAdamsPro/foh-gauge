@@ -16,13 +16,8 @@ MainComponent::MainComponent(juce::File workspaceFolder) : mgr(std::move(workspa
     contentViewport.setViewedComponent(&contentCanvas, false);
     contentViewport.setScrollOnDragMode(Viewport::ScrollOnDragMode::never);
     contentCanvas.addAndMakeVisible(content);
-    addChildComponent(microphoneNotice);
-    microphoneNotice.setText("Microphone access is blocked. Enable it in System Settings.", dontSendNotification);
-    microphoneNotice.setFont(FohLookAndFeel::font(T::body));
-    addChildComponent(microphoneSettingsBtn);
-    microphoneSettingsBtn.onClick = [] {
-        URL("x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone").launchInDefaultBrowser();
-    };
+    content.addChildComponent(microphoneNotice);
+    microphoneNotice.onDismiss = [this] { layoutContent(); };
     content.addAndMakeVisible(brandLockup);
     brandLockup.setTitle("FOH Gauge");
     status.onAction = [this](int section) { openSetup(static_cast<SetupPage::Section>(section)); };
@@ -32,7 +27,8 @@ MainComponent::MainComponent(juce::File workspaceFolder) : mgr(std::move(workspa
     outputOn.setButtonText(u8("\xe2\x96\xb2 Output on"));
     outputOn.setTitle("Stop generator output");
     outputOn.onClick = [this] { model.stopGenerator(); timerCallback(); };
-    content.addChildComponent(audioNotice); audioNotice.setFont(FohLookAndFeel::font(T::body));
+    content.addChildComponent(audioNotice);
+    audioNotice.onDismiss = [this] { layoutContent(); };
     content.addAndMakeVisible(pauseBtn); pauseBtn.setClickingTogglesState(true); makePrimary(pauseBtn); pauseBtn.setButtonText(foh::str::pauseMeasuring);
     pauseBtn.onClick = [this] { model.setPaused(pauseBtn.getToggleState()); timerCallback(); };
     pauseBtn.setTooltip("Pause or resume measuring (Space)");
@@ -262,29 +258,28 @@ void MainComponent::fitSavedScale() {
     // At launch retain the logical size required by the toolbar and workspace.
     // Explicit later choices may zoom further; View and Cmd+0 remain available.
     int fit = 100;
-    for (int percent : {100, 125, 150, 200})
+    for (int percent : {100, 125, 150, 200}) {
+        const int logicalWidth = jmax(minimumContentWidth, getWidth() * 100 / percent);
+        const int sidebar = !showMode && logicalWidth >= 1280 ? D::navWidth() : 0;
+        int noticeHeight = 0;
+        for (auto* banner : { &microphoneNotice, &audioNotice })
+            if (banner->isVisible()) noticeHeight += banner->preferredHeight(logicalWidth - sidebar - 24);
         if (percent <= uiScale && getWidth() * 100 >= minimumContentWidth * percent
-            && (getHeight() - (microphoneNotice.isVisible() ? 36 : 0)) * 100 >= minimumContentHeight * percent)
+            && getHeight() * 100 >= (minimumContentHeight + noticeHeight) * percent)
             fit = percent;
+    }
     setUiScale(fit);
 }
 void MainComponent::setMicrophoneAccessBlocked(bool blocked) {
     // Called only on the message thread, including before the window becomes visible.
-    if (microphoneNotice.isVisible() == blocked) return;
-    microphoneNotice.setVisible(blocked);
-    microphoneSettingsBtn.setVisible(blocked);
+    microphoneBlocked = blocked;
+    microphoneNotice.setMessage(blocked ? fohapp::microphonePermissionMessage : "",
+        "Open Privacy Settings", [] { URL(fohapp::microphonePrivacyUrl).launchInDefaultBrowser(); });
     resized();
 }
 void MainComponent::resized() {
-    const int consentHeight = microphoneNotice.isVisible() ? 36 : 0;
-    auto consent = getLocalBounds().removeFromTop(consentHeight).reduced(12, 0);
-    microphoneSettingsBtn.setBounds(consent.removeFromRight(156).withSizeKeepingCentre(156, 28));
-    consent.removeFromRight(8);
-    microphoneNotice.setBounds(consent);
-    microphoneNotice.setColour(Label::textColourId, C::textPrimary());
-    microphoneNotice.setColour(Label::backgroundColourId, C::background());
     const float scale = (float) uiScale / 100.0f;
-    contentViewport.setBounds(getLocalBounds().withTrimmedTop(consentHeight));
+    contentViewport.setBounds(getLocalBounds());
     // Reserve scrollbar space before choosing the logical extent. Starting without
     // bars allows a formerly cramped window to return to a full-size workspace.
     int width = contentViewport.getWidth(), height = contentViewport.getHeight();
@@ -335,10 +330,14 @@ void MainComponent::layoutContent() {
     item(setupBtn, buttonWidth(setupBtn));
     flex.items.add(FlexItem(wsMenuBtn).withWidth(buttonWidth(wsMenuBtn)).withHeight(28));
     flex.performLayout(bar);
-    const int noticeHeight = audioNotice.isVisible() ? 24 : 0;
-    audioNotice.setBounds(12, top, content.getWidth() - 24, noticeHeight);
-    view.setBounds(content.getLocalBounds().withTrimmedTop(top + noticeHeight));
-    setup.setBounds(content.getLocalBounds().withTrimmedTop(top + noticeHeight));
+    auto area = content.getLocalBounds().withTrimmedTop(top);
+    for (auto* banner : { &microphoneNotice, &audioNotice }) {
+        if (banner->isVisible()) {
+            const int height = banner->preferredHeight(area.getWidth() - 24);
+            banner->setBounds(area.removeFromTop(height).reduced(12, 0));
+        }
+    }
+    view.setBounds(area); setup.setBounds(area);
 }
 
 void MainComponent::changeListenerCallback(ChangeBroadcaster*) {
@@ -365,9 +364,11 @@ void MainComponent::timerCallback() {
     outputOn.setTooltip(model.paused ? "Measuring paused. Noise output is still on. Click to stop output." : "Noise output is on. Click to stop output.");
     const bool needsNotice = model.engine.deviceFailed.load() || model.engine.state.load() != AudioEngine::Ready
         || model.engine.captureEpoch.load() != model.engine.analysisEpoch.load();
-    audioNotice.setText(model.engine.statusText(), dontSendNotification);
-    audioNotice.setColour(Label::textColourId, C::textPrimary());
-    if (audioNotice.isVisible() != needsNotice) { audioNotice.setVisible(needsNotice); layoutContent(); }
+    const bool noticeWasVisible = audioNotice.isVisible();
+    const auto previousNotice = audioNotice.message();
+    audioNotice.setMessage(needsNotice && !microphoneBlocked ? model.engine.statusText() : "",
+        "Open Audio Setup", [this] { openSetup(); });
+    if (noticeWasVisible != audioNotice.isVisible() || previousNotice != audioNotice.message()) layoutContent();
     pauseBtn.setToggleState(model.paused, dontSendNotification);
     pauseBtn.setButtonText(model.paused ? foh::str::resumeMeasuring : foh::str::pauseMeasuring);
     const float mp = model.micPeak, rp = model.refPeak;

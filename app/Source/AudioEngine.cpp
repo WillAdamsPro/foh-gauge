@@ -57,14 +57,14 @@ foh::ConnectionResult AudioEngine::connectionResult() const noexcept {
 
 // ===================== Audio engine (real-time thread) =====================
 const char* AudioEngine::statusText() const noexcept {
-    if (deviceFailed.load(std::memory_order_acquire)) return "Audio device error; reopen Audio Setup";
+    if (deviceFailed.load(std::memory_order_acquire)) return "Audio device disconnected.";
     switch (state.load(std::memory_order_acquire)) {
-        case Stopped: return "Audio device stopped; open Audio Setup";
-        case InvalidInputs: return "Measurement stopped: open Audio Setup and choose available mic/ref inputs";
-        case InvalidOutputs: return "Choose available generator outputs in Audio Setup";
-        case Overflow: return "Capture overrun; restarting measurement";
+        case Stopped: return "Audio device disconnected.";
+        case InvalidInputs: return "Choose available microphone and reference inputs.";
+        case InvalidOutputs: return "Choose available generator outputs.";
+        case Overflow: return "Audio dropped out; measuring restarted.";
         default: return analysisEpoch.load() == captureEpoch.load()
-            ? "Measuring" : "Audio changed; restarting measurement";
+            ? "Measuring" : "Audio changed; measuring restarted.";
     }
 }
 void AudioEngine::resetPlayback() noexcept {

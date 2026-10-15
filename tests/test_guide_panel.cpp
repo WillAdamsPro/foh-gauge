@@ -26,7 +26,6 @@ bool AppModel::micLevelReady() const {
     return micLevelValid && !paused && dm.getCurrentAudioDevice() && levelInputKey == splInputKey()
         && levelInputEpoch == engine.captureEpoch.load() && juce::Time::getMillisecondCounterHiRes() - levelTimeMs < 250;
 }
-void AppModel::loadCalFile(const juce::File&) { throw std::logic_error("Unexpected calibration file load"); }
 void AppModel::setCalEnabled(bool on) { calOn = on && cal.ok(); notify(Cal); }
 std::string AppModel::loopbackKey() const { return "synthetic-loopback"; }
 bool AppModel::beginLoopback() { throw std::logic_error("Unexpected interface measurement"); }
