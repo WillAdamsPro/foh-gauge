@@ -30,3 +30,13 @@ TEST_CASE("Target parser validates numeric data and metadata", "[target]") {
                             "20 1\n100 2 3", "Tolerance: -3\n20 1\n100 2", "UseTolerance: 2\n20 1\n100 2"})
         REQUIRE_FALSE(foh::parseTarget(bad).ok());
 }
+
+TEST_CASE("Target tolerance preserves explicit zero and distinguishes missing metadata", "[target][regression]") {
+    auto absent = foh::parseTarget("20 0\n1000 1"); REQUIRE(absent.ok());
+    CHECK_FALSE(absent.hasTolerance);
+    for (auto value : {"0", "0.0", "3"}) {
+        auto target = foh::parseTarget(std::string("Tolerance: ") + value + "\nUseTolerance: 1\n20 0\n1000 1");
+        REQUIRE(target.ok()); CHECK(target.hasTolerance); CHECK(target.useTolerance);
+        CHECK(target.toleranceDb == (std::string(value) == "3" ? 3 : 0));
+    }
+}

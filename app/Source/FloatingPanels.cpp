@@ -59,14 +59,28 @@ void FloatingPanelWindow::restoreToDisplays(const std::vector<fohws::DisplayInfo
     const bool wasReady = ready;
     ready = false;
     auto r = fohws::clampToDisplays(st, connected, WS::floatMinWidth, WS::floatMinHeight);
-    // The constrainer must agree with recovery even when the work area is
-    // smaller than the normal minimum; otherwise the next resize jumps off-screen.
-    for (const auto& display : connected)
-        if (display.id == st.displayId && display.area.w > 0 && display.area.h > 0)
-            setResizeLimits(jmin(WS::floatMinWidth, display.area.w), jmin(WS::floatMinHeight, display.area.h),
-                            display.area.w, display.area.h);
+    updateDisplayConstraints(connected);
     setBounds(r.x, r.y, r.w, r.h);
     ready = wasReady;
+}
+void FloatingPanelWindow::updateDisplayConstraints(const std::vector<fohws::DisplayInfo>& connected) {
+    // Also run on ordinary moves: a restored panel may be dragged onto a display
+    // with a different work area without any topology-change notification.
+    for (const auto& display : connected)
+        if (display.id == st.displayId && display.area.w > 0 && display.area.h > 0)
+            getConstrainer()->setSizeLimits(jmin(WS::floatMinWidth, display.area.w), jmin(WS::floatMinHeight, display.area.h),
+                            display.area.w, display.area.h);
+}
+void FloatingPanelWindow::rememberBounds() {
+    if (!ready) return;
+    auto b = getBounds();
+    st.bounds = { b.getX(), b.getY(), b.getWidth(), b.getHeight() };
+    // An empty display snapshot can occur during a topology refresh. Keep the
+    // last known identity so recovery can still resolve the saved display.
+    auto id = displayIdFor(b);
+    if (!id.empty()) st.displayId = std::move(id);
+    updateDisplayConstraints(currentDisplays());
+    if (onChanged) onChanged();
 }
 void FloatingPanelWindow::parentSizeChanged() {
     // JUCE's Displays::refresh calls this on desktop peers when the monitor arrangement or
@@ -81,12 +95,12 @@ void FloatingPanelWindow::parentSizeChanged() {
 }
 void FloatingPanelWindow::setPinned(bool on) { st.alwaysOnTop = on; pin->setToggleState(on, dontSendNotification); setAlwaysOnTop(on); }
 void FloatingPanelWindow::restyle() { setBackgroundColour(TH().surfaces.background); repaint(); }
-void FloatingPanelWindow::moved() { DocumentWindow::moved(); if (!ready) return; auto b = getBounds(); st.bounds = { b.getX(), b.getY(), b.getWidth(), b.getHeight() }; st.displayId = displayIdFor(b); if (onChanged) onChanged(); }
+void FloatingPanelWindow::moved() { DocumentWindow::moved(); rememberBounds(); }
 void FloatingPanelWindow::resized() {
     DocumentWindow::resized();
     if (pin && dock) { auto tb = getTitleBarArea(); int s = WS::headerButtonSize, y = tb.getCentreY() - s / 2;
         int closeW = tb.getHeight(); int x = tb.getRight() - closeW - WS::headerButtonGap - s;
         dock->setBounds(x, y, s, s); pin->setBounds(x - WS::headerButtonGap - s, y, s, s); }
-    if (ready) { auto b = getBounds(); st.bounds = { b.getX(), b.getY(), b.getWidth(), b.getHeight() }; st.displayId = displayIdFor(b); if (onChanged) onChanged(); }
+    rememberBounds();
 }
 void FloatingPanelWindow::mouseDoubleClick(const MouseEvent& e) { if (e.y < getTitleBarHeight() && onDock) onDock(); }

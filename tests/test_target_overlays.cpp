@@ -1,6 +1,7 @@
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/catch_approx.hpp>
 #include "WorkspaceView.h"
+#include <fohcore/input.h>
 
 namespace {
 template<class T> T* find(juce::Component& root) {
@@ -22,7 +23,7 @@ void paint(PlotComponent& plot) {
     juce::Graphics graphics(image);
     plot.setSize(640, 320); plot.paint(graphics);
 }
-void checkTarget(Panel& panel, bool shown, bool band) {
+void checkTarget(Panel& panel, bool shown, bool band, double width = 6) {
     auto* plot = find<PlotComponent>(panel); REQUIRE(plot);
     CHECK(plot->toleranceBands.size() == (shown && band ? 1 : 0));
     int targets = 0;
@@ -37,7 +38,7 @@ void checkTarget(Panel& panel, bool shown, bool band) {
         REQUIRE(tolerance.lower.size() == tolerance.upper.size());
         for (size_t i = 0; i < tolerance.lower.size(); ++i) {
             CHECK(std::isfinite(tolerance.lower[i])); CHECK(std::isfinite(tolerance.upper[i]));
-            CHECK(tolerance.upper[i] - tolerance.lower[i] == Catch::Approx(6));
+            CHECK(tolerance.upper[i] - tolerance.lower[i] == Catch::Approx(width));
         }
     }
     paint(*plot);
@@ -89,7 +90,7 @@ TEST_CASE("RTA and TF target controls survive rapid simultaneous toggles", "[app
                     if (auto* button = dynamic_cast<juce::ToggleButton*>(controls->getChildComponent(child))) {
                         button->setToggleState(true, juce::dontSendNotification); button->onClick();
                     }
-                checkTarget(*panel, true, true);
+                checkTarget(*panel, true, true, id == 4 && iteration % 2 == 0 ? 0 : 6);
                 for (int child = 0; child < controls->getNumChildComponents(); ++child)
                     if (auto* button = dynamic_cast<juce::ToggleButton*>(controls->getChildComponent(child))) {
                         if (button == toggle) continue;
@@ -103,7 +104,7 @@ TEST_CASE("RTA and TF target controls survive rapid simultaneous toggles", "[app
             }
         }
         // Each panel keeps its own toggles; toggling TF cannot alter RTA.
-        checkTarget(*rta, true, true); checkTarget(*tf, true, true);
+        checkTarget(*rta, true, true, iteration % 2 == 0 ? 0 : 6); checkTarget(*tf, true, true, iteration % 2 == 0 ? 0 : 6);
     }
 }
 
@@ -158,5 +159,40 @@ TEST_CASE("Targets coexist with stored guide and multi-mic overlays without accu
         CHECK(plot->series.back().label == "Synthetic target");
         CHECK(plot->toleranceBands.size() == 1);
         paint(*plot);
+    }
+}
+
+TEST_CASE("Corrupt saved targets clear both overlays and report an error before recovery", "[app][target][regression]") {
+    juce::ScopedJuceInitialiser_GUI initialise;
+    AppModel model;
+    for (auto id : {"RTA", "TransferFunction"}) {
+        auto panel = PanelRegistry::standard().create(id, model);
+        panel->setSize(800, 500); panel->addToDesktop(juce::ComponentPeer::windowIsTemporary); panel->setVisible(true);
+        for (const auto& text : {std::string(), std::string("20 0\n1000 1\n2000 2e"),
+                                std::string("20 0\n1000 1\n2000 0 0"), std::string("NaN(payload) nan\n20 0\n1000 1"),
+                                std::string("20 0\n1000 inf"), std::string("20 0\n1000 1\n\xff"),
+                                std::string(foh::input::maxBytes + 1, ' ')}) {
+            INFO(id); INFO(text.substr(0, 60));
+            panel->loadState(imported("Synthetic valid", "20 0\n1000 1\n20000 0"));
+            checkTarget(*panel, true, true);
+            auto state = imported("Synthetic corrupt", ""); state.set("targetText", text);
+            bool sawError = false;
+            // With JUCE_MODAL_LOOPS_PERMITTED the no-callback alert runs a
+            // nested loop. Dismiss it inside that loop, as a user would.
+            juce::MessageManager::callAsync([&sawError] {
+                auto* modals = juce::ModalComponentManager::getInstance();
+                CHECK(modals->getNumModalComponents() == 1);
+                if (auto* alert = dynamic_cast<juce::AlertWindow*>(modals->getModalComponent(0)))
+                    sawError = alert->getName() == "Saved target";
+                modals->cancelAllModalComponents();
+            });
+            panel->loadState(state); checkTarget(*panel, false, false);
+            auto saved = panel->saveState();
+            CHECK(saved["targetChoice"].asInt() == 1); CHECK_FALSE(saved.has("targetText"));
+            juce::MessageManager::getInstance()->runDispatchLoopUntil(10);
+            CHECK(sawError);
+        }
+        panel->loadState(imported("Synthetic recovered", "Tolerance: 0\n20 0\n1000 1"));
+        checkTarget(*panel, true, true, 0);
     }
 }

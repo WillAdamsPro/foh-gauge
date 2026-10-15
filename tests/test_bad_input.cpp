@@ -124,3 +124,33 @@ TEST_CASE("Synthetic truncated CSV FRD and ASCII files fail through the import r
     auto target = foh::parseTarget(foh::input::read(std::string(FOH_TEST_DATA) + "/synthetic-truncated-target.txt"));
     REQUIRE_FALSE(target.ok()); REQUIRE_FALSE(target.error.empty()); REQUIRE(target.hz.empty());
 }
+
+TEST_CASE("Non-finite target frequencies cannot hide in the export preamble", "[files][target][regression]") {
+    for (const auto* row : {"NaN(payload) 0", "NAN(synthetic) nan", "nan( 1e", "inf nan", "infinity inf"}) {
+        INFO(row);
+        auto target = foh::parseTarget(std::string(row) + "\n20 0\n1000 1\n");
+        CHECK_FALSE(target.ok()); CHECK_FALSE(target.error.empty());
+        CHECK(target.hz.empty()); CHECK(target.db.empty());
+    }
+}
+
+TEST_CASE("Insufficient distinct calibration rows leave no partial correction or sensitivity", "[files][calibration][regression]") {
+    for (const auto* rows : {"", "20 1", "20 1\n20 2"}) {
+        auto cal = foh::parseMicCal(std::string("Sens Factor: 2\n") + rows);
+        CHECK_FALSE(cal.ok()); CHECK_FALSE(cal.error.empty());
+        CHECK(cal.hz.empty()); CHECK(cal.db.empty()); CHECK(cal.phaseDeg.empty());
+        CHECK_FALSE(cal.hasSensFactor); CHECK_FALSE(cal.hasPhase);
+        CHECK(cal.dbAt(20) == 0); CHECK(cal.phaseAt(20) == 0);
+    }
+}
+
+TEST_CASE("A picked curve removed before loading fails through both import readers", "[files][regression]") {
+    const auto path = std::filesystem::temp_directory_path() / ("foh-synthetic-removed-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) + ".txt");
+    struct Cleanup { std::filesystem::path path; ~Cleanup() { std::error_code ec; std::filesystem::remove(path, ec); } } cleanup{path};
+    { std::ofstream file(path); file << "20 0\n1000 1\n"; REQUIRE(file.good()); }
+    REQUIRE(std::filesystem::is_regular_file(path)); // selection
+    REQUIRE(std::filesystem::remove(path));
+    auto cal = foh::loadMicCal(path.string());
+    CHECK_FALSE(cal.ok()); CHECK_FALSE(cal.error.empty()); CHECK(cal.hz.empty());
+    REQUIRE_THROWS(foh::input::read(path)); // target import uses the same bounded reader
+}

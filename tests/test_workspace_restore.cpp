@@ -245,3 +245,50 @@ TEST_CASE("Session workspace import retains a discoverable stable identity", "[a
     CHECK(relaunched.importWorkspace(workspace) == 4);
     CHECK(relaunched.count() == 5);
 }
+
+TEST_CASE("Dragging a floating panel to another display refreshes limits without snapping", "[app][workspace][regression]") {
+    juce::ScopedJuceInitialiser_GUI initialise;
+    AppModel model;
+    Panel panel(model, "Synthetic", "Synthetic");
+    fohws::FloatingPanel state {"Synthetic", {40, 65, 500, 300}, "small"};
+    FloatingPanelWindow window(panel, state);
+    // Ordinary native moves must use the same refresh path, even without a
+    // parentSizeChanged notification. Poison the limits to detect a stale one.
+    window.getConstrainer()->setSizeLimits(1, 1, 1, 1);
+    window.moved();
+    const auto actual = currentDisplays();
+    bool matched = false;
+    for (const auto& display : actual) if (display.id == state.displayId) {
+        matched = true;
+        CHECK(window.getConstrainer()->getMaximumWidth() == display.area.w);
+        CHECK(window.getConstrainer()->getMaximumHeight() == display.area.h);
+    }
+    REQUIRE(matched);
+    state.displayId = "small";
+    window.setVisible(false);
+    window.removeFromDesktop();
+    const std::vector<fohws::DisplayInfo> displays {
+        {"small", {0, 25, 800, 575}, true},
+        {"large", {-2560, -100, 2560, 1400}, false},
+        {"tiny", {800, 25, 160, 100}, false}
+    };
+    window.restoreToDisplays(displays);
+    REQUIRE(window.getConstrainer()->getMaximumWidth() == 800);
+    for (int cycle = 0; cycle < 32; ++cycle) {
+        for (const auto& display : displays) {
+            // Simulate the display identity selected by moved(), using a
+            // snapshot independent of this Mac's physical monitor arrangement.
+            state.displayId = display.id;
+            const auto bounds = window.getBounds();
+            window.updateDisplayConstraints(displays);
+            CHECK(window.getBounds() == bounds);
+            CHECK(window.getConstrainer()->getMaximumWidth() == display.area.w);
+            CHECK(window.getConstrainer()->getMaximumHeight() == display.area.h);
+            CHECK(window.getConstrainer()->getMinimumWidth() == juce::jmin(foh::theme::ws::floatMinWidth, display.area.w));
+            CHECK(window.getConstrainer()->getMinimumHeight() == juce::jmin(foh::theme::ws::floatMinHeight, display.area.h));
+            window.updateDisplayConstraints({});
+            CHECK(state.displayId == display.id);
+            CHECK(window.getConstrainer()->getMaximumWidth() == display.area.w);
+        }
+    }
+}

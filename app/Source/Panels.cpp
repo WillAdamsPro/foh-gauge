@@ -110,8 +110,8 @@ public:
         s.label = choice.getText();
         if (band.getToggleState()) {
             PlotComponent::ToleranceBand b; b.f = s.f; b.lower = b.upper = s.v; b.colour = s.c;
-            for (auto& db : b.lower) db -= target.toleranceDb > 0 ? target.toleranceDb : 3.0;
-            for (auto& db : b.upper) db += target.toleranceDb > 0 ? target.toleranceDb : 3.0;
+            for (auto& db : b.lower) db -= target.hasTolerance ? target.toleranceDb : 3.0;
+            for (auto& db : b.upper) db += target.hasTolerance ? target.toleranceDb : 3.0;
             plot.toleranceBands.push_back(std::move(b));
         }
         plot.series.push_back(std::move(s));

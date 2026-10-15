@@ -223,11 +223,15 @@ TEST_CASE("Workspace switching and presentation changes preserve live analysis a
         };
         REQUIRE(waitFor([&] { return model.tf.averages > 0; }));
         const auto initialBlocks = producer.blocks.load();
+        model.calText = "Synthetic unsaved calibration";
+        model.capture.name = "Synthetic switch capture";
         std::map<std::string, Panel*> identities;
         const char* floatingPanels[] {"SignalMeters", "TransferFunction", "RTA", "SPLNumbers"};
         for (int cycle = 0; cycle < 48; ++cycle) {
             const int index = cycle % 4;
             INFO("switch " << cycle);
+            // Exercise collapse/rebuild at both extremes while switching.
+            main.setSize(cycle % 2 == 0 ? 1 : 8000, cycle % 2 == 0 ? 1 : 5000);
             switch (cycle % 3) {
                 case 0: REQUIRE(main.commandWorkspace(index)); break;
                 case 1: main.clickSwitcher(index); break;
@@ -276,6 +280,9 @@ TEST_CASE("Workspace switching and presentation changes preserve live analysis a
             REQUIRE(main.floatingCount() == 1);
             drainMessages();
             deliverSnapshot();
+            CHECK(model.calText == "Synthetic unsaved calibration");
+            CHECK(model.capture.name == "Synthetic switch capture");
+            CHECK(model.capture.active);
         }
         REQUIRE(waitFor([&] { return model.analysis.latest().resetSeq == 45 && model.tf.averages > 0; }));
         CHECK(producer.blocks.load() > initialBlocks);
