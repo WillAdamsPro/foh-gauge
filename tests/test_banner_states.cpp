@@ -1,5 +1,6 @@
 #include <catch2/catch_test_macros.hpp>
 #include "MainComponent.h"
+#include <fohcore/input.h>
 #include "ui_form_helpers.h"
 #include <juce_graphics/juce_graphics.h>
 
@@ -116,8 +117,11 @@ TEST_CASE("Mic calibration errors use one inline recovery and preserve a working
     REQUIRE(synthetic.file.replaceWithText("20,0\n1000,1\n20000,0\n")); model.loadCalFile(synthetic.file);
     REQUIRE(model.cal.ok()); REQUIRE(model.calImportError.isEmpty());
     const auto previous = model.calText;
-    for (auto text : {"Sens Factor = 2 dBV\n20,0\n1000,0\n", "", "20,broken\n1000,0\n"}) {
-        REQUIRE(synthetic.file.replaceWithText(text)); model.loadCalFile(synthetic.file);
+    for (const auto& text : {std::string("Sens Factor = 2 dBV\n20,0\n1000,0\n"), std::string(),
+                             std::string("20,broken\n1000,0\n"), std::string("20 0\n1000 1\n2000 2e"),
+                             std::string("20 0\n1000 1\n2000 0 0 1"), std::string("20 nan\n1000 inf"),
+                             std::string("20 0\n1000 1\n\xff"), std::string(foh::input::maxBytes + 1, ' ')}) {
+        REQUIRE(synthetic.file.replaceWithData(text.data(), text.size())); model.loadCalFile(synthetic.file);
         CHECK(model.calImportError == fohapp::micCalibrationErrorMessage);
         CHECK(model.calText == previous); CHECK(model.calOn);
         auto panel = PanelRegistry::standard().create("Calibration", model); panel->setSize(240, 100);
@@ -131,7 +135,10 @@ TEST_CASE("Mic calibration errors use one inline recovery and preserve a working
         }
         CHECK(recoveries == 1);
     }
-    model.loadCalFile(synthetic.file.getSiblingFile("foh-missing-synthetic-cal.csv"));
+    REQUIRE(synthetic.file.deleteFile()); // selected file disappears before loading
+    model.loadCalFile(synthetic.file);
+    CHECK(model.calText == previous); CHECK(model.calOn);
+    CHECK(std::isfinite(model.cal.dbAt(1000)));
     CHECK(model.calImportError == fohapp::micCalibrationErrorMessage);
     REQUIRE(synthetic.file.replaceWithText("20,0\n1000,0\n")); model.loadCalFile(synthetic.file);
     CHECK(model.calImportError.isEmpty());

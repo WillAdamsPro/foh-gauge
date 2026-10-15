@@ -24,6 +24,7 @@ TargetTrace parseTarget(const std::string& text) {
         std::istringstream values(line);
         values.imbue(std::locale::classic());
         if (line.rfind("Tolerance:", 0) == 0) {
+            target.hasTolerance = true;
             values.ignore(10);
             if (!(values >> target.toleranceDb) || !std::isfinite(target.toleranceDb) || target.toleranceDb < 0 || target.toleranceDb > 200 || !(values >> std::ws).eof())
                 target.error = "Invalid target tolerance";
@@ -40,7 +41,7 @@ TargetTrace parseTarget(const std::string& text) {
             std::string lower = first;
             std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char ch) { return (char) std::tolower(ch); });
             double numeric;
-            if ((!rows.empty() || lower == "nan" || lower == "inf" || lower == "infinity" || (input::number(second, numeric) && (first.empty() || first.back() != ':')))
+            if ((!rows.empty() || lower == "nan" || lower.rfind("nan(", 0) == 0 || lower == "inf" || lower == "infinity" || (input::number(second, numeric) && (first.empty() || first.back() != ':')))
                 && line[0] != '#' && line[0] != ';' && line[0] != '*') target.error = "Invalid target data row";
             continue;
         }
