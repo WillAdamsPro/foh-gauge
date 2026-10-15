@@ -212,3 +212,29 @@ TEST_CASE("Leq silence and isolated corrupt samples have finite guarded readings
     CHECK(clean.reading().session == denormal.reading().session);
     CHECK(clean.reading().level == denormal.reading().level);
 }
+
+TEST_CASE("Sustained denormals match silence through Leq filters and rolling windows", "[leq][edges][reaudit]") {
+    for (float tiny : {std::numeric_limits<float>::denorm_min(),
+                       std::nextafter(std::numeric_limits<float>::min(), 0.f)}) {
+        auto clean = std::make_unique<foh::LeqMeter>(8000);
+        auto dirty = std::make_unique<foh::LeqMeter>(8000);
+        tone(*clean, 8000, 0.2); tone(*dirty, 8000, 0.2);
+        std::vector<float> silence(997), subnormals(997);
+        for (int i = 0; i < 997; ++i) subnormals[i] = i % 2 ? tiny : -tiny;
+        // Expire the minute window and exercise filter tails and partial buckets.
+        for (int repeat = 0; repeat < 490; ++repeat) {
+            clean->process(silence.data(), int(silence.size()));
+            dirty->process(subnormals.data(), int(subnormals.size()));
+        }
+        const auto a = clean->reading(), b = dirty->reading();
+        CHECK_FALSE(a.valid); CHECK_FALSE(b.valid);
+        CHECK(a.seconds == b.seconds); CHECK(a.level == b.level); CHECK(a.minute == b.minute);
+        CHECK(a.fifteenMinutes == b.fifteenMinutes); CHECK(a.session == b.session);
+        for (const auto& values : {b.level, b.minute, b.fifteenMinutes, b.session})
+            for (double value : values) CHECK(std::isfinite(value));
+        for (double value : b.minute) CHECK(value == -120);
+        tone(*clean, 8000, 0.2); tone(*dirty, 8000, 0.2);
+        CHECK(clean->reading().valid); CHECK(dirty->reading().valid);
+        CHECK(clean->reading().level == dirty->reading().level);
+    }
+}

@@ -7,7 +7,7 @@
 
 class Panel : public juce::Component, public AppModel::Listener {
 public:
-    Panel(AppModel& m, std::string id, juce::String title) : model(m), pid(std::move(id)), ptitle(std::move(title)) { model.addListener(this); }
+    Panel(AppModel& m, std::string id, juce::String title) : model(m), pid(std::move(id)), ptitle(std::move(title)) { setTitle(ptitle); setDescription(ptitle + " measurement panel"); model.addListener(this); }
     ~Panel() override { model.removeListener(this); }
     const std::string& panelId() const { return pid; }
     const juce::String& title() const { return ptitle; }
@@ -15,10 +15,12 @@ public:
     virtual void loadState(const fohws::Json&) {}
     virtual fohws::Size minSize() const { return { foh::theme::ws::panelMinWidth, foh::theme::ws::panelMinHeight }; }
     virtual int priority() const { return 10; }            // collapse order: lower folds into a tab first
+    virtual void findDelay() { model.requestDelay(false); }
     virtual bool isPlaceholder() const { return false; }
     void modelChanged(int) override {}
     juce::String helpText;                                   // shown by the Inspector when this panel has focus
     std::function<void(Panel&)> onFocus;                     // set by the host
+    void focusOfChildComponentChanged(FocusChangeType) override { if (hasKeyboardFocus(true) && onFocus) onFocus(*this); }
     void mouseDown(const juce::MouseEvent&) override { if (onFocus) onFocus(*this); }
 protected:
     AppModel& model;

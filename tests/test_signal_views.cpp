@@ -293,3 +293,91 @@ TEST_CASE("Trace slots keep their colour identity and pattern through appearance
     CHECK(foh::ui::theme().traceSlots[3].dashCount == 4);
     themes.setTheme(original);
 }
+
+TEST_CASE("Painted measurement widgets expose current values to accessibility clients", "[app][accessibility]") {
+    juce::ScopedJuceInitialiser_GUI initialise;
+    AppModel model;
+    Panel host(model, "AccessibilityTest", "Accessibility test"); host.setSize(1000, 800);
+    VisiblePanelWindow window(host);
+    PlotComponent plot; host.addAndMakeVisible(plot); plot.setBounds(0, 0, 600, 300);
+    plot.yLabel = "Magnitude (dB)"; plot.centreNote = "Connect mic and reference";
+    auto* handler = plot.getAccessibilityHandler(); REQUIRE(handler);
+    REQUIRE(handler->getValueInterface());
+    CHECK(handler->getValueInterface()->getCurrentValueAsString().contains("Magnitude (dB)"));
+    CHECK(handler->getValueInterface()->getCurrentValueAsString().contains("Connect mic and reference"));
+    plot.centreNote = "Measuring";
+    CHECK(handler->getValueInterface()->getCurrentValueAsString().contains("Measuring"));
+    CHECK(plot.getWantsKeyboardFocus()); CHECK(plot.hasFocusOutline());
+
+    SegmentedControl tabs({"Alignment", "Tuning", "Show"});
+    host.addAndMakeVisible(tabs); tabs.setBounds(0, 300, 600, 28);
+    tabs.disabled.setBit(1); int selected = -1; tabs.onChange = [&](int i) { selected = i; };
+    CHECK(tabs.keyPressed(juce::KeyPress(juce::KeyPress::rightKey)));
+    CHECK(selected == 2);
+    CHECK(tabs.getAccessibilityHandler()->getValueInterface()->getCurrentValueAsString() == "Show");
+    CHECK(tabs.keyPressed(juce::KeyPress(juce::KeyPress::leftKey)));
+    CHECK(selected == 0);
+
+    StatusPills pills; host.addAndMakeVisible(pills); pills.setBounds(0, 340, 1000, 28);
+    pills.setPills({{"Mic: No signal", StatusPills::Caution, 1}});
+    juce::Component* pill = nullptr;
+    for (auto* c : pills.getChildren()) if (c->getTitle() == "Mic: No signal") pill = c;
+    REQUIRE(pill); auto* pillHandler = pill->getAccessibilityHandler();
+    REQUIRE(pillHandler->getValueInterface());
+    CHECK(pillHandler->getValueInterface()->getCurrentValueAsString().contains("Caution"));
+    pills.setPills({{"Mic: -20 dBFS", StatusPills::Good, 1}});
+    CHECK(pillHandler->getValueInterface()->getCurrentValueAsString().contains("-20 dBFS. Good"));
+
+    auto meters = PanelRegistry::standard().create("SignalMeters", model);
+    host.addAndMakeVisible(*meters); meters->setBounds(0, 380, 600, 160);
+    REQUIRE(meters->getAccessibilityHandler()->getValueInterface());
+    CHECK(meters->getAccessibilityHandler()->getValueInterface()->getCurrentValueAsString().contains("Mic: No signal"));
+    model.micPeak = 0.1f; model.refPeak = 0.01f; meters->modelChanged(AppModel::Levels);
+    auto levels = meters->getAccessibilityHandler()->getValueInterface()->getCurrentValueAsString();
+    CHECK(levels.contains("Mic: -20.0 dBFS, Good"));
+    CHECK(levels.contains("Reference: -40.0 dBFS, Good"));
+    auto coherence = PanelRegistry::standard().create("Coherence", model);
+    host.addAndMakeVisible(*coherence); coherence->setBounds(0, 550, 600, 200);
+    auto text = coherence->getAccessibilityHandler()->getValueInterface()->getCurrentValueAsString();
+    CHECK(text.contains("Average")); CHECK(text.contains("Poor below 0.6"));
+}
+
+TEST_CASE("Accessible panel tabs survive rebuild and retain keyboard focus", "[app][accessibility][lifetime]") {
+    juce::ScopedJuceInitialiser_GUI initialise;
+    AppModel model;
+    fohws::Workspace workspace;
+    workspace.root = fohws::H({{0.7, fohws::LayoutNode::tabs({"TransferFunction", "Coherence", "DelayFinder"})},
+                               {0.3, fohws::L("Inspector")}});
+    Panel host(model, "TabTest", "Tab test"); host.setSize(1200, 700);
+    WorkspaceView view(model, PanelRegistry::standard()); host.addAndMakeVisible(view);
+    view.setBounds(host.getLocalBounds()); view.setWorkspace(&workspace);
+    VisiblePanelWindow window(host);
+    std::function<juce::Button*(juce::Component&, const juce::String&)> findTab = [&](auto& c, const auto& title) -> juce::Button* {
+        if (auto* button = dynamic_cast<juce::Button*>(&c); button && button->getTitle() == title && button->isShowing()) return button;
+        for (auto* child : c.getChildren()) if (auto* found = findTab(*child, title)) return found;
+        return nullptr;
+    };
+    auto* tab = findTab(view, "Coherence"); REQUIRE(tab);
+    REQUIRE(tab->getAccessibilityHandler()); CHECK(tab->hasFocusOutline());
+    juce::Component::SafePointer<juce::Button> oldTab(tab);
+    CHECK(tab->getAccessibilityHandler()->getActions().invoke(juce::AccessibilityActionType::press));
+    // JUCE's accessible press posts Button::triggerClick; invoke() only reports
+    // that the action exists. Fresh macOS CTest processes may spend the first
+    // dispatch slice on native window events before delivering that message.
+    const auto deadline = juce::Time::getMillisecondCounterHiRes() + 2000.0;
+    while (oldTab != nullptr && juce::Time::getMillisecondCounterHiRes() < deadline)
+        juce::MessageManager::getInstance()->runDispatchLoopUntil(10);
+    CHECK(oldTab == nullptr); CHECK(view.focusedPanel() == "Coherence");
+    auto* selected = findTab(view, "Coherence"); REQUIRE(selected); CHECK(selected->hasKeyboardFocus(false));
+    REQUIRE(window.get().getPeer()->handleKeyPress(juce::KeyPress(juce::KeyPress::rightKey)));
+    CHECK(view.focusedPanel() == "DelayFinder");
+    selected = findTab(view, "Delay finder"); REQUIRE(selected); CHECK(selected->hasKeyboardFocus(false));
+    juce::KeyboardFocusTraverser traverser;
+    auto order = traverser.getAllComponents(&view);
+    auto divider = std::find_if(order.begin(), order.end(), [](auto* c) { return c->getTitle() == "Panel width divider"; });
+    REQUIRE(divider != order.end()); CHECK((*divider)->hasFocusOutline());
+    const double previousWidth = workspace.root.sizes[0];
+    (*divider)->grabKeyboardFocus();
+    REQUIRE(window.get().getPeer()->handleKeyPress(juce::KeyPress(juce::KeyPress::rightKey)));
+    CHECK(workspace.root.sizes[0] > previousWidth);
+}
