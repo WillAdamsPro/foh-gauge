@@ -51,6 +51,11 @@ class AudioEngine : public juce::AudioIODeviceCallback {
     int lastInputCount = -1, lastOutputCount = -1;
     bool lastInputsValid = true, lastOutputsValid = true;
 public:
+#if FOH_AUDIO_TEST_HOOKS
+    // Installed before synthetic I/O starts; absent from the shipping app.
+    void (*processTestHook)(AudioEngine&, int point, void*) noexcept = nullptr;
+    void* processTestContext = nullptr;
+#endif
     AudioEngine(); // Synthesizes the immutable chime before the audio callback is registered.
     // Message-thread commands; one atomic packet keeps channel selection and request together.
     // Setup defaults to the console/PA output; chimes never mirror to outB.

@@ -148,6 +148,9 @@ int AnalysisEngine::serviceCommands(uint64_t epoch) {
 
 // One analysed block from the worker (or deterministic soak tests).
 void AnalysisEngine::processBlock(const float* m, const float* r, int n) {
+#if FOH_AUDIO_TEST_HOOKS
+    if (processTestHook) processTestHook(processTestContext);
+#endif
     if (sweepCapturing) {
         const size_t count = std::min(size_t(n), size_t(fs * 6.5) - sweepRef.size());
         sweepRef.insert(sweepRef.end(), r, r + count);

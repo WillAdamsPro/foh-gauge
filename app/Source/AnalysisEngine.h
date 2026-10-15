@@ -37,6 +37,10 @@ private:
     int serviceCommands() { return serviceCommands(inputEpoch); }
     // Tests may drive the same consumer pass without starting a worker thread.
     friend class AnalysisEngineTestAccess;
+#if FOH_AUDIO_TEST_HOOKS
+    void (*processTestHook)(void*) = nullptr;
+    void* processTestContext = nullptr;
+#endif
     bool inputFailed = false; // worker only: last observed device-failure state
     bool processPendingAudio(std::vector<float>& mic, std::vector<float>& ref,
                              const std::vector<float>& silence, uint64_t& epoch);
