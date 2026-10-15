@@ -115,3 +115,10 @@ void AppModel::loadSplCalJson(const foh::Json& j) {
     ++analysis.leqRevision;
     notify(Cal | Settings);
 }
+
+// Shared with hardware-free app tests so trace storage uses the production path.
+bool AppModel::storeTrace(const String& name) {
+    bool ok = traces.store(name.toStdString(), tf, refDelayMs);
+    if (!ok) AlertWindow::showMessageBoxAsync(MessageBoxIconType::WarningIcon, "Stored traces full", "You can store up to 8 traces. Delete one in Traces first.");
+    notify(Traces); return ok;
+}

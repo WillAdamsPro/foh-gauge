@@ -17,9 +17,9 @@
 // Sole consumer in synchronous bridge tests; never start the analysis worker.
 class AnalysisEngineTestAccess {
 public:
-    explicit AnalysisEngineTestAccess(AnalysisEngine& engine)
-        : analysis(engine), mic(size_t(engine.fftN)), ref(size_t(engine.fftN)),
-          silence(size_t(engine.fftN), 0.f) {}
+    explicit AnalysisEngineTestAccess(AnalysisEngine& engine, int fftSize = 16384)
+        : analysis(engine), mic(size_t(fftSize)), ref(size_t(fftSize)),
+          silence(size_t(fftSize), 0.f) { analysis.fftN = fftSize; }
     void blockHook(void (*hook)(void*), void* context) {
         analysis.processTestHook = hook; analysis.processTestContext = context;
     }
@@ -1416,6 +1416,7 @@ TEST_CASE("Analysis engines join pending sweep and meter work on repeated destru
 
 struct AppModelMeasurementTestAccess {
     static void poll(AppModel& model) { model.timerCallback(); }
+    static int listenerCount(const AppModel& model) { return model.listeners.size(); }
     static void seedReadoutLevel(AppModel& model) {
         model.levelInputKey = model.splInputKey(); model.levelInputEpoch = model.engine.captureEpoch.load();
         model.levelTimeMs = juce::Time::getMillisecondCounterHiRes(); model.micLevelValid = true;
@@ -1999,7 +2000,7 @@ TEST_CASE("Save As preserves live averaging and Open discards old session work",
     const int missingName = GENERATE(0, 1, 2); // available, missing input, missing output
     struct Temporary {
         juce::File folder = juce::File::getSpecialLocation(juce::File::tempDirectory)
-            .getNonexistentChildFile("foh-synthetic-session", "", false);
+            .getChildFile("foh-synthetic-session-" + juce::Uuid().toString());
         ~Temporary() { folder.deleteRecursively(); }
     } temporary;
     SessionTestMain main(temporary.folder.getChildFile("workspaces"));
@@ -2252,4 +2253,117 @@ TEST_CASE("Device format callbacks interrupt an in-flight analysis block safely"
     for (int i = 0; i < device.block; ++i) { CHECK(a[i] == 0); CHECK(b[i] == 0); }
     if (event != 0) REQUIRE(waitFor([&] { return analysis.latest().micLevelValid; }));
     analysis.stop();
+}
+
+TEST_CASE("Long session recycles measurements sessions generators and workspace UI", "[app][soak][lifetime]") {
+    juce::ScopedJuceInitialiser_GUI gui;
+    struct TemporaryFolder {
+        juce::File folder = juce::File::getSpecialLocation(juce::File::tempDirectory)
+            .getChildFile("foh-session-soak-" + juce::Uuid().toString());
+        ~TemporaryFolder() { folder.deleteRecursively(); }
+    } temporary;
+    struct SoakMain : MainComponent {
+        using MainComponent::MainComponent;
+        AppModel& state() { return model; }
+        WorkspaceView& workspaceView() { return view; }
+        int workspaceCount() const { return mgr.count(); }
+        int floatingCount() const { return floats.size(); }
+        void showWorkspace() { setup.setVisible(false); view.setVisible(true); openFloatingWindows(); }
+    };
+    const auto peers = juce::Desktop::getInstance().getNumComponents();
+    {
+        SoakMain main(temporary.folder.getChildFile("workspaces"));
+        auto& model = main.state();
+        model.dm.addAudioDeviceType(std::make_unique<SyntheticDeviceType>());
+        model.dm.setCurrentAudioDeviceType("Synthetic", true);
+        auto setup = model.dm.getAudioDeviceSetup();
+        setup.inputDeviceName = setup.outputDeviceName = "Synthetic";
+        setup.sampleRate = 48000; setup.bufferSize = 256;
+        setup.useDefaultInputChannels = setup.useDefaultOutputChannels = false;
+        setup.inputChannels = setup.outputChannels = juce::BigInteger(3);
+        REQUIRE(model.dm.setAudioDeviceSetup(setup, true).isEmpty());
+        model.dm.addAudioCallback(&model.engine);
+        struct RemoveCallback {
+            AppModel& model;
+            ~RemoveCallback() { model.dm.removeAudioCallback(&model.engine); }
+        } removeCallback {model};
+        model.engine.micCh = 0; model.engine.refCh = 1;
+        model.engine.outA = 0; model.engine.outB = 1;
+        model.rigProfile = foh::RigProfile{};
+        model.setSmoothing(0);
+        AnalysisEngineTestAccess worker(model.analysis, 1024);
+        std::array<float, 1024> input, a, b;
+        foh::PinkNoise noise(112); noise.process(input.data(), int(input.size()));
+        const float* inputs[] {input.data(), input.data()}; float* outputs[] {a.data(), b.data()};
+        const auto session = temporary.folder.getChildFile("Synthetic.fohsession");
+        std::map<std::string, Panel*> panels;
+        std::map<int, std::pair<int, int>> retainedCounts;
+        std::function<int(juce::Component&)> componentCount = [&](juce::Component& component) {
+            int count = 1;
+            for (auto* child : component.getChildren()) count += componentCount(*child);
+            return count;
+        };
+        for (int cycle = 0; cycle < 256; ++cycle) {
+            JUCE_AUTORELEASEPOOL {
+                INFO("session cycle " << cycle);
+                main.setShowMode(false); main.selectWorkspace(cycle % 4); main.showWorkspace();
+                model.setPaused(false);
+                model.engine.gen = cycle % 2 ? AudioEngine::Pink : AudioEngine::Sweep;
+                // Real callback -> SPSC rings -> analysis -> model, without a device thread.
+                for (int block = 0; block < 32; ++block) {
+                    model.engine.audioDeviceIOCallbackWithContext(inputs, 2, outputs, 2, int(input.size()), {});
+                    worker.step();
+                }
+                AppModelMeasurementTestAccess::poll(model);
+                REQUIRE(model.tf.averages > 0);
+                REQUIRE_FALSE(model.tf.H.empty());
+                for (int i = 0; i < foh::TraceStore::kMax; ++i) REQUIRE(model.storeTrace("Synthetic"));
+                model.selectSum(0, 0);
+                CHECK_FALSE(model.sumPreview().H.empty());
+                model.stopGenerator();
+                model.engine.audioDeviceIOCallbackWithContext(inputs, 2, outputs, 2, int(input.size()), {});
+                CHECK(std::all_of(a.begin(), a.end(), [](float x) { return x == 0; }));
+                CHECK(std::all_of(b.begin(), b.end(), [](float x) { return x == 0; }));
+                worker.step();
+                for (const auto* id : {"TransferFunction", "RTA", "TraceList", "ShowMonitoring"}) {
+                    auto* panel = main.workspaceView().panel(id);
+                    REQUIRE(panel != nullptr);
+                    if (panels.count(id)) CHECK(panel == panels.at(id));
+                    else panels.emplace(id, panel);
+                }
+                main.floatPanel("RTA");
+                REQUIRE(main.floatingCount() == 1);
+                main.setShowMode(true);
+                CHECK(main.floatingCount() == 0);
+                main.setShowMode(false);
+                main.selectWorkspace(cycle % 4); main.showWorkspace();
+                REQUIRE(main.floatingCount() == 1);
+                main.dockPanel("RTA");
+                REQUIRE(main.writeSession(session));
+                model.clearTraces();
+                REQUIRE(model.traces.count() == 0);
+                REQUIRE(main.readSession(session));
+                REQUIRE(model.traces.count() == foh::TraceStore::kMax);
+                CHECK(model.engine.gen.load() == AudioEngine::Off);
+                CHECK(main.workspaceCount() == 4);
+                const auto retained = std::make_pair(AppModelMeasurementTestAccess::listenerCount(model), componentCount(main));
+                // Warm every preset once; later visits must retain exactly the same
+                // number of listeners and components, not just a stable RSS estimate.
+                if (cycle >= 8) CHECK(retained == retainedCounts.at(cycle % 4));
+                else if (cycle >= 4) retainedCounts[cycle % 4] = retained;
+                CHECK(main.floatingCount() == 0);
+                model.clearTraces();
+                model.notify(AppModel::Snapshot | AppModel::Traces | AppModel::Settings);
+                juce::MessageManager::getInstance()->runDispatchLoopUntil(1);
+                CHECK(juce::ModalComponentManager::getInstance()->getNumModalComponents() == 0);
+                CHECK(juce::Desktop::getInstance().getNumComponents() == peers);
+                CHECK(temporary.folder.getChildFile("workspaces").findChildFiles(
+                    juce::File::findFiles, false, "*.json").size() <= 4);
+                CHECK_FALSE(session.getSiblingFile(session.getFileName() + ".saving").exists());
+                CHECK_FALSE(session.getSiblingFile(session.getFileName() + ".backup").exists());
+            }
+        }
+    }
+    juce::MessageManager::getInstance()->runDispatchLoopUntil(30);
+    CHECK(juce::Desktop::getInstance().getNumComponents() == peers);
 }

@@ -222,6 +222,30 @@ TEST_CASE("Floating resize limits track small work areas and resolution changes"
     }
 }
 
+TEST_CASE("Session workspace import retains a discoverable stable identity", "[app][workspace][session][regression]") {
+    TemporaryWorkspaces temp;
+    auto workspace = fohws::builtInPresets()[2];
+    SECTION("Custom session ID differs from the name slug") { workspace.id = "custom-synthetic-original"; }
+    SECTION("Unknown ID at the schema length limit") { workspace.id = std::string(128, 'x'); }
+    workspace.name = "Synthetic imported layout";
+    std::string importedId;
+    {
+        WorkspaceManager manager(temp.folder);
+        const int imported = manager.importWorkspace(workspace);
+        REQUIRE(imported == 4);
+        importedId = manager.at(imported).id;
+        CHECK_FALSE(manager.at(imported).builtIn);
+        CHECK(manager.at(imported).root == workspace.root);
+        CHECK(manager.importWorkspace(workspace) == imported);
+        CHECK(manager.count() == 5);
+    }
+    WorkspaceManager relaunched(temp.folder);
+    CHECK(relaunched.loadErrors().isEmpty());
+    REQUIRE(relaunched.indexOf(importedId) == 4);
+    CHECK(relaunched.importWorkspace(workspace) == 4);
+    CHECK(relaunched.count() == 5);
+}
+
 TEST_CASE("Dragging a floating panel to another display refreshes limits without snapping", "[app][workspace][regression]") {
     juce::ScopedJuceInitialiser_GUI initialise;
     AppModel model;

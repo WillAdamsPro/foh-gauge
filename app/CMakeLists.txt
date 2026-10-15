@@ -42,6 +42,7 @@ if(APPLE)
     set_source_files_properties(Source/Widgets.cpp PROPERTIES LANGUAGE OBJCXX)
     set_source_files_properties(../tests/test_app_lifetime.cpp PROPERTIES LANGUAGE OBJCXX)
     set_source_files_properties(../tests/test_stored_traces.cpp PROPERTIES LANGUAGE OBJCXX)
+    set_source_files_properties(../tests/test_easy_setup.cpp PROPERTIES LANGUAGE OBJCXX)
     set_source_files_properties(../tests/test_show_monitoring.cpp PROPERTIES LANGUAGE OBJCXX)
     target_link_libraries(FOHGauge PRIVATE "-framework AVFoundation")
 endif()
@@ -88,7 +89,9 @@ target_link_libraries(fohapp_tests PRIVATE fohcore fohconsole foh_sanitizers foh
         target_link_libraries(fohapp_tests PRIVATE foh_sanitizers)
     endif()
     include(Catch)
-    catch_discover_tests(fohapp_tests)
+    # JUCE lifetime/assertion diagnostics can otherwise accompany a zero exit code.
+    catch_discover_tests(fohapp_tests PROPERTIES
+        FAIL_REGULAR_EXPRESSION "JUCE Assertion failure|Leaked objects detected")
 endif()
 
 if(FOH_ENABLE_CONSOLE_CONTROL)

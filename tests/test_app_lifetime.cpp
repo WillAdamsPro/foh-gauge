@@ -12,7 +12,7 @@
 namespace {
 struct TemporaryWorkspaces {
     juce::File folder = juce::File::getSpecialLocation(juce::File::tempDirectory)
-        .getNonexistentChildFile("foh-lifetime", "", false);
+        .getChildFile("foh-lifetime-" + juce::Uuid().toString());
     ~TemporaryWorkspaces() { folder.deleteRecursively(); }
 };
 class TestMain : public MainComponent {
@@ -47,6 +47,7 @@ public:
     fohws::Workspace& workspace() { return mgr.at(current); }
     WorkspaceView& workspaceView() { return view; }
     int selectedWorkspace() const { return current; }
+    int workspaceCount() const { return mgr.count(); }
     void clickSwitcher(int index) { switcher.setSelected(index, true); }
     bool commandWorkspace(int index) {
         const juce::KeyPress key('1' + index, juce::ModifierKeys::commandModifier, 0);
@@ -1059,9 +1060,19 @@ TEST_CASE("Measurement toolbar fits and every status has a Setup destination", "
     juce::ScopedJuceInitialiser_GUI initialise;
     TemporaryWorkspaces temporary;
     TestMain main(temporary.folder);
+    juce::DocumentWindow host("Synthetic toolbar", juce::Colours::black, 0);
+    host.setContentNonOwned(&main, true);
+    host.setVisible(true);
+#if JUCE_MAC
+    NSWindow* native = [(NSView*) host.getPeer()->getNativeHandle() window];
+    native.animationBehavior = NSWindowAnimationBehaviorNone;
+#endif
     main.setShowMode(false);
     for (bool sunlight : {false, true}) for (int scale : {100, 200}) {
-        main.setSunlightTheme(sunlight); drainMessages();
+        main.setSunlightTheme(sunlight);
+        // Instrumented layout may take longer than a fixed dispatch-loop wait.
+        foh::theme::ThemeManager::get().dispatchPendingMessages();
+        drainMessages();
         main.setSize(1024, 768); main.setUiScale(scale);
         main.appModel().micPeak = main.appModel().refPeak = 0;
         main.refreshStatus();
@@ -1118,6 +1129,57 @@ TEST_CASE("Measurement toolbar fits and every status has a Setup destination", "
     const bool wasPaused = main.appModel().paused;
     REQUIRE(main.pauseFromFloating());
     CHECK(main.appModel().paused != wasPaused);
+}
+
+TEST_CASE("Repeated foreign session opens reuse one workspace", "[app][session][soak][regression]") {
+    juce::ScopedJuceInitialiser_GUI initialise;
+    TemporaryWorkspaces temporary;
+    const auto workspaces = temporary.folder.getChildFile("workspaces");
+    const auto session = temporary.folder.getChildFile("Synthetic.fohsession");
+    {
+        TestMain main(workspaces);
+        main.setShowMode(false);
+        main.selectWorkspace("tuning");
+        main.workspace().id = "custom-synthetic-imported-id";
+        main.workspace().name = "Synthetic imported layout";
+        REQUIRE(main.writeSession(session));
+    }
+    // Use fresh preferences: the session ID differs from its name-derived slug.
+    const auto destination = temporary.folder.getChildFile("destination");
+    {
+        TestMain main(destination);
+        REQUIRE(main.workspaceCount() == 4);
+        for (int cycle = 0; cycle < 128; ++cycle) {
+            JUCE_AUTORELEASEPOOL {
+                INFO("foreign session open " << cycle);
+                REQUIRE(main.readSession(session));
+                CHECK(main.workspaceCount() == 5);
+                CHECK(destination.findChildFiles(juce::File::findFiles, false, "custom-*.json").size() == 2);
+                if (cycle % 16 == 0) drainMessages();
+            }
+        }
+    }
+    WorkspaceManager relaunched(destination);
+    CHECK(relaunched.count() == 5);
+    CHECK(relaunched.indexOf("custom-synthetic-imported-id") >= 0);
+    drainMessages();
+}
+
+TEST_CASE("Hidden Setup navigation does not request keyboard focus", "[app][lifetime][regression]") {
+    juce::ScopedJuceInitialiser_GUI initialise;
+    AppModel model;
+    SetupPage setup(model); setup.setSize(600, 800);
+    REQUIRE_FALSE(setup.isShowing());
+    for (auto section : {SetupPage::Section::Audio, SetupPage::Section::Mic,
+            SetupPage::Section::Reference, SetupPage::Section::MicCalibration,
+            SetupPage::Section::ReferenceDelay}) {
+        setup.focusSection(section);
+        CHECK(setup.focusedSection() == section);
+    }
+    setup.focusSplCalibration();
+    CHECK_FALSE(setup.isShowing());
+    // CTest rejects JUCE assertions: pre-display navigation must remain safe
+    // before window attachment, as well as during UI teardown.
 }
 
 TEST_CASE("Measurement commands have unique shortcuts and work from floating windows", "[app][accessibility][commands]") {

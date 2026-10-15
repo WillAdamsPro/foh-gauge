@@ -40,7 +40,6 @@ void AppModel::beginCapture(const juce::String& name, std::function<void(bool)> 
     if (!guideCapture) throw std::logic_error("Unexpected capture");
     guideCapture(*this, name, std::move(then));
 }
-bool AppModel::storeTrace(const juce::String&) { throw std::logic_error("Unexpected capture"); }
 const foh::Trace* AppModel::findTrace(const char* name) const {
     for (int i = traces.count() - 1; i >= 0; --i)
         if (traces.at(i).name == name) return &traces.at(i);
@@ -48,16 +47,30 @@ const foh::Trace* AppModel::findTrace(const char* name) const {
 }
 
 namespace {
-void acceptGeneratorConfirmation() {
-    juce::MessageManager::getInstance()->runDispatchLoopUntil(10);
-    auto* modals = juce::ModalComponentManager::getInstance();
-    if (auto* alert = dynamic_cast<juce::AlertWindow*>(modals->getModalComponent(0))) {
-        if (auto* start = alert->getButton("Start noise")) {
-            start->triggerClick();
-            juce::MessageManager::getInstance()->runDispatchLoopUntil(20);
-        }
-    }
+// Flush work queued before the barrier, including deferred dialog creation.
+// A shared flag remains valid even if the bounded wait fails the test.
+void dispatchQueuedUi() {
+    auto delivered = std::make_shared<bool>(false);
+    REQUIRE(juce::MessageManager::callAsync([delivered] { *delivered = true; }));
+    const auto deadline = juce::Time::getMillisecondCounterHiRes() + 5000;
+    while (!*delivered && juce::Time::getMillisecondCounterHiRes() < deadline)
+        juce::MessageManager::getInstance()->runDispatchLoopUntil(10);
+    REQUIRE(*delivered);
 }
+void acceptGeneratorConfirmation() {
+    dispatchQueuedUi();
+    auto* modals = juce::ModalComponentManager::getInstance();
+    if (modals->getNumModalComponents() == 0) return; // already accepted in this model
+    auto* alert = dynamic_cast<juce::AlertWindow*>(modals->getModalComponent(0));
+    REQUIRE(alert != nullptr);
+    auto* start = alert->getButton("Start noise");
+    REQUIRE(start != nullptr);
+    start->triggerClick();
+    dispatchQueuedUi(); // the posted button command schedules modal completion
+    dispatchQueuedUi(); // deliver modal completion and the generator callback
+    REQUIRE(modals->getNumModalComponents() == 0);
+}
+
 fohws::Json findDelayStep() {
     auto state = fohws::Json::object(); state.set("guide", 1); state.set("step", 2); return state;
 }
