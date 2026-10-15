@@ -77,6 +77,8 @@ protected:
     void showSessionNotice(const juce::String& title, const juce::String& message);
     juce::ApplicationCommandManager* appCommands = nullptr; // Window owns this; detached before teardown.
     FohLookAndFeel lnf;
+    // Closed by leaveWorkspace before borrowed layout state or look-and-feel expires.
+    std::unique_ptr<juce::AlertWindow> workspaceNameDialog;
     AppModel model;
     WorkspaceManager mgr; int current = -1;
     WorkspacePresetCommands presetCommands { [this](int i) { selectWorkspace(i); } };
@@ -89,6 +91,7 @@ protected:
     void openFloatingWindows(); void closeFloatingWindows();
     void showWorkspaceMenu(); void updateSwitcher(); void leaveWorkspace();
     void saveWorkspaceAs(const juce::String& name);
+    void showWorkspaceNameDialog(bool saveAs);
     WorkspaceView view { model, PanelRegistry::standard() };
     Banner audioNotice;
     Banner microphoneNotice;

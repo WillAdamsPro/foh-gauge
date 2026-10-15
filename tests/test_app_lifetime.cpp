@@ -19,6 +19,7 @@ class TestMain : public MainComponent {
 public:
     explicit TestMain(const juce::File& folder) : MainComponent(folder) {}
     using MainComponent::saveWorkspaceAs;
+    using MainComponent::showWorkspaceNameDialog;
     using MainComponent::setShowMode;
     bool resetFromFloating() {
         return MainComponent::keyPressed(juce::KeyPress('0', juce::ModifierKeys::commandModifier, 0), floats[0]);
@@ -1247,4 +1248,114 @@ TEST_CASE("Toolbar and active panel traverse before plots in both appearances an
         }
     }
     main.setSunlightTheme(previousTheme); main.setUiScale(previousScale);
+}
+
+TEST_CASE("Workspace naming dialog closes with its owner", "[app][lifetime][regression]") {
+    juce::ScopedJuceInitialiser_GUI initialise;
+    TemporaryWorkspaces temporary;
+    const auto peers = juce::Desktop::getInstance().getNumComponents();
+    juce::Component::SafePointer<juce::AlertWindow> dialog;
+    {
+        TestMain main(temporary.folder);
+        main.showWorkspaceNameDialog(true);
+        dialog = dynamic_cast<juce::AlertWindow*>(juce::Component::getCurrentlyModalComponent());
+        REQUIRE(dialog != nullptr);
+    }
+    CHECK(dialog == nullptr);
+    // Clean up even on the unfixed path so JUCE's global modal state is intact.
+    if (dialog) delete dialog.getComponent();
+    drainMessages();
+    CHECK(juce::Desktop::getInstance().getNumComponents() == peers);
+}
+
+TEST_CASE("Workspace naming completions release dialogs and ignore retired requests", "[app][lifetime][regression]") {
+    juce::ScopedJuceInitialiser_GUI initialise;
+    TemporaryWorkspaces temporary;
+    const auto peers = juce::Desktop::getInstance().getNumComponents();
+    {
+        TestMain main(temporary.folder);
+        main.saveWorkspaceAs("Synthetic custom");
+        auto open = [&](bool saveAs) {
+            main.showWorkspaceNameDialog(saveAs);
+            auto* dialog = dynamic_cast<juce::AlertWindow*>(juce::Component::getCurrentlyModalComponent());
+            REQUIRE(dialog != nullptr);
+            return juce::Component::SafePointer<juce::AlertWindow>(dialog);
+        };
+        auto waitForClose = [&](auto& dialog) {
+            const auto deadline = juce::Time::getMillisecondCounterHiRes() + 2000;
+            while (dialog && juce::Time::getMillisecondCounterHiRes() < deadline) drainMessages();
+            REQUIRE(dialog == nullptr);
+        };
+        const auto count = main.workspaceCount();
+        for (int cycle = 0; cycle < 16; ++cycle) {
+            // Reopening an active request must not accumulate another window.
+            auto dialog = open(false);
+            main.showWorkspaceNameDialog(false);
+            CHECK(juce::Component::getCurrentlyModalComponent() == dialog.getComponent());
+            dialog->getTextEditor("name")->setText("Synthetic renamed");
+            dialog->exitModalState(cycle % 2);
+            waitForClose(dialog);
+            CHECK(main.workspaceCount() == count);
+        }
+        CHECK(main.workspace().name == "Synthetic renamed");
+        // A queued completion belongs to its original dialog, even if a new
+        // request exists by the time JUCE delivers that completion.
+        auto retired = open(true);
+        retired->exitModalState(1);
+        main.selectWorkspace("tuning");
+        REQUIRE(retired == nullptr);
+        auto replacement = open(true);
+        drainMessages();
+        REQUIRE(replacement != nullptr);
+        CHECK(main.workspaceCount() == count);
+        replacement->getTextEditor("name")->setText("Synthetic saved");
+        replacement->exitModalState(1);
+        waitForClose(replacement);
+        CHECK(main.workspaceCount() == count + 1);
+        CHECK(main.workspace().name == "Synthetic saved");
+    }
+    drainMessages();
+    CHECK(juce::Desktop::getInstance().getNumComponents() == peers);
+}
+
+TEST_CASE("Session open retires a pending workspace naming completion", "[app][session][lifetime][regression]") {
+    juce::ScopedJuceInitialiser_GUI initialise;
+    TemporaryWorkspaces temporary;
+    TestMain main(temporary.folder.getChildFile("workspaces"));
+    const auto session = temporary.folder.getChildFile("Synthetic.fohsession");
+    REQUIRE(main.writeSession(session));
+    const auto count = main.workspaceCount();
+    main.showWorkspaceNameDialog(true);
+    juce::Component::SafePointer<juce::AlertWindow> dialog =
+        dynamic_cast<juce::AlertWindow*>(juce::Component::getCurrentlyModalComponent());
+    REQUIRE(dialog != nullptr);
+    dialog->getTextEditor("name")->setText("Synthetic stale save");
+    dialog->exitModalState(1);
+    REQUIRE(main.readSession(session));
+    CHECK(dialog == nullptr);
+    drainMessages();
+    CHECK(main.workspaceCount() == count);
+    CHECK(main.workspace().name != "Synthetic stale save");
+}
+
+TEST_CASE("Hidden workspace tab restoration does not request keyboard focus", "[app][lifetime][regression]") {
+    juce::ScopedJuceInitialiser_GUI initialise;
+    AppModel model;
+    fohws::Workspace workspace;
+    workspace.root = fohws::LayoutNode::tabs({"TransferFunction", "RTA"});
+    WorkspaceView view(model, PanelRegistry::standard());
+    view.setSize(1200, 800);
+    view.setWorkspace(&workspace);
+    REQUIRE_FALSE(view.isShowing());
+    // Exercise both a visible-in-layout tab and the overflow fallback while
+    // the workspace is detached from a native window (startup/teardown).
+    for (int width : {1200, 120}) {
+        view.setSize(width, 800);
+        for (int index : {1, 0}) {
+            view.activateTab({}, index);
+            CHECK(workspace.root.active == index);
+            CHECK_FALSE(view.hasKeyboardFocus(true));
+        }
+    }
+    // Debug CTest also rejects JUCE assertions, including hidden focus requests.
 }
