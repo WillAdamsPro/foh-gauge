@@ -1,4 +1,5 @@
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators.hpp>
 #include "SetupPage.h"
 #include "ui_form_helpers.h"
 #include <stdexcept>
@@ -297,4 +298,50 @@ TEST_CASE("Routing defaults describe every rig control group through the shared 
     CHECK(engine.outA.load() == 0); CHECK(engine.outB.load() == 1);
     wizard.setRigProfile(std::nullopt);
     for (auto* c : formCanvas(wizard).getChildren()) if (auto* label = dynamic_cast<juce::Label*>(c)) CHECK_FALSE(label->getText().contains("L=2"));
+}
+
+TEST_CASE("Unplug interrupts every routing wizard step without replaying its chime", "[app][routing][hotplug]") {
+    juce::ScopedJuceInitialiser_GUI gui;
+    const bool errorDuringPlayback = GENERATE(false, true);
+    AudioEngine engine; RoutingWizard wizard(engine);
+    wizard.setChannels({"In 1", "In 2"}, {"Out 1", "Out 2"});
+    juce::String error {"Synthetic wizard unplug"};
+    std::vector<float> signal(48000, 0.1f), quiet(48000), a(48000), b(48000);
+    float* outputs[] {a.data(), b.data()};
+    auto failed = [&] {
+        for (auto* child : formCanvas(wizard).getChildren())
+            if (auto* label = dynamic_cast<juce::Label*>(child))
+                if (label->getText().contains("Test failed:")) return true;
+        return false;
+    };
+    for (int step = 0; step < 4; ++step) {
+        CAPTURE(step, errorDuringPlayback);
+        const int expected = step == 0 || step == 3 ? 0 : 1;
+        const float* inputs[] {expected == 0 ? signal.data() : quiet.data(), expected == 1 ? signal.data() : quiet.data()};
+        button(wizard, "Test connection").onClick();
+        engine.audioDeviceIOCallbackWithContext(inputs, 2, outputs, 2, 256, {});
+        REQUIRE(engine.connectionResult() == foh::ConnectionResult::pending);
+        if (errorDuringPlayback) {
+            engine.processTestContext = &error;
+            engine.processTestHook = [](AudioEngine& e, int point, void* context) noexcept {
+                if (point == 0) e.audioDeviceError(*static_cast<const juce::String*>(context));
+            };
+        } else engine.audioDeviceStopped();
+        engine.audioDeviceIOCallbackWithContext(inputs, 2, outputs, 2, 256, {});
+        engine.processTestHook = nullptr;
+        for (int i = 0; i < 256; ++i) { CHECK(a[size_t(i)] == 0); CHECK(b[size_t(i)] == 0); }
+        for (int attempt = 0; attempt < 50 && !failed(); ++attempt) {
+            juce::Thread::sleep(10); juce::Timer::callPendingTimersSynchronously();
+        }
+        REQUIRE(failed()); CHECK(button(wizard, "Test connection").isEnabled());
+        // Synthetic replacement: the stopped callback already retired playback.
+        engine.state = AudioEngine::Ready; engine.deviceFailed = false;
+        engine.audioDeviceIOCallbackWithContext(inputs, 2, outputs, 2, 256, {});
+        for (int i = 0; i < 256; ++i) { CHECK(a[size_t(i)] == 0); CHECK(b[size_t(i)] == 0); }
+        button(wizard, "Test connection").onClick();
+        engine.audioDeviceIOCallbackWithContext(inputs, 2, outputs, 2, 48000, {});
+        CHECK(engine.connectionResult() == foh::ConnectionResult::pass);
+        juce::Thread::sleep(60); juce::Timer::callPendingTimersSynchronously();
+        if (step < 3) button(wizard, "Next").onClick();
+    }
 }
