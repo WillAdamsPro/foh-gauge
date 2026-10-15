@@ -93,6 +93,7 @@ public:
     juce::Font getTextButtonFont(juce::TextButton&, int) override { return font(foh::theme::type::label); }
     juce::Font getComboBoxFont(juce::ComboBox&) override { return font(foh::theme::type::label); }
     juce::Font getPopupMenuFont() override { return font(foh::theme::type::body); }
+    std::unique_ptr<juce::FocusOutline> createFocusOutlineForComponent(juce::Component&) override;
     void refreshThemeFonts(juce::Component&);
     bool appliedLight = false;
     void applyTheme(); // re-read ColourIds from the current Theme
@@ -109,12 +110,42 @@ public:
     juce::Typeface::Ptr regular, semibold, bold;
 };
 
+// Values are evaluated on demand on the message thread, never from the audio callback.
+class ReadableValue : public juce::AccessibilityTextValueInterface {
+public:
+    explicit ReadableValue(std::function<juce::String()> readIn) : read(std::move(readIn)) {}
+    bool isReadOnly() const override { return true; }
+    juce::String getCurrentValueAsString() const override { return read(); }
+    void setValueAsString(const juce::String&) override {}
+private:
+    std::function<juce::String()> read;
+};
+
+inline std::unique_ptr<juce::AccessibilityHandler> readableHandler(
+    juce::Component& component, juce::AccessibilityRole role,
+    std::function<juce::String()> read, juce::AccessibilityActions actions = {}) {
+    return std::make_unique<juce::AccessibilityHandler>(component, role, std::move(actions),
+        juce::AccessibilityHandler::Interfaces { std::make_unique<ReadableValue>(std::move(read)) });
+}
+
+// Apply to newly created trees too (panels, popovers and floating windows).
+void prepareKeyboardAccess(juce::Component&);
+
 class PlotComponent : public juce::Component {
 public:
     PlotComponent() {
+        setTitle("Measurement plot"); setDescription("Frequency response plot with trace legend and measurement status");
+        setWantsKeyboardFocus(true); setHasFocusOutline(true); setExplicitFocusOrder(10000);
         addChildComponent(dismissLowCoh);
         dismissLowCoh.setTooltip("Dismiss low coherence advice");
         dismissLowCoh.onClick = [this] { lowCohDismissed = true; dismissLowCoh.setVisible(false); repaint(); };
+    }
+    std::unique_ptr<juce::AccessibilityHandler> createAccessibilityHandler() override {
+        return readableHandler(*this, juce::AccessibilityRole::image, [this] {
+            return yLabel + ", " + juce::String(fMin, 0) + " to " + juce::String(fMax, 0)
+                + " Hz. " + legendChips.joinIntoString(". ") + ". " + note + " " + centreNote
+                + (series.empty() ? " No trace data." : " " + juce::String((int) series.size()) + " traces.");
+        });
     }
     juce::StringArray legendChips;
     bool topLegend = false;
@@ -144,6 +175,14 @@ public:
 // arrival, with a marker + label per arrival. Display only; the peak picking is fohcore's.
 class ImpulseComponent : public juce::Component {
 public:
+    ImpulseComponent() { setTitle("Impulse response"); setDescription("Arrival times and relative levels"); setWantsKeyboardFocus(true); setHasFocusOutline(true); setExplicitFocusOrder(10000); }
+    std::unique_ptr<juce::AccessibilityHandler> createAccessibilityHandler() override {
+        return readableHandler(*this, juce::AccessibilityRole::image, [this] {
+            juce::String text = res.arrivals.empty() ? "No arrivals. Measure sweep or Find delay." : "";
+            for (const auto& a : res.arrivals) text += juce::String(a.delayMs, 2) + " ms, " + juce::String(a.relLevelDb, 1) + " dB. ";
+            return text;
+        });
+    }
     void setResult(const foh::DelayResult& r, double fs) { res = r; sampleRate = fs; repaint(); }
     void paint(juce::Graphics&) override;
     bool showEtc = false; std::vector<double> etcDb;
@@ -157,7 +196,7 @@ public:
     // A2 inspector: "Inspector" caption, then sections (heading + body) separated by hairlines.
     // setText() splits copy on blank lines; a paragraph starting "Heading: …" (short heading) becomes its own section,
     // the first paragraph goes under "What am I looking at?".
-    HelpPanel() { addChildComponent(body); }
+    HelpPanel() { setTitle("Inspector"); setDescription("Help for the selected panel"); addChildComponent(body); }
     void paint(juce::Graphics&) override;
     void setText(const juce::String& copy);
     juce::Label body; bool overlay = false; juce::String caption {"Inspector"};
@@ -167,10 +206,30 @@ public:
 // Small macOS-style segmented control (rounded track, raised selected segment, hairline separators).
 class SegmentedControl : public juce::Component {
 public:
-    explicit SegmentedControl(juce::StringArray items) : labels(std::move(items)) {}
+    explicit SegmentedControl(juce::StringArray items) : labels(std::move(items)) {
+        setTitle("Workspace tabs"); setDescription("Use Left and Right arrows to select a workspace");
+        setWantsKeyboardFocus(true); setHasFocusOutline(true);
+    }
+    bool keyPressed(const juce::KeyPress& key) override {
+        int direction = key == juce::KeyPress::leftKey ? -1 : key == juce::KeyPress::rightKey ? 1 : 0;
+        if (!direction) return false;
+        for (int i = sel + direction; i >= 0 && i < labels.size(); i += direction)
+            if (!disabled[i]) { setSelected(i, true); break; }
+        return true;
+    }
+    std::unique_ptr<juce::AccessibilityHandler> createAccessibilityHandler() override {
+        return readableHandler(*this, juce::AccessibilityRole::comboBox, [this] {
+            return sel >= 0 && sel < labels.size() ? labels[sel] : juce::String("No workspace selected");
+        }, juce::AccessibilityActions().addAction(juce::AccessibilityActionType::press, [this] {
+            for (int step = 1; step <= labels.size(); ++step) {
+                int next = (sel + step) % labels.size();
+                if (!disabled[next]) { setSelected(next, true); return; }
+            }
+        }));
+    }
     std::function<void(int)> onChange;
     juce::BigInteger disabled; // segments that cannot be picked (e.g. SPL not built yet)
-    void setSelected(int i, bool notify = false) { if (i >= 0 && disabled[i]) return; if (i == sel) return; sel = i; repaint(); if (notify && onChange) onChange(sel); }
+    void setSelected(int i, bool notify = false) { if (i >= 0 && disabled[i]) return; if (i == sel) return; sel = i; repaint(); if (auto* h = getAccessibilityHandler()) h->notifyAccessibilityEvent(juce::AccessibilityEvent::valueChanged); if (notify && onChange) onChange(sel); }
     int getSelected() const { return sel; }
     void setLabels(juce::StringArray l) { if (l != labels) { labels = std::move(l); repaint(); } }
     void paint(juce::Graphics&) override;
@@ -183,7 +242,7 @@ private:
 class NavButton : public juce::Button {
 public:
     enum Glyph { Home, Transfer, Rta, Guides };
-    NavButton(const juce::String& name, Glyph gl) : juce::Button(name), glyph(gl) {}
+    NavButton(const juce::String& name, Glyph gl) : juce::Button(name), glyph(gl) { setTitle(name); setDescription("Open " + name); setHasFocusOutline(true); }
     void paintButton(juce::Graphics&, bool over, bool down) override;
     static juce::Path glyphPath(Glyph, juce::Rectangle<float>);
 private:
@@ -205,7 +264,12 @@ public:
 private:
     class PillButton : public juce::Button {
     public:
-        PillButton() : Button({}) {}
+        PillButton() : Button({}) { setHasFocusOutline(true); setDescription("Measurement status. Activate to open Setup."); }
+        std::unique_ptr<juce::AccessibilityHandler> createAccessibilityHandler() override {
+            return readableHandler(*this, juce::AccessibilityRole::button, [this] {
+                return pill.text + (pill.state == Good ? ". Good" : pill.state == Caution ? ". Caution" : pill.state == Poor ? ". Poor" : "");
+            }, juce::AccessibilityActions().addAction(juce::AccessibilityActionType::press, [this] { triggerClick(); }));
+        }
         Pill pill;
         void paintButton(juce::Graphics&, bool hover, bool down) override;
     };

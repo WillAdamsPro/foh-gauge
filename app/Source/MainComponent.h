@@ -15,7 +15,9 @@ class MainComponent : public juce::Component, public juce::ApplicationCommandTar
 public:
     explicit MainComponent(juce::File workspaceFolder = WorkspaceManager::defaultFolder());
     ~MainComponent() override;
-    enum : juce::CommandID { openSessionCommand = 0x3000, saveSessionCommand, saveSessionAsCommand, consoleControlCommand, sqConsoleCommand };
+    enum : juce::CommandID { openSessionCommand = 0x3000, saveSessionCommand, saveSessionAsCommand, consoleControlCommand, sqConsoleCommand, pauseCommand, findDelayCommand, lockDelayCommand, storeTraceCommand };
+    void attachCommands(juce::ApplicationCommandManager* manager) { appCommands = manager; }
+    juce::PopupMenu getMeasureMenu(juce::ApplicationCommandManager&);
     juce::PopupMenu getFileMenu(juce::ApplicationCommandManager&);
     juce::ApplicationCommandTarget* getNextCommandTarget() override { return nullptr; }
     void getAllCommands(juce::Array<juce::CommandID>&) override;
@@ -73,6 +75,7 @@ protected:
     // Session notices must also close when their owning UI is destroyed.
     juce::ScopedMessageBox sessionNotice;
     void showSessionNotice(const juce::String& title, const juce::String& message);
+    juce::ApplicationCommandManager* appCommands = nullptr; // Window owns this; detached before teardown.
     FohLookAndFeel lnf;
     AppModel model;
     WorkspaceManager mgr; int current = -1;

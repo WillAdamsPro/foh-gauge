@@ -19,7 +19,7 @@ std::vector<fohws::DisplayInfo> currentDisplays() {
 
 // 20x20 title-bar button: Pin (toggle, accent + filled when on) and Dock (arrow to tray)
 struct FloatingPanelWindow::TitleButton : Button {
-    bool isPin; TitleButton(bool p) : Button(p ? "Pin" : "Dock panel"), isPin(p) { setTooltip(p ? "Keep on top" : "Dock panel"); setClickingTogglesState(p); }
+    bool isPin; TitleButton(bool p) : Button(p ? "Pin" : "Dock panel"), isPin(p) { setTooltip(p ? "Keep on top" : "Dock panel"); setClickingTogglesState(p); setTitle(getName()); setDescription(getTooltip()); setHasFocusOutline(true); }
     void paintButton(Graphics& g, bool over, bool down) override {
         auto& t = TH(); auto r = getLocalBounds().toFloat();
         if (down) { g.setColour(WS::pressedOverlay(t)); g.fillRoundedRectangle(r, 4.f); } else if (over) { g.setColour(WS::hoverOverlay(t)); g.fillRoundedRectangle(r, 4.f); }

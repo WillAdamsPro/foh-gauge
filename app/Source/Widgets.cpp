@@ -371,8 +371,10 @@ void NavButton::paintButton(Graphics& g, bool over, bool) {
 
 // ===================== Status pills =====================
 StatusPills::StatusPills() {
+    setTitle("Measurement status"); setDescription("Signal, device and calibration status; activate a pill to open Setup");
     addAndMakeVisible(overflow);
     overflow.setTooltip("All measurement status and Setup actions");
+    overflow.setExplicitFocusOrder(1000);
     overflow.onClick = [this] {
         PopupMenu menu;
         for (size_t i = 0; i < pills.size(); ++i) {
@@ -405,6 +407,7 @@ void StatusPills::setPills(std::vector<Pill> next) {
     for (int i = 0; i < buttons.size(); ++i) {
         auto* button = buttons[i];
         if (i >= (int) pills.size()) { button->setVisible(false); continue; }
+        button->setExplicitFocusOrder(i + 1);
         button->pill = pills[(size_t) i];
         button->setButtonText(button->pill.text);
         button->setTitle(button->pill.text);
@@ -449,6 +452,7 @@ void StatusPills::PillButton::paintButton(Graphics& g, bool hover, bool down) {
 }
 
 void HelpPanel::setText(const String& copy) {
+    setDescription(copy);
     sections.clear(); StringArray lines; lines.addLines(copy);
     String cur; std::vector<String> ps; for (auto& l : lines) { if (l.trim().isEmpty()) { if (cur.isNotEmpty()) ps.push_back(cur); cur = {}; } else cur << (cur.isEmpty() ? "" : " ") << l.trim(); }
     if (cur.isNotEmpty()) ps.push_back(cur);
@@ -483,4 +487,30 @@ void FohLookAndFeel::drawDocumentWindowTitleBar(DocumentWindow& win, Graphics& g
     g.setColour(t.surfaces.border); g.fillRect(0.f, h - t.borderWidth, (float) w, t.borderWidth);
     g.setColour(win.isActiveWindow() ? t.text.primary : t.text.secondary); g.setFont(font(foh::theme::ws::panelTitleSize, false, true));
     g.drawText(win.getName(), foh::theme::ws::headerPaddingX + 4, 0, w - 120, h, Justification::centredLeft, true);
+}
+
+std::unique_ptr<FocusOutline> FohLookAndFeel::createFocusOutlineForComponent(juce::Component&) {
+    struct Outline : FocusOutline::OutlineWindowProperties {
+        Rectangle<int> getOutlineBounds(juce::Component& c) override { return c.getScreenBounds(); }
+        void drawOutline(Graphics& g, int w, int h) override {
+            g.setColour(C::accent());
+            g.drawRoundedRectangle(Rectangle<float>(0, 0, (float) w, (float) h).reduced(1.f), D::radiusButton(), 2.f);
+        }
+    };
+    return std::make_unique<FocusOutline>(std::make_unique<Outline>());
+}
+
+void prepareKeyboardAccess(juce::Component& c) {
+    if (auto* button = dynamic_cast<Button*>(&c)) {
+        button->setWantsKeyboardFocus(true);
+        if (c.getTitle().isEmpty()) c.setTitle(button->getButtonText().isNotEmpty() ? button->getButtonText() : button->getName());
+    }
+    if (c.getWantsKeyboardFocus()) c.setHasFocusOutline(true);
+    for (auto* child : c.getChildren()) {
+        // JUCE puts explicit orders ahead of unspecified ones. Give control groups
+        // an order too, so a plot's high order places it after its toolbar.
+        if (child->getExplicitFocusOrder() == 0) child->setExplicitFocusOrder(1);
+        if (dynamic_cast<PlotComponent*>(child) && c.getTitle().isNotEmpty()) child->setTitle(c.getTitle() + " plot");
+        prepareKeyboardAccess(*child);
+    }
 }

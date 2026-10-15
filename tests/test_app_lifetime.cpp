@@ -1112,3 +1112,69 @@ TEST_CASE("Measurement toolbar fits and every status has a Setup destination", "
     REQUIRE(main.pauseFromFloating());
     CHECK(main.appModel().paused != wasPaused);
 }
+
+TEST_CASE("Measurement commands have unique shortcuts and work from floating windows", "[app][accessibility][commands]") {
+    juce::ScopedJuceInitialiser_GUI initialise;
+    TemporaryWorkspaces temporary; TestMain main(temporary.folder);
+    juce::ApplicationCommandManager commands;
+    commands.registerAllCommandsForTarget(&main); commands.setFirstCommandTarget(&main);
+    main.attachCommands(&commands);
+    auto* keys = commands.getKeyMappings();
+    using K = juce::ModifierKeys;
+    CHECK(keys->findCommandForKeyPress(juce::KeyPress(juce::KeyPress::spaceKey)) == MainComponent::pauseCommand);
+    CHECK(keys->findCommandForKeyPress(juce::KeyPress('F', K::commandModifier, 0)) == MainComponent::findDelayCommand);
+    CHECK(keys->findCommandForKeyPress(juce::KeyPress('L', K::commandModifier, 0)) == MainComponent::lockDelayCommand);
+    CHECK(keys->findCommandForKeyPress(juce::KeyPress('S', K::commandModifier, 0)) == MainComponent::storeTraceCommand);
+    CHECK(keys->findCommandForKeyPress(juce::KeyPress('S', K::commandModifier | K::shiftModifier, 0)) == MainComponent::saveSessionCommand);
+    main.setShowMode(false); main.selectWorkspace("tuning"); main.showWorkspace(); main.floatPanel("RTA");
+    auto paused = main.state().paused;
+    CHECK(main.pauseFromFloating()); CHECK(main.state().paused != paused);
+    CHECK(commands.invokeDirectly(MainComponent::pauseCommand, false)); CHECK(main.state().paused == paused);
+    juce::ApplicationCommandInfo lock(MainComponent::lockDelayCommand); main.getCommandInfo(MainComponent::lockDelayCommand, lock);
+    CHECK((lock.flags & juce::ApplicationCommandInfo::isDisabled) != 0);
+    main.attachCommands(nullptr);
+}
+
+TEST_CASE("Toolbar and active panel traverse before plots in both appearances and scales", "[app][accessibility][layout]") {
+    juce::ScopedJuceInitialiser_GUI initialise;
+    TemporaryWorkspaces temporary; TestMain main(temporary.folder);
+    main.setShowMode(false); main.selectWorkspace("tuning"); main.showWorkspace();
+    main.setExpertMode(false);
+    main.workspace().root = fohws::LayoutNode::tabs({"TransferFunction", "SignalMeters", "Coherence", "DelayFinder"});
+    main.workspaceView().rebuild();
+    const auto previousTheme = main.isSunlightTheme(); const auto previousScale = main.uiScalePercent();
+    for (bool light : {false, true}) for (int scale : {100, 200}) {
+        main.setSunlightTheme(light); main.setUiScale(scale); main.setSize(1440, 900);
+        drainMessages();
+        main.workspaceView().focus("TransferFunction");
+        auto controls = main.toolbarControls();
+        juce::KeyboardFocusTraverser traverser;
+        auto all = traverser.getAllComponents(&main.logicalContent());
+        REQUIRE_FALSE(all.empty()); CHECK(all.front() == controls[1]); // workspace switcher
+        auto* panel = main.workspaceView().panel("TransferFunction"); REQUIRE(panel);
+        auto panelOrder = traverser.getAllComponents(panel);
+        REQUIRE(panelOrder.size() > 1);
+        CHECK(dynamic_cast<PlotComponent*>(panelOrder.front()) == nullptr);
+        auto plot = std::find_if(panelOrder.begin(), panelOrder.end(), [](auto* c) { return dynamic_cast<PlotComponent*>(c) != nullptr; });
+        REQUIRE(plot != panelOrder.end());
+        for (auto it = panelOrder.begin(); it != plot; ++it) CHECK((*it)->hasFocusOutline());
+        if (const auto* folder = std::getenv("FOH_ACCESSIBILITY_SNAPSHOTS")) {
+            auto directory = juce::File(folder); directory.createDirectory();
+            auto file = directory.getChildFile(juce::String(light ? "sunlight-" : "dark-") + juce::String(scale) + ".png");
+            auto& content = main.logicalContent();
+            auto image = content.createComponentSnapshot(content.getLocalBounds(), true, (float) scale / 100.f);
+            juce::FileOutputStream stream(file); REQUIRE(stream.openedOk()); stream.setPosition(0); stream.truncate();
+            REQUIRE(juce::PNGImageFormat().writeImageToStream(image, stream));
+            for (const auto* id : {"SignalMeters", "Coherence", "DelayFinder"}) {
+                auto panel = PanelRegistry::standard().create(id, main.state()); panel->setSize(640, 360);
+                auto snapshot = panel->createComponentSnapshot(panel->getLocalBounds(), true, (float) scale / 100.f);
+                juce::Image panelImage(juce::Image::RGB, snapshot.getWidth(), snapshot.getHeight(), false);
+                juce::Graphics graphics(panelImage); graphics.fillAll(foh::ui::col::background()); graphics.drawImageAt(snapshot, 0, 0);
+                auto panelFile = directory.getChildFile(juce::String(id) + "-" + file.getFileName());
+                juce::FileOutputStream output(panelFile); REQUIRE(output.openedOk()); output.setPosition(0); output.truncate();
+                REQUIRE(juce::PNGImageFormat().writeImageToStream(panelImage, output));
+            }
+        }
+    }
+    main.setSunlightTheme(previousTheme); main.setUiScale(previousScale);
+}

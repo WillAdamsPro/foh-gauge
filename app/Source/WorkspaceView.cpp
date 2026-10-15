@@ -20,9 +20,51 @@ struct WorkspaceView::Slot : WorkspaceView::Node {
     enum Hit { None, Float, Close, Overflow, Tab, TabClose, Title };
     struct HitInfo { Hit what = None; int tab = -1; };
     HitInfo hover, down; std::vector<Rectangle<int>> tabRects; int firstHidden = -1;
+    // Hit targets share the painted chrome; native button handlers expose each action.
+    struct HeaderButton : Button {
+        explicit HeaderButton(const String& name) : Button(name) { setTitle(name); setDescription(name); setHasFocusOutline(true); }
+        void paintButton(Graphics&, bool, bool) override {}
+        void mouseDoubleClick(const MouseEvent& e) override {
+            if (auto* parent = getParentComponent()) parent->mouseDoubleClick(e.getEventRelativeTo(parent));
+        }
+    };
+    OwnedArray<HeaderButton> tabButtons, tabCloseButtons;
+    HeaderButton floatButton {"Float panel"}, closeButton {"Close panel"}, moreButton {"More panel tabs"};
     Slot(WorkspaceView& view, const LayoutNode& n) : v(view) {
         if (n.kind == LayoutNode::Leaf) ids = { n.panel }; else { for (auto& c : n.children) if (c.kind == LayoutNode::Leaf) ids.push_back(c.panel); active = jlimit(0, jmax(0, (int) ids.size() - 1), n.active); }
-        if (!ids.empty()) if (auto* p = v.panel(ids[(size_t) active])) { shown = p; addAndMakeVisible(p); }
+        setTitle("Panel tabs"); setDescription("Select, close or float a workspace panel");
+        if (!ids.empty()) if (auto* p = v.panel(ids[(size_t) active])) { shown = p; addAndMakeVisible(p); shown->setExplicitFocusOrder(1); }
+        for (int i = 0; i < (int) ids.size(); ++i) {
+            auto* panel = v.panel(ids[(size_t) i]);
+            auto name = panel ? panel->title() : String(ids[(size_t) i]);
+            auto* button = tabButtons.add(new HeaderButton(name));
+            button->setDescription(String(i == active ? "Selected panel tab. " : "Select panel tab. ") + "Use Left and Right arrows to change tabs.");
+            button->setToggleState(i == active, dontSendNotification);
+            button->setExplicitFocusOrder(10001 + i * 2);
+            button->onClick = [this, i] { v.activateTab(path, i); };
+            button->onStateChange = [this] { repaint(header()); };
+            addChildComponent(button);
+            auto* close = tabCloseButtons.add(new HeaderButton("Close " + name));
+            close->setExplicitFocusOrder(10002 + i * 2);
+            close->onClick = [this, i] { v.closePanel(ids[(size_t) i]); };
+            close->onStateChange = [this] { repaint(header()); };
+            addChildComponent(close);
+        }
+        for (auto* button : {&floatButton, &closeButton, &moreButton}) {
+            addChildComponent(button); button->setExplicitFocusOrder(20000); button->onStateChange = [this] { repaint(header()); };
+        }
+        floatButton.onClick = [this] { if (v.onFloatRequested) v.onFloatRequested(activeId()); };
+        closeButton.onClick = [this] { v.closePanel(activeId()); };
+        moreButton.onClick = [this] {
+            PopupMenu menu;
+            for (int i = 0; i < (int) ids.size(); ++i) {
+                auto* p = v.panel(ids[(size_t) i], false);
+                menu.addItem(i + 1, p ? p->title() : String(ids[(size_t) i]), true, i == active);
+            }
+            menu.showMenuAsync(PopupMenu::Options().withTargetComponent(&moreButton), [safe = SafePointer<Slot>(this)](int result) {
+                if (safe && result > 0) safe->v.activateTab(safe->path, result - 1);
+            });
+        };
     }
     bool tabbed() const { return ids.size() > 1; }
     int headerH() const { if (v.showMode) return 0; return tabbed() ? WS::tabHeight : WS::panelHeaderHeight; }
@@ -31,6 +73,11 @@ struct WorkspaceView::Slot : WorkspaceView::Node {
     Rectangle<int> overflowBtn() const { auto b = btn(1); return { b.getX() - WS::headerButtonGap - WS::overflowButtonWidth, b.getY(), WS::overflowButtonWidth, b.getHeight() }; }
     void resized() override {
         if (shown) shown->setBounds(getLocalBounds().withTrimmedTop(headerH()));
+        floatButton.setBounds(btn(1)); closeButton.setBounds(btn(0)); moreButton.setBounds(overflowBtn());
+        floatButton.setVisible(!v.showMode && (bool) v.onFloatRequested); closeButton.setVisible(!v.showMode);
+        moreButton.setVisible(false);
+        for (auto* b : tabButtons) b->setVisible(false);
+        for (auto* b : tabCloseButtons) b->setVisible(false);
         tabRects.clear(); firstHidden = -1; if (!tabbed()) return;
         int avail = btn(1).getX() - 4, x = 0; auto f = FohLookAndFeel::font(WS::panelTitleSize, false, true);
         std::vector<int> w; for (auto& id : ids) { auto* p = v.panel(id); w.push_back(jlimit(WS::tabMinWidth, WS::tabMaxWidth, roundToInt(f.getStringWidthFloat(p ? p->title() : String(id))) + 2 * WS::tabPaddingX + WS::tabCloseSize)); }
@@ -38,6 +85,22 @@ struct WorkspaceView::Slot : WorkspaceView::Node {
         if (total > avail) { for (auto& x2 : w) x2 = jmax(WS::tabMinWidth, x2 * avail / jmax(1, total)); total = 0; for (int x2 : w) total += x2; }
         if (total > avail) avail -= WS::overflowButtonWidth + WS::headerButtonGap;
         for (size_t i = 0; i < ids.size(); ++i) { if (x + w[i] > avail && firstHidden < 0) firstHidden = (int) i; tabRects.push_back(firstHidden >= 0 ? Rectangle<int>() : Rectangle<int>(x, 0, w[i], WS::tabHeight)); if (firstHidden < 0) x += w[i]; }
+        moreButton.setVisible(!v.showMode && firstHidden >= 0);
+        for (int i = 0; i < tabButtons.size(); ++i) {
+            auto bounds = tabRects[(size_t) i];
+            bool visible = !v.showMode && !bounds.isEmpty();
+            tabButtons[i]->setVisible(visible); tabCloseButtons[i]->setVisible(visible);
+            auto close = bounds.withWidth(WS::tabCloseSize).withX(bounds.getRight() - WS::tabPaddingX + 4 - WS::tabCloseSize);
+            tabCloseButtons[i]->setBounds(close.withSizeKeepingCentre(WS::tabCloseSize, WS::tabCloseSize));
+            tabButtons[i]->setBounds(bounds.withRight(close.getX()));
+        }
+    }
+    bool keyPressed(const KeyPress& key) override {
+        const int direction = key == KeyPress::leftKey ? -1 : key == KeyPress::rightKey ? 1 : 0;
+        bool tabFocused = false;
+        for (auto* b : tabButtons) tabFocused = tabFocused || b->hasKeyboardFocus(false);
+        if (!direction || !tabbed() || !tabFocused) return false;
+        v.activateTab(path, (active + direction + (int) ids.size()) % (int) ids.size()); return true;
     }
     HitInfo hit(Point<int> p) const {
         if (!header().contains(p)) return {};
@@ -60,7 +123,7 @@ struct WorkspaceView::Slot : WorkspaceView::Node {
             g.drawText(p ? p->title() : String(activeId()), tr, Justification::centredLeft, true);
         } else {
             g.setFont(FohLookAndFeel::font(WS::panelTitleSize, false, true));
-            for (int i = 0; i < (int) tabRects.size(); ++i) { auto r = tabRects[(size_t) i]; if (r.isEmpty()) continue; bool act = i == active, hov = hover.tab == i;
+            for (int i = 0; i < (int) tabRects.size(); ++i) { auto r = tabRects[(size_t) i]; if (r.isEmpty()) continue; bool act = i == active, hov = hover.tab == i || tabButtons[i]->isMouseOver() || tabCloseButtons[i]->isMouseOver();
                 g.setColour(act ? WS::tabActiveBg(t) : WS::tabInactiveBg(t)); g.fillRect(r);
                 if (hov && !act) { g.setColour(down.tab == i ? WS::pressedOverlay(t) : WS::hoverOverlay(t)); g.fillRect(r); }
                 if (act) { g.setColour(t.accent); g.fillRect(r.getX(), r.getBottom() - WS::tabIndicatorHeight, r.getWidth(), WS::tabIndicatorHeight); }
@@ -69,7 +132,7 @@ struct WorkspaceView::Slot : WorkspaceView::Node {
                 g.setColour(act || hov ? t.text.primary : t.text.secondary);
                 g.drawText(p ? p->title() : String(ids[(size_t) i]), r.withTrimmedLeft(WS::tabPaddingX).withTrimmedRight(WS::tabPaddingX / 2 + WS::tabCloseSize), Justification::centredLeft, true);
                 if (act || hov) { auto cr = Rectangle<float>((float) r.getRight() - WS::tabPaddingX + 4 - WS::tabCloseSize, (float) r.getCentreY() - WS::tabCloseSize / 2.f, (float) WS::tabCloseSize, (float) WS::tabCloseSize);
-                    bool ch = hover.what == TabClose && hover.tab == i; drawButtonState(g, cr, ch, ch && down.what == TabClose);
+                    bool ch = (hover.what == TabClose && hover.tab == i) || tabCloseButtons[i]->isMouseOver(); drawButtonState(g, cr, ch, ch && down.what == TabClose);
                     drawCloseGlyph(g, cr, ch ? WS::closeHover(t) : t.text.axis, 6); } }
             if (firstHidden >= 0) { auto o = overflowBtn().toFloat(); drawButtonState(g, o, hover.what == Overflow, down.what == Overflow);
                 g.setColour(hover.what == Overflow ? t.text.primary : t.text.axis); g.setFont(FohLookAndFeel::font(foh::theme::type::body)); g.drawText(u8("\xc2\xbb"), o, Justification::centred); }
@@ -105,7 +168,24 @@ struct WorkspaceView::Slot : WorkspaceView::Node {
 // ===================== Splitter (§3) =====================
 struct WorkspaceView::Splitter : Component {
     WorkspaceView& v; std::vector<int> path; size_t index; bool horizontal; bool hot = false, dragging = false; double startA = 0, startB = 0; int extent = 1;
-    Splitter(WorkspaceView& view, std::vector<int> p, size_t i, bool h) : v(view), path(std::move(p)), index(i), horizontal(h) { setMouseCursor(h ? MouseCursor::LeftRightResizeCursor : MouseCursor::UpDownResizeCursor); setRepaintsOnMouseActivity(true); }
+    Splitter(WorkspaceView& view, std::vector<int> p, size_t i, bool h) : v(view), path(std::move(p)), index(i), horizontal(h) { setMouseCursor(h ? MouseCursor::LeftRightResizeCursor : MouseCursor::UpDownResizeCursor); setRepaintsOnMouseActivity(true);
+        setTitle(h ? "Panel width divider" : "Panel height divider");
+        setDescription("Use arrow keys to resize adjacent panels in five percent steps");
+        setWantsKeyboardFocus(true); setHasFocusOutline(true); setExplicitFocusOrder(30000);
+    }
+    bool keyPressed(const KeyPress& key) override {
+        int direction = key == (horizontal ? KeyPress::leftKey : KeyPress::upKey) ? -1
+                      : key == (horizontal ? KeyPress::rightKey : KeyPress::downKey) ? 1 : 0;
+        auto* n = v.nodeAt(v.display, path); if (!direction || !n) return false;
+        double sum = n->sizes[index] + n->sizes[index + 1];
+        if (sum <= 0.08) return true;
+        n->sizes[index] = jlimit(0.04, sum - 0.04, n->sizes[index] + direction * 0.05);
+        n->sizes[index + 1] = sum - n->sizes[index];
+        if (!v.collapsed) if (auto* saved = v.nodeAt(v.ws->root, path)) saved->sizes = n->sizes;
+        if (auto* parent = getParentComponent()) parent->resized();
+        if (v.onLayoutEdited) v.onLayoutEdited();
+        return true;
+    }
     void paint(Graphics& g) override {
         auto& t = TH(); bool act = dragging || isMouseOver(); float w = act ? WS::splitterLineActive : WS::splitterLine;
         g.setColour(act ? WS::splitterActive(t) : WS::splitterIdle(t));
@@ -171,6 +251,7 @@ Panel* WorkspaceView::panel(const std::string& id, bool create) {
     auto p = registry.create(id, model); if (!p) return nullptr;
     p->onFocus = [this](Panel& x) { focus(x.panelId()); };
     if (ws && ws->panelState.has(id)) p->loadState(ws->panelState[id]);
+    prepareKeyboardAccess(*p);
     auto* raw = p.get(); panels[id] = std::move(p); return raw;
 }
 void WorkspaceView::releasePanel(const std::string&, Panel* p) { if (p && p->getParentComponent()) p->getParentComponent()->removeChildComponent(p); }
@@ -234,12 +315,23 @@ void WorkspaceView::resized() {
     if (structural) { rootComp.reset(); for (auto& [id, p] : panels) if (!(isFloating && isFloating(id))) releasePanel(id, p.get());
         display = check; collapsed = model.expertMode() || !(check == ws->root); rootComp = buildNode(*this, display, {}); addAndMakeVisible(*rootComp); }
     rootComp->setBounds(getLocalBounds());
+    focus(focused);
 }
 void WorkspaceView::paint(Graphics& g) { g.fillAll(TH().surfaces.background); }
 
 void WorkspaceView::focus(const std::string& id) {
-    if (focused == id) return; focused = id;
-    if (auto* p = panel(id, false)) if (id != "Inspector") model.setInspector(p->title(), p->helpText);
+    const bool changed = focused != id; focused = id;
+    if (changed) if (auto* p = panel(id, false)) if (id != "Inspector") model.setInspector(p->title(), p->helpText);
+    if (rootComp) {
+        std::function<bool(Component&)> prioritise = [&](Component& c) {
+            bool contains = dynamic_cast<Panel*>(&c) && static_cast<Panel&>(c).panelId() == focused;
+            for (auto* child : c.getChildren()) if (dynamic_cast<Node*>(child) || dynamic_cast<Panel*>(child)) {
+                bool active = prioritise(*child); child->setExplicitFocusOrder(active ? 1 : 2); contains = contains || active;
+            }
+            return contains;
+        };
+        prioritise(*rootComp);
+    }
     repaint(); if (rootComp) { std::function<void(Component*)> rp = [&](Component* c) { c->repaint(0, 0, c->getWidth(), WS::panelHeaderHeight); for (auto* k : c->getChildren()) if (dynamic_cast<Node*>(k)) rp(k); }; rp(rootComp.get()); }
 }
 void WorkspaceView::closePanel(const std::string& id) {
@@ -251,11 +343,22 @@ void WorkspaceView::activateTab(const std::vector<int>& path, int index) {
     if (!ws || showMode) return;
     auto* tab = nodeAt(display, path);
     if (!tab || tab->kind != LayoutNode::Tabs || index < 0 || index >= (int) tab->children.size()) return;
+    const auto activatedPath = path; // The caller may own this path inside the chrome we rebuild.
     tab->active = index;
     if (!collapsed) if (auto* r = nodeAt(ws->root, path)) r->active = index;
-    if (auto* n = nodeAt(display, path)) { if (n->kind == LayoutNode::Tabs && index < (int) n->children.size()) focused = n->children[(size_t) index].panel; }
+    auto nextFocused = tab->children[(size_t) index].panel;
     rootComp.reset(); for (auto& [id, p] : panels) if (!(isFloating && isFloating(id))) releasePanel(id, p.get());
     rootComp = buildNode(*this, display, {}); addAndMakeVisible(*rootComp); rootComp->setBounds(getLocalBounds());
-    if (auto* p = panel(focused, false)) model.setInspector(p->title(), p->helpText);
+    focus(nextFocused);
+    // Tab activation rebuilds the chrome, so hand focus to the replacement tab.
+    std::function<void(Component&)> restore = [&](Component& c) {
+        if (auto* slot = dynamic_cast<Slot*>(&c); slot && slot->path == activatedPath && index < slot->tabButtons.size()) {
+            if (slot->tabButtons[index]->isShowing()) slot->tabButtons[index]->grabKeyboardFocus();
+            else slot->moreButton.grabKeyboardFocus();
+            return;
+        }
+        for (auto* child : c.getChildren()) if (dynamic_cast<Node*>(child)) restore(*child);
+    };
+    restore(*rootComp);
     if (onLayoutEdited) onLayoutEdited();
 }
