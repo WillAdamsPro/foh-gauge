@@ -2,6 +2,7 @@
 #include "AppModel.h"
 #include "RoutingWizard.h"
 #include "EasySetup.h"
+#include "Panels.h"
 
 // Device changes and preference writes happen only on the message thread.
 class SetupPage : public juce::Component, private juce::ChangeListener, private AppModel::Listener {
@@ -10,6 +11,9 @@ public:
     ~SetupPage() override;
     void resized() override;
     void visibilityChanged() override { if (!isVisible()) { wizard.cancel(); questionnaire.cancel(); wizard.setVisible(false); questionnaire.setVisible(false); } }
+    enum class Section { Audio, Mic, Reference, MicCalibration, ReferenceDelay };
+    void focusSection(Section);
+    Section focusedSection() const { return section; }
     void focusSplCalibration() { splReference.grabKeyboardFocus(); }
     std::function<void()> onDone;
 private:
@@ -33,5 +37,7 @@ private:
     juce::TextButton rigSetup { "Rig questionnaire" };
     EasySetup questionnaire { model };
     RoutingWizard wizard { model.engine };
+    Section section = Section::Audio;
+    std::unique_ptr<Panel> detail;
     bool refreshing = false;
 };

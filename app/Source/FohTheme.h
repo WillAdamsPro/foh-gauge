@@ -42,6 +42,7 @@ namespace foh::theme
     // ---------- Frame (px @1x, base 1440x900) ----------
     namespace frame
     {
+        inline constexpr int toolbarHeight = 44, lockupHeight = 20;
         inline constexpr int baseWidth = 1440, baseHeight = 900;
         inline constexpr int statusBarHeight = 56, navWidth = 200, helperWidth = 320;
         inline constexpr int mainPadding = 22;
