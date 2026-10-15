@@ -361,7 +361,12 @@ TEST_CASE("Accessible panel tabs survive rebuild and retain keyboard focus", "[a
     REQUIRE(tab->getAccessibilityHandler()); CHECK(tab->hasFocusOutline());
     juce::Component::SafePointer<juce::Button> oldTab(tab);
     CHECK(tab->getAccessibilityHandler()->getActions().invoke(juce::AccessibilityActionType::press));
-    juce::MessageManager::getInstance()->runDispatchLoopUntil(30);
+    // JUCE's accessible press posts Button::triggerClick; invoke() only reports
+    // that the action exists. Fresh macOS CTest processes may spend the first
+    // dispatch slice on native window events before delivering that message.
+    const auto deadline = juce::Time::getMillisecondCounterHiRes() + 2000.0;
+    while (oldTab != nullptr && juce::Time::getMillisecondCounterHiRes() < deadline)
+        juce::MessageManager::getInstance()->runDispatchLoopUntil(10);
     CHECK(oldTab == nullptr); CHECK(view.focusedPanel() == "Coherence");
     auto* selected = findTab(view, "Coherence"); REQUIRE(selected); CHECK(selected->hasKeyboardFocus(false));
     REQUIRE(window.get().getPeer()->handleKeyPress(juce::KeyPress(juce::KeyPress::rightKey)));

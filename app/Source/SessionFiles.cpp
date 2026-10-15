@@ -39,7 +39,7 @@ void MainComponent::getCommandInfo(CommandID id, ApplicationCommandInfo& info) {
             info.setActive(model.delayLocked() && !model.delayPending); break;
         case storeTraceCommand:
             info.setInfo("Store trace", "Store the current transfer function", "Measure", 0);
-            info.addDefaultKeypress('S', ModifierKeys::commandModifier); break;
+            info.addDefaultKeypress('S', ModifierKeys::commandModifier | ModifierKeys::altModifier); break;
         case sqConsoleCommand:
             info.setInfo("SQ Console...", "Review SQ PEQ and output delay corrections", "File", 0);
             break;
@@ -52,10 +52,11 @@ void MainComponent::getCommandInfo(CommandID id, ApplicationCommandInfo& info) {
             break;
         case saveSessionCommand:
             info.setInfo("Save Session", "Save the current session", "File", 0);
-            info.addDefaultKeypress('S', ModifierKeys::commandModifier | ModifierKeys::shiftModifier);
+            info.addDefaultKeypress('S', ModifierKeys::commandModifier);
             break;
         case saveSessionAsCommand:
             info.setInfo(juce::String::fromUTF8("Save session as\xe2\x80\xa6"), "Save the session to a new folder", "File", 0);
+            info.addDefaultKeypress('S', ModifierKeys::commandModifier | ModifierKeys::shiftModifier);
             break;
         default: break;
     }

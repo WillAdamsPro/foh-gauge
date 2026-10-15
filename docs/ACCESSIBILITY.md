@@ -7,10 +7,11 @@ Measurement commands appear in the Measure menu and use the same actions as the 
 | Space | Pause or resume measuring |
 | Command-F | Find delay, using the Delay finder's Sub setting |
 | Command-L | Lock the last valid delay |
-| Command-S | Store trace |
-| Shift-Command-S | Save session |
+| Option-Command-S | Store trace |
+| Command-S | Save session |
+| Shift-Command-S | Save session as |
 
-Save session as remains available in File. Find delay is unavailable while a search is pending; Lock delay requires a valid current-device result.
+The existing File shortcuts for Save session and Save session as are preserved. Find delay is unavailable while a search is pending; Lock delay requires a valid current-device result.
 
 Tab and Shift-Tab traverse the toolbar, the focused panel's controls, then its plot. Workspace and panel tabs support Left/Right arrows. Panel dividers support arrow keys in five percent steps. Focus uses a two-pixel control accent outline. Hidden controls and inactive panel contents are omitted from traversal.
 

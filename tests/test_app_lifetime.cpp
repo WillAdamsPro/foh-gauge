@@ -1131,8 +1131,9 @@ TEST_CASE("Measurement commands have unique shortcuts and work from floating win
     CHECK(keys->findCommandForKeyPress(juce::KeyPress(juce::KeyPress::spaceKey)) == MainComponent::pauseCommand);
     CHECK(keys->findCommandForKeyPress(juce::KeyPress('F', K::commandModifier, 0)) == MainComponent::findDelayCommand);
     CHECK(keys->findCommandForKeyPress(juce::KeyPress('L', K::commandModifier, 0)) == MainComponent::lockDelayCommand);
-    CHECK(keys->findCommandForKeyPress(juce::KeyPress('S', K::commandModifier, 0)) == MainComponent::storeTraceCommand);
-    CHECK(keys->findCommandForKeyPress(juce::KeyPress('S', K::commandModifier | K::shiftModifier, 0)) == MainComponent::saveSessionCommand);
+    CHECK(keys->findCommandForKeyPress(juce::KeyPress('S', K::commandModifier | K::altModifier, 0)) == MainComponent::storeTraceCommand);
+    CHECK(keys->findCommandForKeyPress(juce::KeyPress('S', K::commandModifier, 0)) == MainComponent::saveSessionCommand);
+    CHECK(keys->findCommandForKeyPress(juce::KeyPress('S', K::commandModifier | K::shiftModifier, 0)) == MainComponent::saveSessionAsCommand);
     main.setShowMode(false); main.selectWorkspace("tuning"); main.showWorkspace(); main.floatPanel("RTA");
     auto paused = main.state().paused;
     CHECK(main.pauseFromFloating()); CHECK(main.state().paused != paused);
